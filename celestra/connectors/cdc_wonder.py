@@ -138,8 +138,12 @@ class CdcWonderConnector:
             body = getattr(getattr(exc, "response", None), "text", "") or ""
             messages = parse_messages(body)
             if messages:
+                # Report every message, not just the first: WONDER lists the
+                # order-of-by-variables complaint ahead of the rule that is
+                # actually blocking the request.
+                joined = " | ".join(messages[:3])
                 return ConnectorResult.failure(
-                    self.source_id, clip(f"WONDER rejected the request: {messages[0]}", 200))
+                    self.source_id, clip(f"WONDER rejected the request: {joined}", 300))
             return ConnectorResult.failure(self.source_id, describe_http_error(exc))
 
         messages = parse_messages(xml_text)

@@ -255,7 +255,17 @@ class LocalFilesConnector:
             rows = load_rows(self.dataset_key, self.root)
             prefixes = [clean(c) for c in (ctx.extra.get("code_prefixes")
                                            or ctx.extra.get("icd10_codes") or [])]
-            hits = search_rows(rows, ctx.or_terms(), prefixes, max(1, limit))
+            # HCPCS and the Purple Book are indexed by product, not by disease,
+            # so upstream entities (drug and test names) are searched alongside
+            # the indication's own synonyms.
+            # Key names must match what services/handoff.py publishes, which is
+            # "drugs" and "test_names"; "drug_names" never appears and silently
+            # contributed nothing.
+            terms = ctx.or_terms() + [
+                clean(t) for key in ("search_terms", "drugs", "test_names", "regimens")
+                for t in (ctx.extra.get(key) or [])
+            ]
+            hits = search_rows(rows, [t for t in terms if t], prefixes, max(1, limit))
             refs: list[SourceRef] = []
             if hits:
                 body = "\n".join(h.line() for h in hits)
