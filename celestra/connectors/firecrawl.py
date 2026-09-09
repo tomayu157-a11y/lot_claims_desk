@@ -184,6 +184,10 @@ class FirecrawlConnector:
         self.tier = tier
         self.organization = organization or source_name
         self.search_hint = search_hint
+        # Which backend last answered, and why a preferred one did not. Read by
+        # the health check and the sources panel.
+        self.last_backend: str = ""
+        self.last_error: str = ""
         # A domain restriction is what separates targeted search from open web.
         self.origin = (EvidenceOrigin.TARGETED_SEARCH if self.domain
                        else EvidenceOrigin.OPEN_WEB)
@@ -392,8 +396,17 @@ class FirecrawlConnector:
             try:
                 results = await backend()
             except Exception as exc:  # noqa: BLE001 - fall through to the next backend
-                last_error = f"{name}: {type(exc).__name__}"
+                detail = describe_http_error(exc) if isinstance(exc, Exception) else str(exc)
+                last_error = f"{name}: {detail}"
+                if name == "firecrawl":
+                    # Firecrawl is configured and billed. Falling through to a
+                    # keyless engine without saying so is how a broken key
+                    # looks exactly like a working one.
+                    log.warning("firecrawl search failed (%s); falling back to a "
+                                "keyless engine. query=%r", detail, query[:120])
+                    self.last_error = last_error
                 continue
+            self.last_backend = name
             kept: list[dict] = []
             for item in results:
                 url = item.get("url", "")
@@ -438,8 +451,11 @@ class FirecrawlConnector:
                     meta = data.get("metadata") or {}
                     return {"url": url, "title": clean(meta.get("title")),
                             "text": text, "backend": "firecrawl"}
-            except Exception:  # noqa: BLE001 - fall back to a direct fetch
-                pass
+            except Exception as exc:  # noqa: BLE001 - fall back to a direct fetch
+                detail = describe_http_error(exc)
+                log.warning("firecrawl scrape failed (%s); fetching directly. url=%s",
+                            detail, url)
+                self.last_error = f"firecrawl scrape: {detail}"
         try:
             html = await http.get_text(url, headers={"User-Agent": BROWSER_UA})
         except Exception:  # noqa: BLE001 - an unreachable page is not an error

@@ -235,13 +235,56 @@ def self_check() -> int:
         print(f"  FAIL  app failed to load: {type(exc).__name__}: {exc}")
         problems.append(f"app import/render failed: {exc}")
 
+    # Web search is the fallback the whole design leans on when the registered
+    # sources come up short, so report exactly which backend would serve it.
+    try:
+        import asyncio as _a
+
+        from celestra.settings import get_settings as _gs
+
+        settings = _gs()
+        if settings.firecrawl_enabled:
+            from celestra.connectors.firecrawl import FirecrawlConnector
+
+            conn = FirecrawlConnector()
+
+            async def _probe():
+                return await conn._firecrawl_search("chronic lymphocytic leukemia", 1)
+
+            try:
+                hits = _a.run(_probe())
+                ok = bool(hits)
+                print(f"  {'ok  ' if ok else 'FAIL'}  firecrawl: key accepted, "
+                      f"{len(hits)} result(s)")
+                if not ok:
+                    problems.append("firecrawl returned no results for a probe query")
+            except Exception as exc:
+                from celestra.connectors.base import describe_http_error
+
+                print(f"  FAIL  firecrawl: {describe_http_error(exc)}")
+                problems.append(f"firecrawl call failed: {describe_http_error(exc)}")
+        else:
+            print("  warn  firecrawl: no FIRECRAWL_API_KEY, web fallback uses the "
+                  "keyless path")
+    except Exception as exc:
+        print(f"  warn  firecrawl probe skipped: {type(exc).__name__}: {exc}")
+
     print()
     if problems:
         print("  Not healthy:")
         for p in problems:
             print(f"    - {p}")
-        print("\n  Most likely a stale checkout. Run:")
-        print("    git pull && pip install -r requirements.txt\n")
+        # Match the advice to the failure. Telling someone to git pull when
+        # their API key is rejected sends them the wrong way entirely.
+        if any("firecrawl" in p for p in problems):
+            print("\n  Check FIRECRAWL_API_KEY in .env against your Firecrawl")
+            print("  dashboard. Until it works, web fallback silently uses the")
+            print("  keyless path and no calls appear on your account.")
+        if any(p.startswith(("GET ", "app ", "templates", "stylesheet", "javascript"))
+               for p in problems):
+            print("\n  A page or asset failed, which usually means a stale checkout:")
+            print("    git pull && pip install -r requirements.txt")
+        print()
         return 1
     print("  All checks passed. Start the server with:  python run.py\n")
     return 0

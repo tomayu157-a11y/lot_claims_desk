@@ -304,7 +304,10 @@ async def retrieve(
             # 5. assess
             outcome.sufficiency = assess(question, outcome.evidence)
 
-        if outcome.sufficiency.ok:
+        # Finding the answer matters more than which source supplies it. Held
+        # evidence that never produced an answer is not a reason to stop: the
+        # question is still unanswered, so keep going and let the open web try.
+        if outcome.sufficiency.ok and outcome.answers:
             return outcome
 
         # 6. widen: keep more candidates next round and rewrite the query
@@ -315,6 +318,9 @@ async def retrieve(
                      question.id, round_no + 1, top_k, query)
 
     if not esc["enable_open_web_fallback"]:
+        return outcome
+    if outcome.answers and outcome.sufficiency and outcome.sufficiency.ok:
+        # Already answered from registered sources; the web has nothing to add.
         return outcome
 
     # 7. open-web fallback, only once the approved sources are exhausted
@@ -371,6 +377,17 @@ async def retrieve(
     return outcome
 
 
+def llm_configured() -> bool:
+    """Whether answers are expected at all.
+
+    Without a model the pipeline never produces answer prose, so requiring one
+    would mark every question unanswered.
+    """
+    from .llm import llm
+
+    return llm.available
+
+
 def apply_outcome(question: ResearchQuestion, outcome: RetrievalOutcome) -> None:
     """Write the retrieval result back onto the question, including an honest
     reason when it stayed unanswered."""
@@ -387,9 +404,19 @@ def apply_outcome(question: ResearchQuestion, outcome: RetrievalOutcome) -> None
     question.answer_citations = citations
     question.web_sites = outcome.web_sites
 
-    if suff and suff.ok:
+    if suff and suff.ok and (outcome.answers or not llm_configured()):
         question.status = QuestionStatus.SUFFICIENT
         question.unmet_reason = ""
+        return
+
+    if suff and suff.ok and not outcome.answers:
+        # Sourced, but nothing in it answered the question. Reporting this as
+        # answered because the evidence count cleared a threshold is exactly
+        # the kind of false green a reviewer cannot see through.
+        question.status = QuestionStatus.INSUFFICIENT
+        question.unmet_reason = (
+            "evidence was retrieved but no source answered the question"
+        )
         return
 
     if not outcome.evidence:
