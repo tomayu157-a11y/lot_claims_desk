@@ -90,17 +90,28 @@
 
       {% block banners %}
       {% if credentials is defined and credentials %}
-        {% if not credentials.get('anthropic_api_key') %}
+        {% if llm is defined and not llm.configured %}
         <div class="banner" role="status">
           {{ icon('alert', 16) }}
           <div class="banner-body">
             <strong>Deterministic mode.</strong>
-            No Anthropic API key is configured, so synthesis is running in deterministic mode:
-            findings are assembled from retrieved evidence with rule-based templates rather than
-            model-written prose.
+            No LLM provider is configured, so findings are assembled from retrieved evidence
+            with rule-based templates rather than model-written prose.
+            Set one of these in <code>.env</code>: {{ llm.gaps | join('; ') }}.
           </div>
-          <button type="button" class="banner-close" data-dismiss-banner="anthropic"
+          <button type="button" class="banner-close" data-dismiss-banner="llm"
                   aria-label="Dismiss deterministic mode notice">{{ icon('x', 15) }}</button>
+        </div>
+        {% elif llm is defined %}
+        <div class="banner is-ok" role="status">
+          {{ icon('check-circle', 16) }}
+          <div class="banner-body">
+            <strong>Model-written synthesis on.</strong>
+            Provider <code>{{ llm.provider }}</code>, model <code>{{ llm.model }}</code>
+            {%- if not llm.explicit %} (auto-detected from the keys in <code>.env</code>){% endif %}.
+          </div>
+          <button type="button" class="banner-close" data-dismiss-banner="llm-ok"
+                  aria-label="Dismiss model notice">{{ icon('x', 15) }}</button>
         </div>
         {% endif %}
         {% if not credentials.get('firecrawl_api_key') %}

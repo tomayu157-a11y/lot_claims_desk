@@ -11,63 +11,65 @@
       <p class="sub mb-3">Provide basic details to help Celestra understand your research objective.</p>
 
       <div class="field">
-        <label for="drug_brand">Drug / Brand <span class="optional">(Optional)</span></label>
-        <input type="text" id="drug_brand" name="drug_brand" autocomplete="off"
-               placeholder="e.g. Blinatumomab (Blincyto)">
+        <label for="therapy_area">Therapy Area <span class="req" aria-hidden="true">*</span>
+          <span class="visually-hidden">(required)</span></label>
+        <select id="therapy_area" name="therapy_area" required>
+          {% for t in therapy_areas | default([{'value': 'Oncology', 'enabled': True}]) %}
+          <option value="{{ t.value }}" {{ 'selected' if t.enabled and loop.first }}
+                  {{ 'disabled' if not t.enabled }}>{{ t.value }}{{ '' if t.enabled else ' — coming soon' }}</option>
+          {% endfor %}
+        </select>
       </div>
 
       <div class="field">
         <label for="indication">Indication <span class="req" aria-hidden="true">*</span>
           <span class="visually-hidden">(required)</span></label>
-        <input type="text" id="indication" name="indication" list="indication-options" required
-               autocomplete="off" placeholder="e.g. Acute Lymphoblastic Leukemia (ALL)"
-               aria-describedby="indication-hint">
-        <datalist id="indication-options">
+        <select id="indication" name="indication" required aria-describedby="indication-hint">
           {% for ind in indications | default([]) %}
-          <option value="{{ ind.label }}">{{ ind.synonyms | join(', ') if ind.synonyms else ind.key }}</option>
+          <option value="{{ ind.key if ind.enabled else ind.label }}"
+                  {{ 'disabled' if not ind.enabled }}>
+            {{- ind.abbreviation ~ ' — ' if ind.abbreviation }}{{ ind.label }}{{ '' if ind.enabled else ' — coming soon' -}}
+          </option>
           {% endfor %}
-        </datalist>
-        <p class="hint" id="indication-hint">
-          {% if indications %}
-            Configured indications:
-            {% for ind in indications %}<strong>{{ ind.label }}</strong>{{ ', ' if not loop.last }}{% endfor %}.
-            Any other indication is researched from the generic question plan.
-          {% else %}
-            Type the indication exactly as it should appear in the report.
-          {% endif %}
-        </p>
+        </select>
+        <p class="hint" id="indication-hint">Greyed-out indications are on the roadmap and cannot be selected yet.</p>
+      </div>
+
+      <div class="field">
+        <label for="drug_brand">Drug <span class="optional">(Optional)</span></label>
+        <input type="text" id="drug_brand" name="drug_brand" autocomplete="off"
+               placeholder="e.g. Venclexta (venetoclax)">
+        <p class="hint">A drug or brand of interest within the indication. Leave blank to research the indication as a whole.</p>
       </div>
 
       <div class="field-row">
         <div class="field">
-          <label for="geography">Geography <span class="req" aria-hidden="true">*</span></label>
-          <select id="geography" name="geography" required>
-            {% for g in geographies | default(['United States']) %}
-            <option value="{{ g }}" {{ 'selected' if g == 'United States' }}>{{ g }}</option>
+          <label for="population">Population <span class="req" aria-hidden="true">*</span></label>
+          <select id="population" name="population" required>
+            {% for p in populations | default([{'value': 'All', 'enabled': True}]) %}
+            <option value="{{ p.value }}" {{ 'disabled' if not p.enabled }}>{{ p.value }}{{ '' if p.enabled else ' — coming soon' }}</option>
             {% endfor %}
           </select>
         </div>
         <div class="field">
-          <label for="objective">Objective <span class="req" aria-hidden="true">*</span></label>
-          <select id="objective" name="objective" required>
-            {% for o in objectives | default(['Build Claims Line of Therapy']) %}
-            <option value="{{ o }}" {{ 'selected' if o == 'Build Claims Line of Therapy' }}>{{ o }}</option>
+          <label for="geography">Geography <span class="req" aria-hidden="true">*</span></label>
+          <select id="geography" name="geography" required>
+            {% for g in geographies | default([{'value': 'United States', 'enabled': True}]) %}
+            <option value="{{ g.value }}" {{ 'disabled' if not g.enabled }}>{{ g.value }}{{ '' if g.enabled else ' — coming soon' }}</option>
             {% endfor %}
           </select>
         </div>
       </div>
 
       <div class="field">
-        <label for="target_population">Target Population <span class="optional">(Optional)</span></label>
-        <input type="text" id="target_population" name="target_population" autocomplete="off"
-               placeholder="e.g. Adult patients with newly diagnosed ALL">
+        <label for="objective">Objective <span class="req" aria-hidden="true">*</span></label>
+        <select id="objective" name="objective" required>
+          {% for o in objectives | default([{'value': 'Build Claims Line of Therapy', 'label': 'LOT claims', 'enabled': True}]) %}
+          <option value="{{ o.value }}" {{ 'disabled' if not o.enabled }}>{{ o.label | default(o.value) }}{{ '' if o.enabled else ' — coming soon' }}</option>
+          {% endfor %}
+        </select>
       </div>
 
-      <div class="field">
-        <label for="additional_context">Additional Context <span class="optional">(Optional)</span></label>
-        <textarea id="additional_context" name="additional_context" rows="4"
-                  placeholder="E.g. focus on systemic therapy, exclude early stage, etc."></textarea>
-      </div>
 
       <fieldset class="field" style="border:0;padding:0;margin:24px 0 0;">
         <legend class="label" style="padding:0;">Research mode</legend>

@@ -319,7 +319,9 @@ class QAMetrics(BaseModel):
 
 
 class RunConfig(BaseModel):
+    therapy_area: str = "Oncology"
     drug_brand: str = ""
+    population: str = "All"
     indication: str
     indication_key: str              # ALL | CLL | custom
     geography: str = "United States"

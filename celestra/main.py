@@ -183,6 +183,7 @@ def base_ctx(request: Request, active: str = "") -> dict[str, Any]:
         "request": request,
         "active": active,
         "credentials": s.credential_status(),
+        "llm": s.llm_status(),
         "app_name": s.app_name,
         "messages": [],
         "source_names": _source_names(),
@@ -259,25 +260,57 @@ async def projects(request: Request):
     )
 
 
+# Options for the project form. Anything with enabled=False is shown greyed out
+# so the roadmap is visible without pretending it works today.
+THERAPY_AREAS = [
+    {"value": "Oncology", "enabled": True},
+    {"value": "Hematology", "enabled": False},
+    {"value": "Immunology", "enabled": False},
+    {"value": "Neurology", "enabled": False},
+    {"value": "Cardiovascular", "enabled": False},
+]
+POPULATIONS = [
+    {"value": "All", "enabled": True},
+]
+GEOGRAPHIES = [
+    {"value": "United States", "enabled": True},
+    {"value": "Europe", "enabled": False},
+]
+OBJECTIVES = [
+    {"value": "Build Claims Line of Therapy", "label": "LOT claims", "enabled": True},
+    {"value": "Targeting", "label": "Targeting", "enabled": False},
+    {"value": "Forecasting", "label": "Forecasting", "enabled": False},
+]
+UPCOMING_INDICATIONS = [
+    "Multiple Myeloma", "Diffuse Large B-cell Lymphoma", "Acute Myeloid Leukemia",
+    "Non-Small Cell Lung Cancer",
+]
+
+
+def _enabled_values(options: list[dict]) -> set[str]:
+    return {o["value"] for o in options if o.get("enabled")}
+
+
 @app.get("/projects/new", response_class=HTMLResponse)
 async def new_project(request: Request):
-    inds = [
-        {"key": k, "label": v["label"], "synonyms": v.get("synonyms", [])}
-        for k, v in get_questions()["indications"].items()
+    configured = get_questions()["indications"]
+    indications = [
+        {"key": k, "label": v["label"], "abbreviation": v["abbreviation"], "enabled": True}
+        for k, v in configured.items()
+    ] + [
+        {"key": "", "label": name, "abbreviation": "", "enabled": False}
+        for name in UPCOMING_INDICATIONS
     ]
     return templates.TemplateResponse(
         request, "new_project.html",
         {
             **base_ctx(request, "new"),
-            "indications": inds,
+            "therapy_areas": THERAPY_AREAS,
+            "indications": indications,
+            "populations": POPULATIONS,
+            "geographies": GEOGRAPHIES,
+            "objectives": OBJECTIVES,
             "agents": agent_catalogue(),
-            "objectives": [
-                "Build Claims Line of Therapy",
-                "Cohort definition",
-                "Treatment pattern analysis",
-                "Payer evidence dossier",
-            ],
-            "geographies": ["United States", "European Union", "United Kingdom", "Global"],
         },
     )
 
@@ -286,7 +319,9 @@ async def new_project(request: Request):
 async def create_project(
     request: Request,
     indication: str = Form(...),
+    therapy_area: str = Form("Oncology"),
     drug_brand: str = Form(""),
+    population: str = Form("All"),
     geography: str = Form("United States"),
     objective: str = Form("Build Claims Line of Therapy"),
     target_population: str = Form(""),
@@ -294,6 +329,23 @@ async def create_project(
     mode: str = Form("full"),
     selected_agent: str = Form(""),
 ):
+    # A disabled <option> cannot be submitted by a browser, but a crafted
+    # request can send anything; the server holds the same line as the form.
+    for label, value, options in (
+        ("Therapy area", therapy_area, THERAPY_AREAS),
+        ("Population", population, POPULATIONS),
+        ("Geography", geography, GEOGRAPHIES),
+        ("Objective", objective, OBJECTIVES),
+    ):
+        if value not in _enabled_values(options):
+            return templates.TemplateResponse(
+                request, "error.html",
+                {**base_ctx(request), "message": f"{label} not available",
+                 "detail": f"'{value}' is not available yet. Choose one of: "
+                           + ", ".join(sorted(_enabled_values(options))) + "."},
+                status_code=422,
+            )
+
     key = _resolve_indication_key(indication)
     if key is None:
         return templates.TemplateResponse(
@@ -319,12 +371,15 @@ async def create_project(
         bucket = "A"
 
     cfg = RunConfig(
+        therapy_area=therapy_area,
         drug_brand=drug_brand.strip(),
+        population=population,
         indication=get_questions()["indications"][key]["label"],
         indication_key=key,
         geography=geography,
         objective=objective,
-        target_population=target_population.strip(),
+        target_population=target_population.strip()
+        or (f"{population} patients" if population != "All" else "All patients"),
         additional_context=additional_context.strip(),
         mode=run_mode,
         selected_agent=bucket,
@@ -688,8 +743,9 @@ async def report(request: Request, run_id: str):
     qa_metrics = store.get_qa(run_id)
     cfg = run.config
     params = [
+        {"label": "Therapy area", "value": cfg.therapy_area},
         {"label": "Indication", "value": cfg.indication},
-        {"label": "Population", "value": cfg.target_population or "Not specified"},
+        {"label": "Population", "value": cfg.population or cfg.target_population or "All"},
         {"label": "Geography", "value": cfg.geography},
         {"label": "Objective", "value": cfg.objective},
         {"label": "Research cutoff", "value": cfg.research_cutoff},

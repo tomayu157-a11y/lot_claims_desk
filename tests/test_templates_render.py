@@ -442,12 +442,23 @@ def context() -> dict:
              "description": "Approved therapies, treatment settings, regulatory evidence"},
         ],
         "indications": [
-            {"key": "ALL", "label": "Acute Lymphoblastic Leukemia (ALL)",
-             "synonyms": ["ALL", "acute lymphocytic leukemia"]},
-            {"key": "CLL", "label": "Chronic Lymphocytic Leukemia (CLL)", "synonyms": ["CLL"]},
+            {"key": "ALL", "label": "Acute Lymphoblastic Leukemia", "abbreviation": "ALL",
+             "enabled": True},
+            {"key": "CLL", "label": "Chronic Lymphocytic Leukemia", "abbreviation": "CLL",
+             "enabled": True},
+            {"key": "", "label": "Multiple Myeloma", "abbreviation": "", "enabled": False},
         ],
-        "objectives": ["Build Claims Line of Therapy", "Market landscape scan"],
-        "geographies": ["United States", "European Union", "United Kingdom"],
+        "therapy_areas": [{"value": "Oncology", "enabled": True},
+                          {"value": "Hematology", "enabled": False}],
+        "populations": [{"value": "All", "enabled": True}],
+        "objectives": [
+            {"value": "Build Claims Line of Therapy", "label": "LOT claims", "enabled": True},
+            {"value": "Targeting", "label": "Targeting", "enabled": False},
+        ],
+        "geographies": [{"value": "United States", "enabled": True},
+                        {"value": "Europe", "enabled": False}],
+        "llm": {"configured": False, "provider": "anthropic", "explicit": False,
+                "model": "claude-opus-5", "gaps": ["ANTHROPIC_API_KEY"]},
         "thresholds": {"sufficiency": {"min_evidence_items": 3, "min_distinct_sources": 2},
                        "confidence": {"high": {"min_coverage_score": 0.8}}},
         "datasets": [
@@ -600,7 +611,10 @@ def sparse_context(context) -> dict:
         "impacts": [], "evidence": [], "contradictions": [], "stage": stage, "stages": [],
         "qa": None, "params": {}, "sources": [], "used": [], "unavailable": [],
         "health": None, "included": [], "indications": [], "objectives": [],
-        "geographies": [], "thresholds": {}, "datasets": [], "last_seq": 0,
+        "geographies": [], "therapy_areas": [], "populations": [],
+        "llm": {"configured": True, "provider": "azure_openai", "explicit": True,
+                "model": "my-deployment", "gaps": []},
+        "thresholds": {}, "datasets": [], "last_seq": 0,
     })
     return sparse
 

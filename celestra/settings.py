@@ -35,7 +35,8 @@ class Settings(BaseSettings):
     #   anthropic          Claude via the Anthropic API
     #   anthropic_foundry  Claude deployed on Microsoft Foundry
     #   azure_openai       a model deployed in Azure AI Foundry / Azure OpenAI
-    llm_provider: str = "anthropic"
+    # Blank means auto-detect from whichever provider's keys are present.
+    llm_provider: str = ""
     llm_max_tokens: int = 8000
     llm_timeout_seconds: int = 120
     llm_max_concurrency: int = 4
@@ -69,9 +70,34 @@ class Settings(BaseSettings):
 
     research_cutoff: str = ""  # ISO date; blank means today
 
+    def _azure_ready(self) -> bool:
+        return bool(self.azure_openai_endpoint and self.azure_openai_api_key
+                    and self.azure_openai_deployment)
+
+    def _foundry_ready(self) -> bool:
+        return bool(self.foundry_api_key and self.foundry_resource)
+
+    @property
+    def provider_is_explicit(self) -> bool:
+        return bool((self.llm_provider or "").strip())
+
     @property
     def provider(self) -> str:
-        return (self.llm_provider or "anthropic").strip().lower()
+        """The provider in use.
+
+        An explicit LLM_PROVIDER wins. Otherwise the provider is whichever one
+        has a complete set of credentials, so adding Azure keys to .env is
+        enough on its own; forgetting to also flip LLM_PROVIDER used to leave
+        the app silently on Anthropic reporting a missing Anthropic key.
+        """
+        explicit = (self.llm_provider or "").strip().lower()
+        if explicit:
+            return explicit
+        if self._azure_ready():
+            return "azure_openai"
+        if self._foundry_ready():
+            return "anthropic_foundry"
+        return "anthropic"
 
     @property
     def llm_enabled(self) -> bool:
@@ -113,11 +139,27 @@ class Settings(BaseSettings):
         }.get(self.provider)
         if required is None:
             return [f"LLM_PROVIDER '{self.llm_provider}' is not a supported provider"]
-        return [name for name, value in required if not value]
+        gaps = [name for name, value in required if not value]
+        if gaps and not self.provider_is_explicit and self.provider == "anthropic":
+            # Nothing was configured at all; say what any provider would need
+            # rather than implying Anthropic is the only option.
+            return ["ANTHROPIC_API_KEY, or AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY + "
+                    "AZURE_OPENAI_DEPLOYMENT, or FOUNDRY_API_KEY + FOUNDRY_RESOURCE"]
+        return gaps
 
     @property
     def firecrawl_enabled(self) -> bool:
         return bool(self.firecrawl_api_key)
+
+    def llm_status(self) -> dict[str, Any]:
+        """What the UI shows about the model layer."""
+        return {
+            "configured": self.llm_enabled,
+            "provider": self.provider,
+            "explicit": self.provider_is_explicit,
+            "model": self.active_model,
+            "gaps": self.provider_gaps(),
+        }
 
     def credential_status(self) -> dict[str, bool]:
         return {
