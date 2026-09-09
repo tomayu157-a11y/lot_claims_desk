@@ -167,6 +167,39 @@ class Evidence(BaseModel):
         return self.organization or self.source_name
 
 
+class AnswerStatus(str, enum.Enum):
+    ANSWERED = "answered"
+    PARTIAL = "partial"
+    NOT_FOUND = "not_found"
+
+
+class Answer(BaseModel):
+    """What the model concluded for one question from one batch of documents.
+
+    The unit the final document is built from. An answer is only as good as
+    the quotes under it, so it carries the evidence ids that support it and is
+    discarded if none of them survive verification.
+    """
+    id: str = Field(default_factory=lambda: new_id("ans"))
+    run_id: str = ""
+    question_id: str
+    stage: str = ""
+    status: AnswerStatus = AnswerStatus.NOT_FOUND
+    text: str = ""                    # the answer itself, prose
+    aspects_covered: list[str] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+    citations: list[str] = Field(default_factory=list)   # organisation names, display order
+    origin: EvidenceOrigin = EvidenceOrigin.APPROVED_API
+    batch_index: int = 0
+    round_index: int = 0
+    created_at: datetime = Field(default_factory=utcnow)
+
+    @property
+    def is_supplementary(self) -> bool:
+        return self.origin.is_supplementary
+
+
 class ResearchQuestion(BaseModel):
     id: str = Field(default_factory=lambda: new_id("q"))
     run_id: str = ""
@@ -185,6 +218,10 @@ class ResearchQuestion(BaseModel):
     sources_attempted: list[str] = Field(default_factory=list)
     sources_answered: list[str] = Field(default_factory=list)
     unmet_reason: str = ""
+    # The consolidated answer, merged from every batch that answered it.
+    answer_text: str = ""
+    answer_status: AnswerStatus = AnswerStatus.NOT_FOUND
+    answer_citations: list[str] = Field(default_factory=list)
 
     @property
     def is_answered(self) -> bool:
@@ -277,6 +314,9 @@ class StageReport(BaseModel):
     limitations: list[str] = Field(default_factory=list)
     observability: list[dict[str, str]] = Field(default_factory=list)
     unanswered: list[dict[str, str]] = Field(default_factory=list)
+    # Every question in this stage with its cited answer. The spine of the
+    # final document; the prose and tables above are drawn from these.
+    answers: list[dict[str, Any]] = Field(default_factory=list)
     evidence_count: int = 0
     source_count: int = 0
     supplementary_count: int = 0

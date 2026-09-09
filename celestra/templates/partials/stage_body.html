@@ -87,6 +87,40 @@
   </div>
   {% endif %}
 
+  {% if stage.answers %}
+  <div class="subblock">
+    <h3>Questions and answers</h3>
+    <p class="sub mb-2">
+      Every question in this stage with the answer established from its sources. This is the
+      record the synthesis and tables above are built from.
+    </p>
+    {% for row in stage.answers %}
+    <div class="qa-item">
+      <p class="qa-question">{{ row.get('seed') or row.get('question') }}</p>
+      {% if row.get('answer') %}
+      <div class="prose qa-answer">{{ row.get('answer') | tagify }}</div>
+      {% else %}
+      <p class="qa-answer text-faint">
+        Not answered. {{ row.get('unmet_reason') or 'No source addressed this question.' }}
+      </p>
+      {% endif %}
+      <p class="qa-meta">
+        {%- set st = row.get('status', 'not_found') -%}
+        <span class="vtag {{ 'vtag-verified' if st == 'answered' else ('vtag-inference' if st == 'partial' else 'vtag-not-verified') }}">
+          {{ 'ANSWERED' if st == 'answered' else ('PARTIAL' if st == 'partial' else 'NOT FOUND') }}
+        </span>
+        {% for c in row.get('citations') or [] %}<span class="src-chip">{{ c }}</span>{% endfor %}
+        {% if row.get('supplementary') %}
+        <span class="vtag vtag-general-knowledge">INCLUDES SUPPLEMENTARY WEB EVIDENCE</span>
+        {% endif %}
+        <span class="text-faint">{{ row.get('evidence_count', 0) }} evidence ·
+          coverage {{ row.get('coverage', 0) }}</span>
+      </p>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   {% for table in stage.tables | default([]) %}
     {{ data_table(table) }}
   {% endfor %}

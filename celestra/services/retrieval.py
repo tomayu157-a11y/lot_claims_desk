@@ -20,9 +20,17 @@ import re
 from dataclasses import dataclass, field
 
 from ..connectors.base import ConnectorResult, RetrievalContext
-from ..models import Evidence, QuestionStatus, ResearchQuestion, RunConfig, SourceRef
+from ..models import (
+    Answer,
+    Evidence,
+    QuestionStatus,
+    ResearchQuestion,
+    RunConfig,
+    SourceRef,
+)
 from ..settings import get_source_registry, get_thresholds
-from .extraction import build_terms, extract
+from .answering import answer_batch, merge as merge_answers
+from .extraction import build_terms
 from .llm import LLMUnavailable, llm
 from .scoring import Sufficiency, assess
 
@@ -32,6 +40,8 @@ log = logging.getLogger("celestra.retrieval")
 @dataclass
 class RetrievalOutcome:
     evidence: list[Evidence] = field(default_factory=list)
+    answers: list[Answer] = field(default_factory=list)
+    eliminated: int = 0
     sufficiency: Sufficiency | None = None
     attempted: list[str] = field(default_factory=list)
     answered: list[str] = field(default_factory=list)
@@ -130,6 +140,44 @@ async def _gather(
     return list(await asyncio.gather(*(one(s) for s in source_ids)))
 
 
+def _merge_evidence(
+    current: list[Evidence], addition: list[Evidence], limits: dict
+) -> list[Evidence]:
+    """Add new evidence, keeping the quote set diverse across sources.
+
+    Truncating a merged pile by score alone lets one verbose document take
+    every slot, which reads as well-sourced while resting on a single source
+    and fails the distinct-source threshold. Selection round-robins across
+    sources under a per-source cap instead.
+    """
+    seen = {e.quote[:120].lower() for e in current}
+    pool = list(current)
+    for e in addition:
+        key = e.quote[:120].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        pool.append(e)
+
+    per_source_cap = int(limits.get("max_evidence_items_per_source", 3))
+    total_cap = int(limits["max_evidence_items_per_question"])
+
+    by_source: dict[str, list[Evidence]] = {}
+    for e in sorted(pool, key=lambda x: (x.tier, -x.relevance)):
+        by_source.setdefault(e.source_id, []).append(e)
+
+    out: list[Evidence] = []
+    for depth in range(per_source_cap):
+        for source_id in sorted(by_source, key=lambda s: by_source[s][0].tier):
+            bucket = by_source[source_id]
+            if depth < len(bucket) and len(out) < total_cap:
+                out.append(bucket[depth])
+        if len(out) >= total_cap:
+            break
+    out.sort(key=lambda e: (e.tier, -e.relevance))
+    return out[:total_cap]
+
+
 async def retrieve(
     question: ResearchQuestion,
     cfg: RunConfig,
@@ -173,6 +221,8 @@ async def retrieve(
     hydrated: dict[str, SourceRef] = {}         # cache so a doc is fetched once
     top_k = int(limits.get("rank_top_k", 8))
     hydrate_k = int(limits.get("hydrate_top_k", 5))
+    batch_size = max(1, int(limits.get("extract_batch_size", 3)))
+    min_relevance = float(limits.get("min_relevance", 0.35))
 
     for round_no in range(esc["max_refinement_rounds"] + 1):
         outcome.rounds = round_no
@@ -203,9 +253,16 @@ async def retrieve(
         if not candidates:
             outcome.sufficiency = assess(question, [])
         else:
-            # 2. rank, then keep the top slice for this round
+            # 2. rank, eliminate the irrelevant, keep the top slice
             ranked = await rank(list(candidates.values()), question.text, terms)
-            keep = [ref for ref, _ in ranked[:top_k]]
+            relevant = [(ref, score) for ref, score in ranked if score >= min_relevance]
+            outcome.eliminated = len(ranked) - len(relevant)
+            if not relevant:
+                # Nothing cleared the relevance floor. Keep the single best so
+                # the round still reads something rather than reporting an
+                # empty result that a wider query might have answered.
+                relevant = ranked[:1]
+            keep = [ref for ref, _ in relevant[:top_k]]
 
             # 3. hydrate the best few; the rest are read from their abstracts
             docs: list[SourceRef] = []
@@ -217,8 +274,24 @@ async def retrieve(
                 else:
                     docs.append(ref)
 
-            # 4. extract in batches, 5. assess
-            outcome.evidence = await extract(docs, question.text, question.id, terms)
+            # 4. answer the question from each batch, stopping as soon as the
+            #    accumulated evidence clears the threshold. Later batches are
+            #    not read when earlier ones already answered it.
+            round_evidence: list[Evidence] = list(outcome.evidence)
+            for batch_no, start in enumerate(range(0, len(docs), batch_size)):
+                answer, evidence = await answer_batch(
+                    question.text, question.aspects, docs[start:start + batch_size],
+                    question.id, terms, batch_index=batch_no, round_index=round_no,
+                )
+                if answer is not None:
+                    outcome.answers.append(answer)
+                round_evidence = _merge_evidence(round_evidence, evidence, limits)
+                outcome.evidence = round_evidence
+                outcome.sufficiency = assess(question, round_evidence)
+                if outcome.sufficiency.ok and outcome.answers:
+                    break
+
+            # 5. assess
             outcome.sufficiency = assess(question, outcome.evidence)
 
         if outcome.sufficiency.ok:
@@ -249,13 +322,19 @@ async def retrieve(
         for ref in web_refs[: esc["open_web_max_scrapes"]]:
             page = await fire.scrape(ref.url)
             scraped.append(page or ref)
-        extra = await extract(scraped, question.text, question.id, terms)
-        if extra:
-            outcome.answered.append("open_web")
-        merged = {e.quote[:120].lower(): e for e in outcome.evidence}
-        for e in extra:
-            merged.setdefault(e.quote[:120].lower(), e)
-        outcome.evidence = list(merged.values())[: limits["max_evidence_items_per_question"]]
+        for batch_no, start in enumerate(range(0, len(scraped), batch_size)):
+            answer, extra = await answer_batch(
+                question.text, question.aspects, scraped[start:start + batch_size],
+                question.id, terms, batch_index=batch_no, round_index=99,
+            )
+            if answer is not None:
+                outcome.answers.append(answer)
+            if extra and "open_web" not in outcome.answered:
+                outcome.answered.append("open_web")
+            outcome.evidence = _merge_evidence(outcome.evidence, extra, limits)
+            if assess(question, outcome.evidence).ok and outcome.answers:
+                break
+        extra = [e for e in outcome.evidence if e.is_supplementary]
         if on_source:
             await on_source("open_web", "Open Web (Supplementary)", bool(extra),
                             len(extra), "" if extra else "no usable page text")
@@ -278,6 +357,11 @@ def apply_outcome(question: ResearchQuestion, outcome: RetrievalOutcome) -> None
     question.sources_attempted = outcome.attempted
     question.sources_answered = outcome.answered
     question.coverage_score = suff.coverage if suff else 0.0
+
+    text, status, citations = merge_answers(outcome.answers)
+    question.answer_text = text
+    question.answer_status = status
+    question.answer_citations = citations
 
     if suff and suff.ok:
         question.status = QuestionStatus.SUFFICIENT

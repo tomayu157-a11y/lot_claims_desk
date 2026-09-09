@@ -20,6 +20,7 @@ from datetime import date
 from ..events import bus
 from ..models import (
     AgentState,
+    Answer,
     AgentStatus,
     Confidence,
     Contradiction,
@@ -118,6 +119,7 @@ class Orchestrator:
             self.synonyms.insert(0, self.cfg.indication)
         self.questions: list[ResearchQuestion] = []
         self.evidence: list[Evidence] = []
+        self.answers: list[Answer] = []
         self.insights: list[Insight] = []
         self.contradictions: list[Contradiction] = []
         self.stages: list[StageReport] = []
@@ -238,6 +240,7 @@ class Orchestrator:
         self.evidence = store.get_evidence(self.run.id)
         self.insights = store.get_insights(self.run.id)
         self.contradictions = store.get_contradictions(self.run.id)
+        self.answers = store.get_answers(self.run.id)
         self.stages = store.get_stage_reports(self.run.id)
         self._used_summaries = {
             re.sub(r"\s+", " ", i.summary).strip()[:120].lower() for i in self.insights
@@ -296,6 +299,7 @@ class Orchestrator:
                 ))
 
             agent_evidence: list[Evidence] = []
+            agent_answers: list[Answer] = []
             agent_contra: list[Contradiction] = []
 
             for i, question in enumerate(agent_questions, start=1):
@@ -316,6 +320,9 @@ class Orchestrator:
                 )
                 retrieval.apply_outcome(question, outcome)
                 agent_evidence += outcome.evidence
+                for a in outcome.answers:
+                    a.run_id, a.stage = self.run.id, question.stage
+                agent_answers += outcome.answers
 
                 found = await contra.detect(question, outcome.evidence)
                 agent_contra += found
@@ -331,6 +338,8 @@ class Orchestrator:
                 # on question four should not discard the first three answers.
                 store.save_questions(self.run.id, [question])
                 store.save_evidence(self.run.id, outcome.evidence)
+                if outcome.answers:
+                    store.save_answers(self.run.id, outcome.answers)
                 # Conflicts are deliberately not persisted per question: the same
                 # claim pair surfaces on every question both sources answered, and
                 # deduplication runs once the agent has seen them all. Saving here
@@ -355,12 +364,14 @@ class Orchestrator:
 
             store.save_questions(self.run.id, agent_questions)
             store.save_evidence(self.run.id, agent_evidence)
+            store.save_answers(self.run.id, agent_answers)
             agent_contra = contra.dedupe(agent_contra)
             store.save_contradictions(self.run.id, agent_contra)
             store.save_insights(self.run.id, [i for i in self.insights if i.bucket == bucket])
 
             self.questions += agent_questions
             self.evidence += agent_evidence
+            self.answers += agent_answers
             self.contradictions += agent_contra
 
             await self._agent(state, AgentStatus.SYNTHESISING, progress=0.84,
@@ -369,8 +380,9 @@ class Orchestrator:
                 sq = [q for q in agent_questions if q.stage == stage]
                 se = [e for e in agent_evidence if e.question_id in {q.id for q in sq}]
                 sc = [c for c in agent_contra if c.stage == stage]
+                sa = [a for a in agent_answers if a.question_id in {q.id for q in sq}]
                 report = await synthesis.build_stage_report(
-                    self.run.id, self.cfg, stage, bucket, sq, se, sc
+                    self.run.id, self.cfg, stage, bucket, sq, se, sc, sa
                 )
                 self.stages.append(report)
                 store.save_stage_reports(self.run.id, [report])
@@ -443,8 +455,16 @@ class Orchestrator:
         # strongest quote would then headline both cards. Take the best quote
         # this run has not already used as a headline, so every card says
         # something different. The full evidence set is unchanged.
+        # The established answer is what the question actually asked for. A raw
+        # quote is the fallback, and only when no answer was reached.
         summary = ""
-        for candidate in best:
+        if question.answer_text:
+            answer = re.sub(r"\s+", " ", question.answer_text).strip()
+            fingerprint = answer[:120].lower()
+            if fingerprint not in self._used_summaries:
+                self._used_summaries.add(fingerprint)
+                summary = answer[:400]
+        for candidate in ([] if summary else best):
             text = re.sub(r"\s+", " ", candidate.quote).strip()
             fingerprint = text[:120].lower()
             if fingerprint not in self._used_summaries:

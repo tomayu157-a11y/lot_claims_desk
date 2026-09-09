@@ -1080,3 +1080,14 @@ ul.checks .ic { flex: 0 0 auto; margin-top: 2px; color: var(--ok); }
 .agent-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
 .agent-list li { display: flex; align-items: flex-start; gap: 12px; }
 .agent-list li .sub { margin: 2px 0 0; }
+
+/* Question-and-answer record in a stage report. */
+.qa-item { padding: 12px 0; border-top: 1px solid var(--hairline); }
+.qa-item:first-of-type { border-top: 0; }
+.qa-question { font-weight: 650; margin: 0 0 4px; }
+.qa-answer { margin: 0 0 6px; }
+.qa-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+           margin: 0; font-size: 12px; }
+.src-chip { display: inline-block; padding: 1px 8px; border-radius: 999px;
+            border: 1px solid var(--blue-border); background: var(--blue-soft);
+            color: var(--blue-ink); font-size: 11px; }

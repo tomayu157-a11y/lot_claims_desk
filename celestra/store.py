@@ -13,6 +13,7 @@ from typing import Any, TypeVar
 from collections.abc import Iterable
 
 from .models import (
+    Answer,
     Contradiction,
     Evidence,
     Insight,
@@ -45,6 +46,9 @@ CREATE TABLE IF NOT EXISTS contradictions (
     id TEXT PRIMARY KEY, run_id TEXT NOT NULL, stage TEXT, doc TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS stage_reports (
     id TEXT PRIMARY KEY, run_id TEXT NOT NULL, stage TEXT, doc TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS answers (
+    id TEXT PRIMARY KEY, run_id TEXT NOT NULL, question_id TEXT, stage TEXT,
+    doc TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS qa (
     run_id TEXT PRIMARY KEY, doc TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_questions_run ON questions(run_id);
@@ -53,6 +57,8 @@ CREATE INDEX IF NOT EXISTS ix_evidence_q ON evidence(question_id);
 CREATE INDEX IF NOT EXISTS ix_insights_run ON insights(run_id);
 CREATE INDEX IF NOT EXISTS ix_contra_run ON contradictions(run_id);
 CREATE INDEX IF NOT EXISTS ix_stages_run ON stage_reports(run_id);
+CREATE INDEX IF NOT EXISTS ix_answers_run ON answers(run_id);
+CREATE INDEX IF NOT EXISTS ix_answers_q ON answers(question_id);
 """
 
 
@@ -101,8 +107,8 @@ class Store:
 
     def delete_run(self, run_id: str) -> None:
         with self._conn() as c:
-            for t in ("questions", "evidence", "insights", "contradictions",
-                      "stage_reports", "qa"):
+            for t in ("questions", "evidence", "answers", "insights",
+                      "contradictions", "stage_reports", "qa"):
                 c.execute(f"DELETE FROM {t} WHERE run_id=?", (run_id,))
             c.execute("DELETE FROM runs WHERE id=?", (run_id,))
 
@@ -147,6 +153,18 @@ class Store:
             "SELECT doc FROM evidence WHERE run_id=? AND question_id=?", (run_id, question_id)
         ).fetchall()
         return [Evidence.model_validate_json(r["doc"]) for r in rows]
+
+    def save_answers(self, run_id: str, items: Iterable[Answer]) -> None:
+        self._save_many("answers", run_id, items, ("question_id", "stage"))
+
+    def get_answers(self, run_id: str) -> list[Answer]:
+        return self._load_many("answers", run_id, Answer)
+
+    def get_answers_for(self, run_id: str, question_id: str) -> list[Answer]:
+        rows = self._conn().execute(
+            "SELECT doc FROM answers WHERE run_id=? AND question_id=?", (run_id, question_id)
+        ).fetchall()
+        return [Answer.model_validate_json(r["doc"]) for r in rows]
 
     def save_insights(self, run_id: str, items: Iterable[Insight]) -> None:
         self._save_many("insights", run_id, items, ("stage",))

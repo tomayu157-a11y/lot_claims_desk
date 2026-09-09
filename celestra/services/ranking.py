@@ -47,7 +47,28 @@ def _overlap_score(ref: SourceRef, terms) -> float:
 
 
 def rank_deterministic(refs: list[SourceRef], terms: set[str]) -> list[tuple[SourceRef, float]]:
-    scored = [(r, _overlap_score(r, terms)) for r in refs]
+    """Term-overlap ranking, normalised to 0..1.
+
+    Normalisation matters: the caller eliminates candidates below a relevance
+    floor expressed on the model's 0..1 probability scale. Raw overlap scores
+    are unbounded and usually far below it, so leaving them unscaled silently
+    eliminated almost every candidate.
+    """
+    raw = [(r, _overlap_score(r, terms)) for r in refs]
+    top = max((sc for _, sc in raw), default=0.0)
+
+    # Term overlap is ordinal, not a probability. Mapping it onto the model's
+    # absolute scale is what makes the caller's relevance floor mean the same
+    # thing in both modes: anything with real topical overlap lands above the
+    # floor, and only a candidate with none is eliminated. Scaling by the best
+    # score instead would cut a genuinely relevant document merely because a
+    # better one existed.
+    scored: list[tuple[SourceRef, float]] = []
+    for ref, sc in raw:
+        if sc <= 0 or top <= 0:
+            scored.append((ref, 0.0))
+        else:
+            scored.append((ref, round(0.4 + 0.6 * (sc / top), 3)))
     scored.sort(key=lambda x: (-x[1], x[0].tier))
     return scored
 
@@ -93,10 +114,11 @@ async def rank(
     if not scores:
         return rank_deterministic(refs, terms)
 
-    # A candidate the model skipped keeps its overlap score, scaled down so it
-    # sorts below anything the model actually rated.
+    # A candidate the model skipped keeps a normalised overlap score, halved so
+    # it sorts below anything the model actually rated.
+    _fallback = {r.key: sc for r, sc in rank_deterministic(refs, terms)}
     scored = [
-        (r, scores.get(i, 0.5 * _overlap_score(r, terms) / 3.0))
+        (r, scores.get(i, round(0.5 * _fallback.get(r.key, 0.0), 3)))
         for i, r in enumerate(refs)
     ]
     scored.sort(key=lambda x: (-x[1], x[0].tier))

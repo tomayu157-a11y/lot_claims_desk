@@ -12,6 +12,7 @@ import re
 from collections import defaultdict
 
 from ..models import (
+    Answer,
     Contradiction,
     Evidence,
     InsightTable,
@@ -131,9 +132,11 @@ def _takeaways(
     out: list[str] = []
     for q in questions:
         evs = sorted(evidence_by_q.get(q.id, []), key=lambda e: (e.tier, -e.relevance))
-        if not evs:
-            continue
-        out.append(f"{_sentence_case(evs[0].quote, 240)} [{evs[0].tag.value}]")
+        if q.answer_text:
+            tag = "VERIFIED" if evs and not evs[0].is_supplementary else "GENERAL KNOWLEDGE"
+            out.append(f"{_sentence_case(q.answer_text, 240)} [{tag}]")
+        elif evs:
+            out.append(f"{_sentence_case(evs[0].quote, 240)} [{evs[0].tag.value}]")
         if len(out) >= 6:
             break
     return out
@@ -145,9 +148,14 @@ def _synthesis_paragraph(
 ) -> str:
     bits: list[str] = []
     for q in questions:
-        evs = sorted(evidence_by_q.get(q.id, []), key=lambda e: (e.tier, -e.relevance))
-        if evs:
-            bits.append(_sentence_case(evs[0].quote, 300))
+        # An established answer says what the evidence means; a bare quote only
+        # says what one source stated. Prefer the answer where one exists.
+        if q.answer_text:
+            bits.append(_sentence_case(q.answer_text, 400))
+        else:
+            evs = sorted(evidence_by_q.get(q.id, []), key=lambda e: (e.tier, -e.relevance))
+            if evs:
+                bits.append(_sentence_case(evs[0].quote, 300))
         if len(bits) >= 5:
             break
     if not bits:
@@ -170,6 +178,7 @@ def _synthesis_paragraph(
 async def _llm_stage(
     cfg: RunConfig, stage: str, meta: dict,
     questions: list[ResearchQuestion], evidence_by_q: dict[str, list[Evidence]],
+    answers: dict[str, list[Answer]] | None = None,
 ) -> dict | None:
     payload = {
         "indication": cfg.indication,
@@ -183,6 +192,8 @@ async def _llm_stage(
             {
                 "question": q.text,
                 "answered": q.status is QuestionStatus.SUFFICIENT,
+                "established_answer": q.answer_text,
+                "answer_status": q.answer_status.value,
                 "unmet_reason": q.unmet_reason,
                 "evidence": [
                     {
@@ -201,7 +212,12 @@ async def _llm_stage(
     try:
         return await llm.complete_json(
             _SYSTEM,
-            "Write this research stage from the evidence below.\n\n"
+            "Write this research stage.\n\n"
+            "Each question below carries an established_answer already derived from its "
+            "evidence and verified against it. Build the stage from those answers: the "
+            "synthesis, tables and narratives must be consistent with them and must not "
+            "contradict or exceed them. The quotes are supplied so you can cite precisely, "
+            "not so you can reach a different conclusion.\n\n"
             "Return JSON with keys:\n"
             '  "what_happens": one paragraph describing what this stage establishes.\n'
             '  "synthesis": 4-8 sentence prose synthesis, every claim traceable to a quote.\n'
@@ -235,7 +251,7 @@ async def _llm_stage(
 async def build_stage_report(
     run_id: str, cfg: RunConfig, stage: str, bucket: str,
     questions: list[ResearchQuestion], evidence: list[Evidence],
-    contradictions: list[Contradiction],
+    contradictions: list[Contradiction], answers: list[Answer] | None = None,
 ) -> StageReport:
     fw = get_framework()
     meta = get_questions()["stage_meta"][stage]
@@ -259,7 +275,30 @@ async def build_stage_report(
         expected_output=meta["expected_output"],
     )
 
-    data = await _llm_stage(cfg, stage, meta, questions, evidence_by_q) if llm.available else None
+    # The question-and-answer record. Built first, because it is the spine of
+    # the document: the prose and tables below are written from these answers
+    # rather than from the raw quote pile.
+    by_question: dict[str, list[Answer]] = defaultdict(list)
+    for a in answers or []:
+        by_question[a.question_id].append(a)
+    report.answers = [
+        {
+            "question": q.text,
+            "seed": q.seed_text or q.text,
+            "answer": q.answer_text or "",
+            "status": q.answer_status.value,
+            "citations": q.answer_citations,
+            "sources": sorted({e.source_id for e in evidence_by_q.get(q.id, [])}),
+            "evidence_count": len(evidence_by_q.get(q.id, [])),
+            "coverage": round(q.coverage_score, 2),
+            "supplementary": any(e.is_supplementary for e in evidence_by_q.get(q.id, [])),
+            "unmet_reason": q.unmet_reason,
+        }
+        for q in questions
+    ]
+
+    data = await _llm_stage(cfg, stage, meta, questions, evidence_by_q,
+                            answers=by_question) if llm.available else None
 
     if data:
         report.what_happens = str(data.get("what_happens", ""))
