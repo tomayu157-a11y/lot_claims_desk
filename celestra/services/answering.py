@@ -46,8 +46,13 @@ async def answer_batch(
     terms,
     batch_index: int = 0,
     round_index: int = 0,
+    notes: list[str] | None = None,
 ) -> tuple[Answer | None, list[Evidence]]:
     """Ask one batch of documents the question.
+
+    `notes` are what a reviewer wrote at the review gate. They frame the
+    answer (which subtype, which setting, which year matters) but are never a
+    source: every claim still has to be quoted from a document.
 
     Returns the answer (None when the batch does not answer it) and the
     verified evidence that supports it. The evidence is returned even when the
@@ -76,10 +81,17 @@ async def answer_batch(
     aspect_line = (
         "A complete answer covers: " + "; ".join(aspects) + ".\n" if aspects else ""
     )
+    note_line = ""
+    if notes:
+        note_line = (
+            "Reviewer context (human-supplied framing; use it to focus the answer, "
+            "never cite it as a source):\n"
+            + "\n".join(f"- {n[:400]}" for n in notes[:6]) + "\n"
+        )
     try:
         result = await llm.complete_json(
             _SYSTEM,
-            f"Question: {question_text}\n{aspect_line}\n{listing}\n\n"
+            f"Question: {question_text}\n{aspect_line}{note_line}\n{listing}\n\n"
             'Return JSON: {"status": "answered"|"partial"|"not_found", "answer": str, '
             '"aspects_covered": [str], "support": [{"document": int, "quote": str, '
             '"relevance": 0..1}]}.\n'

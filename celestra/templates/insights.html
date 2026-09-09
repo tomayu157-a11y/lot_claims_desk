@@ -1,12 +1,15 @@
 {% extends "base.html" %}
 {% from "partials/icons.html" import icon %}
-{% block title %}Discovery insights — Celestra{% endblock %}
+{% block title %}All findings — Celestra{% endblock %}
 
 {% block content %}
+{% set c = counts | default({}) %}
 <div class="page-head">
-  <h1>Discovery Insights</h1>
+  <h1>All findings</h1>
   <p class="sub">
-    Review, validate and refine Celestra's findings. Your input will update related insights.
+    Every finding from every agent that has run. Decisions made here count at the current step:
+    {% if run.is_locked %}the document is approved, so findings are final.{% else %}approve a finding
+    as stated, modify it, or add your input.{% endif %}
   </p>
 </div>
 
@@ -14,6 +17,12 @@
   <div class="pills">
     <button type="button" class="pill" data-filter-category="all" aria-pressed="true">
       All (<span data-insight-count>{{ insights | default([]) | length }}</span>)
+    </button>
+    <button type="button" class="pill" data-filter-category="requires_input" aria-pressed="false">
+      Needs input ({{ c.get('needs_decision', 0) }})
+    </button>
+    <button type="button" class="pill" data-filter-category="ready" aria-pressed="false">
+      Ready ({{ c.get('ready', 0) }})
     </button>
     {% for cat in categories | default([]) %}
     <button type="button" class="pill" data-filter-category="{{ cat.key | lower }}" aria-pressed="false">
@@ -34,7 +43,7 @@
   <div class="sort-wrap">
     <label for="insight-sort">Sort by</label>
     <select id="insight-sort" data-insight-sort>
-      <option value="confidence">Confidence</option>
+      <option value="confidence">Needs input first</option>
       <option value="stage">Stage</option>
       <option value="sources">Sources</option>
     </select>
@@ -53,10 +62,9 @@
 </div>
 
 <div class="btn-row mt-3">
-  <a class="btn btn-secondary" href="/runs/{{ run.id }}/overview">Back to overview</a>
-  <a class="btn btn-secondary" href="/runs/{{ run.id }}/contradictions">Source conflicts</a>
-  <a class="btn btn-primary" href="/runs/{{ run.id }}/approval">
-    Continue to approval {{ icon('arrow-right', 15) }}
+  <a class="btn btn-primary" href="{{ next_url | default('/runs/' ~ run.id) }}">
+    Back to the current step {{ icon('arrow-right', 15) }}
   </a>
+  <a class="btn btn-secondary" href="/runs/{{ run.id }}/contradictions">Source conflicts</a>
 </div>
 {% endblock %}

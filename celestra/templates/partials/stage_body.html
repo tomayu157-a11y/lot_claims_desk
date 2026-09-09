@@ -28,7 +28,7 @@
     <span class="chip chip-sm">{{ stage.evidence_count }} evidence items</span>
     <span class="chip chip-sm">{{ stage.source_count }} distinct sources</span>
     {% if stage.supplementary_count %}
-    <span class="chip chip-sm chip-medium">{{ stage.supplementary_count }} supplementary web</span>
+    <span class="chip chip-sm chip-amber">{{ stage.supplementary_count }} supplementary web</span>
     {% endif %}
     {% for t in stage.tiers_represented | default([]) %}{{ tier_badge(t) }}{% endfor %}
   </div>
@@ -113,9 +113,17 @@
         {% if row.get('supplementary') %}
         <span class="vtag vtag-general-knowledge">INCLUDES SUPPLEMENTARY WEB EVIDENCE</span>
         {% endif %}
+        {% if row.get('revised') %}
+        <span class="vtag vtag-update">REVISED ON REVIEWER INSTRUCTION</span>
+        {% endif %}
         <span class="text-faint">{{ row.get('evidence_count', 0) }} evidence ·
           coverage {{ row.get('coverage', 0) }}</span>
       </p>
+      {% if row.get('reviewer_input') %}
+      <div class="review-note">
+        <strong>Reviewer input:</strong> {{ row.get('reviewer_input') }}
+      </div>
+      {% endif %}
     </div>
     {% endfor %}
   </div>

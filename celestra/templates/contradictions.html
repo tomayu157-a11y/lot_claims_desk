@@ -34,9 +34,9 @@
 {% endif %}
 
 <div class="btn-row mt-3">
-  <a class="btn btn-secondary" href="/runs/{{ run.id }}/insights">Back to insights</a>
-  <a class="btn btn-primary" href="/runs/{{ run.id }}/approval">
-    Continue to approval {{ icon('arrow-right', 15) }}
+  <a class="btn btn-primary" href="{{ next_url | default('/runs/' ~ run.id) }}">
+    Back to the current step {{ icon('arrow-right', 15) }}
   </a>
+  <a class="btn btn-secondary" href="/runs/{{ run.id }}/insights">All findings</a>
 </div>
 {% endblock %}

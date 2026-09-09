@@ -56,10 +56,22 @@ steps:
       15B: "Rolling QA workers active during execution"
       15C: "Clinical SME review of assumptions, codes, regimens, conflicts and limitations"
 
+# The run is presented to a reviewer as two phases with a human gate between
+# them. Discovery runs the agents with no dependencies; their findings are
+# reviewed before Mapping & Synthesis builds on them.
+phases:
+  discovery:
+    name: "Discovery"
+    description: "Clinical landscape and treatment evidence, researched in parallel"
+  mapping:
+    name: "Mapping & Synthesis"
+    description: "Diagnostic footprint, treatment logic, patient journey and cross-agent synthesis"
+
 # agent_* fields drive the UI. The word "bucket" never reaches a template.
 buckets:
   A:
     name: "Clinical disease and diagnostic foundation"
+    phase: discovery
     agent_name: "Clinical Landscape Agent"
     agent_tagline: "Disease context, patient journey, clinical events"
     agent_icon: "leaf"
@@ -71,6 +83,7 @@ buckets:
     output: "DiseaseDiagnosisProfile"
   C:
     name: "Treatment evidence foundation"
+    phase: discovery
     agent_name: "Treatment Evidence Agent"
     agent_tagline: "Therapies, treatment settings, regulatory evidence"
     agent_icon: "pill"
@@ -82,6 +95,7 @@ buckets:
     output: "TreatmentEvidenceMaster"
   B:
     name: "Diagnostic observability and code footprint"
+    phase: mapping
     agent_name: "Diagnostic Footprint Agent"
     agent_tagline: "Claims signals, diagnosis & procedure codes"
     agent_icon: "microscope"
@@ -93,6 +107,7 @@ buckets:
     output: "DiagnosticObservabilityCodebook"
   D:
     name: "Treatment logic and regimen operationalization"
+    phase: mapping
     agent_name: "Treatment Logic Agent"
     agent_tagline: "Treatment patterns, episode logic, LOT rules"
     agent_icon: "flow"
@@ -104,6 +119,7 @@ buckets:
     output: "RegimenAndLOTLogic"
   E:
     name: "Treatment journey, monitoring and outcomes"
+    phase: mapping
     agent_name: "Patient Journey Agent"
     agent_tagline: "Discontinuation, monitoring, response and outcomes"
     agent_icon: "route"
@@ -115,6 +131,7 @@ buckets:
     output: "PatientJourneyStateModel"
   F:
     name: "Clinical gaps and unmet-need synthesis"
+    phase: mapping
     agent_name: "Information Synthesis Agent"
     agent_tagline: "Cross-agent analysis, key insights and gaps"
     agent_icon: "sparkle"
@@ -126,6 +143,7 @@ buckets:
     output: "ClinicalGapMatrix"
   G:
     name: "QA, governance, SME validation and sign-off"
+    phase: mapping
     agent_name: "QA & Validation Agent"
     agent_tagline: "Thresholds, contradictions, SME readiness"
     agent_icon: "shield"

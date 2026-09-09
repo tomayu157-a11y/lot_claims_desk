@@ -32,9 +32,30 @@ class RunStatus(str, enum.Enum):
     RUNNING = "running"
     # Paused at the human review gate; a Continue action resumes it.
     AWAITING_REVIEW = "awaiting_review"
+    # Every agent has finished. The document exists but is a draft until a
+    # reviewer approves it.
     COMPLETED = "completed"
+    # The reviewer signed the document off. The run is locked from then on.
+    APPROVED = "approved"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+# The linear flow every run follows. Each run is in exactly one of these at a
+# time; `Run.phase` derives it from the status so the UI can never disagree
+# with the orchestrator about where the run is.
+PHASES: list[dict[str, str]] = [
+    {"key": "discovery", "name": "Discovery",
+     "description": "Clinical landscape and treatment evidence"},
+    {"key": "review", "name": "Review gate",
+     "description": "Decide the discovery findings before they propagate"},
+    {"key": "mapping", "name": "Mapping & Synthesis",
+     "description": "Diagnostic footprint, treatment logic, patient journey, synthesis"},
+    {"key": "approval", "name": "Final approval",
+     "description": "Resolve what still needs input, then sign off"},
+    {"key": "approved", "name": "Approved document",
+     "description": "The signed-off research document"},
+]
 
 
 class AgentStatus(str, enum.Enum):
@@ -48,19 +69,27 @@ class AgentStatus(str, enum.Enum):
 
 
 class Confidence(str, enum.Enum):
-    HIGH = "high"
-    MEDIUM = "medium"
+    """Exactly two states, because a reviewer needs exactly one answer to the
+    question "do I have to do something here?".
+
+    READY          a vetted source answered it and nothing is unresolved
+    REQUIRES_INPUT a person must act: no vetted source answered it, or two
+                   sources disagree and nobody has decided, or nothing was
+                   found at all
+    """
+    READY = "ready"
     REQUIRES_INPUT = "requires_input"
-    REJECTED = "rejected"
 
     @property
     def label(self) -> str:
-        return {
-            "high": "High Confidence",
-            "medium": "Medium Confidence",
-            "requires_input": "Requires Input",
-            "rejected": "Rejected",
-        }[self.value]
+        return {"ready": "Ready", "requires_input": "Requires Input"}[self.value]
+
+    @classmethod
+    def _missing_(cls, value: object):
+        # Runs stored before the two-state model used four values. Map them
+        # rather than refuse to load a project someone already ran.
+        legacy = {"high": cls.READY, "medium": cls.READY, "rejected": cls.REQUIRES_INPUT}
+        return legacy.get(str(value).lower())
 
 
 class EvidenceOrigin(str, enum.Enum):
@@ -110,11 +139,28 @@ class ContradictionSeverity(str, enum.Enum):
 
 class ReviewAction(str, enum.Enum):
     PENDING = "pending"
-    APPROVED = "approved"
-    MODIFIED = "modified"
+    APPROVED = "approved"        # accepted as generated
+    MODIFIED = "modified"        # rewritten by the model on the reviewer's instruction
+    INPUT_ADDED = "input_added"  # reviewer attached their own knowledge to it
     PREFER_A = "prefer_a"
     PREFER_B = "prefer_b"
     ACKNOWLEDGED = "acknowledged"
+
+    @property
+    def label(self) -> str:
+        return {
+            "pending": "Awaiting decision",
+            "approved": "Approved",
+            "modified": "Revised",
+            "input_added": "Input added",
+            "prefer_a": "Source A preferred",
+            "prefer_b": "Source B preferred",
+            "acknowledged": "Acknowledged",
+        }[self.value]
+
+    @property
+    def is_decided(self) -> bool:
+        return self is not ReviewAction.PENDING
 
 
 # --------------------------------------------------------------------------
@@ -255,14 +301,22 @@ class Insight(BaseModel):
     title: str
     summary: str
     detail: str = ""
-    confidence: Confidence = Confidence.MEDIUM
+    confidence: Confidence = Confidence.READY
+    # Why the finding needs a person, in words. Empty when it is ready.
+    input_reason: str = ""
     tag: VerificationTag = VerificationTag.VERIFIED
     evidence_ids: list[str] = Field(default_factory=list)
     source_ids: list[str] = Field(default_factory=list)
     question_ids: list[str] = Field(default_factory=list)
     used_web_fallback: bool = False
     review_action: ReviewAction = ReviewAction.PENDING
+    # Modify: the instruction the reviewer gave the model, and what it did.
     user_input: str = ""
+    revision_note: str = ""
+    # Add Input: knowledge the reviewer attached. It is never rewritten; it is
+    # printed in the document and handed to the agents that run afterwards.
+    reviewer_input: str = ""
+    reviewed_at: datetime | None = None
     impacted_insight_ids: list[str] = Field(default_factory=list)
     # Titles of the stage-report tables built from this insight's questions.
     table_titles: list[str] = Field(default_factory=list)
@@ -271,6 +325,11 @@ class Insight(BaseModel):
     @property
     def source_count(self) -> int:
         return len(self.source_ids)
+
+    @property
+    def needs_decision(self) -> bool:
+        """True while a person still has to act on this finding."""
+        return self.confidence is Confidence.REQUIRES_INPUT and not self.review_action.is_decided
 
 
 class Contradiction(BaseModel):
@@ -401,6 +460,31 @@ class Run(BaseModel):
     review_after_wave: int = 1
     resume_from_wave: int = 0
     reviewed_at: datetime | None = None
+
+    @property
+    def phase(self) -> str:
+        """Which step of the flow the run is in. Derived, never stored."""
+        s = self.status
+        if s is RunStatus.AWAITING_REVIEW:
+            return "review"
+        if s is RunStatus.COMPLETED:
+            return "approval"
+        if s is RunStatus.APPROVED:
+            return "approved"
+        if s in (RunStatus.FAILED, RunStatus.CANCELLED):
+            return "failed"
+        if self.config.mode is RunMode.SINGLE:
+            return "discovery" if (self.config.selected_agent or "A") in ("A", "C") else "mapping"
+        return "mapping" if self.resume_from_wave > 1 else "discovery"
+
+    @property
+    def is_live(self) -> bool:
+        return self.status in (RunStatus.PENDING, RunStatus.RUNNING)
+
+    @property
+    def is_locked(self) -> bool:
+        """Approved runs accept no further edits."""
+        return self.status is RunStatus.APPROVED
 
     @property
     def duration_seconds(self) -> float:

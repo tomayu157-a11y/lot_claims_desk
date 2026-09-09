@@ -117,7 +117,7 @@
         <tr>
           <td><strong>{{ s.get('name') or s.get('source_name') or '—' }}</strong></td>
           <td class="nowrap">{{ tier_badge(s.get('tier', 5)) }}</td>
-          <td class="nowrap"><span class="chip chip-sm chip-medium">{{ s.get('blocked_by') }}</span></td>
+          <td class="nowrap"><span class="chip chip-sm chip-amber">{{ s.get('blocked_by') }}</span></td>
           <td>{{ s.get('reason') or 'This source was skipped and contributed no evidence to the run.' }}</td>
         </tr>
         {% endfor %}
@@ -145,7 +145,7 @@
               <div><span class="text-faint text-sm">{{ k2 | replace('_', ' ') | title }}:</span> {{ v2 }}</div>
               {% endfor %}
             {% elif value is sameas true %}
-              <span class="chip chip-sm chip-high">{{ icon('check', 12) }} OK</span>
+              <span class="chip chip-sm chip-ready">{{ icon('check', 12) }} OK</span>
             {% elif value is sameas false %}
               <span class="chip chip-sm chip-requires_input">Unavailable</span>
             {% else %}{{ value }}{% endif %}

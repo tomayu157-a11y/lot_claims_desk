@@ -133,6 +133,43 @@
     if (chip) chip.classList.add('is-used');
   }
 
+  function setPhaseState(key, state, label) {
+    var group = document.querySelector('[data-phase="' + String(key).replace(/"/g, '') + '"]');
+    if (!group) return;
+    group.classList.remove('is-complete', 'is-running', 'is-failed', 'is-gated', 'is-queued');
+    group.classList.add('is-' + state);
+    var holder = $('[data-phase-state]', group);
+    if (holder) {
+      if (state === 'running') {
+        holder.innerHTML = '<span class="spinner" aria-hidden="true"></span> ' + (label || 'Running');
+      } else if (state === 'complete') {
+        holder.innerHTML = ICON_CHECK + ' ' + (label || 'Complete');
+      } else if (state === 'failed') {
+        holder.innerHTML = ICON_ALERT + ' ' + (label || 'An agent failed');
+      } else {
+        holder.innerHTML = ICON_DOT + ' ' + (label || 'Queued');
+      }
+    }
+  }
+
+  function refreshPhaseFromCards(key) {
+    var group = document.querySelector('[data-phase="' + String(key).replace(/"/g, '') + '"]');
+    if (!group) return;
+    var cards = $$('[data-agent-key]', group);
+    if (!cards.length) return;
+    var done = cards.filter(function (c) { return c.getAttribute('data-status') === 'complete'; }).length;
+    var failed = cards.some(function (c) { return c.getAttribute('data-status') === 'failed'; });
+    var busy = cards.some(function (c) { return BUSY[c.getAttribute('data-status')]; });
+    if (done === cards.length) setPhaseState(key, 'complete');
+    else if (failed && !busy) setPhaseState(key, 'failed');
+    else if (busy || done) setPhaseState(key, 'running', 'Running · ' + done + ' / ' + cards.length + ' agents done');
+  }
+
+  function phaseOfCard(card) {
+    var group = card ? card.closest('[data-phase]') : null;
+    return group ? group.getAttribute('data-phase') : null;
+  }
+
   function bumpCounter(selector) {
     var el = $(selector);
     if (!el) return;
@@ -150,6 +187,7 @@
     var attempts = 0;
     var source = null;
     var closed = false;
+    var moved = false;
     var timer = null;
     var live = $('[data-stream-live]');
 
@@ -173,10 +211,36 @@
           announce(live, 'Research run started.');
           break;
 
+        case 'phase_started':
+          if (data.phase) setPhaseState(data.phase, 'running', 'Running');
+          var title = $('[data-page-title]');
+          var sub = $('[data-page-sub]');
+          if (data.phase === 'mapping') {
+            if (title) title.textContent = 'Mapping & Synthesis is running';
+            if (sub) sub.textContent = 'The four remaining agents are building on the discovery ' +
+              'findings you approved. When they finish, the run moves to Final approval.';
+            var gateNote = $('[data-phase-gate]');
+            if (gateNote) {
+              gateNote.classList.add('is-passed');
+              var span = $('span', gateNote);
+              if (span) span.innerHTML = '<strong>Review gate passed.</strong> You approved the discovery findings.';
+            }
+          }
+          announce(live, (data.name || titleise(data.phase)) + ' phase started.');
+          break;
+
         case 'agent_status':
           applyAgentStatus(card, data.status);
           if (data.message) applyAgentMessage(card, data.message);
           if (data.progress != null) applyAgentProgress(card, data.progress);
+          if (card && data.questions_total) {
+            var qEl = $('[data-agent-questions]', card);
+            if (qEl) {
+              qEl.hidden = false;
+              qEl.textContent = (data.questions_answered || 0) + ' / ' + data.questions_total;
+            }
+          }
+          refreshPhaseFromCards(phaseOfCard(card));
           announce(live, (data.agent_name || titleise(key)) + ': ' +
             (STATUS_LABELS[data.status] || titleise(data.status)));
           break;
@@ -216,22 +280,25 @@
           break;
 
         case 'run_complete':
-          announce(live, 'Discovery complete. Opening results…');
+          announce(live, 'Every agent has finished. Opening final approval…');
+          setPhaseState('mapping', 'complete');
+          moved = true;
           teardown();
-          var next = data.url || data.overview_url || data.redirect ||
-            ('/runs/' + encodeURIComponent(runId) + '/overview');
-          window.setTimeout(function () { window.location.assign(next); }, 500);
+          var next = data.redirect || ('/runs/' + encodeURIComponent(runId) + '/approval');
+          window.setTimeout(function () { window.location.assign(next); }, 900);
           break;
 
         case 'review_required':
-          announce(live, 'First agents finished. Opening findings for your review…');
+          announce(live, 'Discovery finished. Opening the findings for your review…');
+          setPhaseState('discovery', 'complete');
+          moved = true;
           teardown();
           var reviewUrl = data.redirect || ('/runs/' + encodeURIComponent(runId) + '/review');
-          window.setTimeout(function () { window.location.assign(reviewUrl); }, 500);
+          window.setTimeout(function () { window.location.assign(reviewUrl); }, 900);
           break;
 
         case 'run_resumed':
-          announce(live, 'Resuming with the remaining agents.');
+          announce(live, 'Mapping & Synthesis started.');
           break;
 
         case 'run_failed':
@@ -242,11 +309,20 @@
             var body = $('[data-run-error-message]', banner) || banner;
             body.textContent = data.error || data.message || 'The run failed.';
           }
+          moved = true;
           teardown();
           break;
 
         case 'stream_end':
           teardown();
+          // The stream can only end because the run paused, finished or failed.
+          // If none of those events reached this tab, ask the server where the
+          // run is now instead of leaving a stale page.
+          if (!moved) {
+            window.setTimeout(function () {
+              window.location.assign('/runs/' + encodeURIComponent(runId));
+            }, 1200);
+          }
           break;
 
         case 'heartbeat':
@@ -255,9 +331,9 @@
       }
     }
 
-    var TYPES = ['run_started', 'agent_status', 'agent_progress', 'source_used',
+    var TYPES = ['run_started', 'phase_started', 'agent_status', 'agent_progress', 'source_used',
       'question_status', 'insight_added', 'contradiction_added', 'stage_complete',
-      'review_required', 'run_resumed',
+      'review_required', 'run_resumed', 'context_published', 'wave_started', 'wave_complete',
       'run_complete', 'run_failed', 'stream_end', 'heartbeat'];
 
     function connect() {
@@ -298,7 +374,7 @@
   };
 
   /* ------------------------------------------------- 2. insight filtering */
-  var CONF_RANK = { high: 0, medium: 1, requires_input: 2, rejected: 3 };
+  var CONF_RANK = { requires_input: 0, ready: 1 };
 
   function initInsights() {
     var list = $('[data-insight-list]');
@@ -312,7 +388,15 @@
 
     function matches(card) {
       var cat = (card.getAttribute('data-category') || '').toLowerCase();
-      if (state.category !== 'all' && cat !== state.category) return false;
+      var conf = (card.getAttribute('data-confidence') || '').toLowerCase();
+      var decided = (card.getAttribute('data-decision') || 'pending') !== 'pending';
+      if (state.category === 'requires_input') {
+        if (conf !== 'requires_input' || decided) return false;
+      } else if (state.category === 'ready') {
+        if (conf !== 'ready' && !decided) return false;
+      } else if (state.category !== 'all' && cat !== state.category) {
+        return false;
+      }
       if (!state.query) return true;
       return (card.getAttribute('data-search') || card.textContent || '')
         .toLowerCase().indexOf(state.query) !== -1;
@@ -525,13 +609,29 @@
         target.replaceWith(fresh);
         initCounters(fresh);
         if (Celestra.refreshInsights) Celestra.refreshInsights();
+        fresh.classList.add('is-flash');
+        window.setTimeout(function () { fresh.classList.remove('is-flash'); }, 1600);
       }
     }
+    refreshGate();
 
     if (payload && payload.redirect) window.location.assign(payload.redirect);
     if (options.onSuccess) options.onSuccess(payload);
     return { ok: true, payload: payload, html: html };
   };
+
+  async function refreshGate() {
+    var panel = $('[data-gate-panel][data-gate-url]');
+    if (!panel) return;
+    try {
+      var html = await fetchFragment(panel.getAttribute('data-gate-url'));
+      var holder = document.createElement('div');
+      holder.innerHTML = html.trim();
+      var fresh = holder.firstElementChild;
+      if (fresh) panel.replaceWith(fresh);
+    } catch (err) { /* the page still works; the panel is just stale */ }
+  }
+  Celestra.refreshGate = refreshGate;
 
   function flash(message, kind) {
     var area = $('[data-flash-area]');
@@ -622,18 +722,41 @@
     on(document, 'click', '[data-action-url]', async function (ev, btn) {
       ev.preventDefault();
       if (btn.disabled) return;
+      var payload = payloadFor(btn);
+      var required = btn.getAttribute('data-requires-field');
+      if (required && !String(payload[required] || '').trim()) {
+        var scope = btn.closest('[data-action-scope]');
+        var field = scope ? $('[data-field="' + required + '"]', scope) : null;
+        if (field) { field.focus(); field.classList.add('is-invalid'); }
+        flash('Write something first: this action sends your text to Celestra.', 'is-danger');
+        return;
+      }
       btn.disabled = true;
       btn.setAttribute('aria-busy', 'true');
+      var original = btn.innerHTML;
+      var busyLabel = btn.getAttribute('data-busy-label');
+      if (busyLabel) btn.innerHTML = '<span class="spinner" aria-hidden="true"></span> ' + busyLabel;
       var swap = btn.getAttribute('data-swap');
       var closes = btn.hasAttribute('data-closes-modal');
       try {
-        var result = await Celestra.postJSON(btn.getAttribute('data-action-url'), payloadFor(btn), {
+        var result = await Celestra.postJSON(btn.getAttribute('data-action-url'), payload, {
           swap: swap ? $(swap) : null
         });
         if (result.ok && closes) Celestra.closeModal();
       } finally {
         btn.disabled = false;
         btn.removeAttribute('aria-busy');
+        if (busyLabel) btn.innerHTML = original;
+      }
+    });
+
+    /* the gate form: never submit while blocked */
+    on(document, 'submit', '[data-gate-form]', function (ev, form) {
+      var button = $('button[type="submit"]', form);
+      if (button && button.disabled) { ev.preventDefault(); return; }
+      if (button) {
+        button.disabled = true;
+        button.innerHTML = '<span class="spinner" aria-hidden="true"></span> Working…';
       }
     });
 

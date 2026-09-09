@@ -1,0 +1,84 @@
+{# ---------------------------------------------------------------------------
+   The gate summary: what still blocks the next step and the one button that
+   takes it. Used at the review gate and at final approval; refreshed in place
+   after every decision. Context: run, gate (from main._gate)
+   --------------------------------------------------------------------------- #}
+{% from "partials/icons.html" import icon %}
+{%- set g = gate -%}
+{%- set c = g.counts -%}
+<section class="gate-panel {{ 'is-done' if g.done else ('is-blocked' if g.blockers else ('is-ready' if g.available else '')) }}"
+         id="gate" data-gate-panel data-gate-url="{{ g.refresh_url }}" aria-live="polite">
+  <div class="gate-body">
+    <div class="gate-main">
+      {% if g.done %}
+      <div class="gate-title">{{ icon('check-circle', 17) }} {{ g.done_label }}</div>
+      <p class="gate-sub">
+        {% if g.mode == 'review' %}
+        The discovery findings were approved{% if run.reviewed_at %} on {{ run.reviewed_at.strftime('%d %b %Y, %H:%M UTC') }}{% endif %}
+        and Mapping &amp; Synthesis built on them. Decisions made here are final for this run.
+        {% else %}
+        The document was approved{% if run.approved_at %} on {{ run.approved_at.strftime('%d %b %Y, %H:%M UTC') }}{% endif %}
+        and is locked. Nothing on it can change; start a new project to research it again.
+        {% endif %}
+      </p>
+      {% elif g.blockers %}
+      <div class="gate-title">{{ icon('alert', 17) }} {{ g.blockers | length }} item{{ '' if g.blockers | length == 1 else 's' }} need{{ 's' if g.blockers | length == 1 else '' }} your input before you can continue</div>
+      <p class="gate-sub">
+        Each one below says why. Approve it as stated, revise it, add what you know, or decide the
+        conflict. Findings marked Ready carry forward as generated unless you change them.
+      </p>
+      <ul class="gate-blockers">
+        {% for b in g.blockers %}
+        <li>
+          {{ icon('alert', 13) }}
+          <span><a href="{{ b.anchor }}">{{ b.title }}</a> — {{ b.reason }}</span>
+        </li>
+        {% endfor %}
+      </ul>
+      {% elif g.available %}
+      <div class="gate-title">{{ icon('check-circle', 17) }} Nothing needs your input</div>
+      <p class="gate-sub">
+        {% if g.mode == 'review' %}
+        Every discovery finding is Ready or decided and every escalated conflict is decided.
+        Continuing hands these findings to the Mapping &amp; Synthesis agents.
+        {% else %}
+        Every finding is Ready or decided and every escalated conflict is decided. Approving
+        locks the document and records your sign-off in it.
+        {% endif %}
+      </p>
+      {% else %}
+      <div class="gate-title">{{ icon('activity', 17) }} Not at this step yet</div>
+      <p class="gate-sub">This step opens once the agents before it have finished.</p>
+      {% endif %}
+      <div class="gate-counts">
+        <span class="chip chip-sm">{{ c.insights }} findings</span>
+        <span class="chip chip-sm chip-ready">{{ c.ready }} ready</span>
+        <span class="chip chip-sm {{ 'chip-requires_input' if c.needs_decision else '' }}">{{ c.needs_decision }} need input</span>
+        <span class="chip chip-sm chip-blue">{{ c.decided }} decided by you</span>
+        <span class="chip chip-sm {{ 'chip-requires_input' if c.conflicts_blocking else '' }}">{{ c.conflicts_open }} open conflict{{ '' if c.conflicts_open == 1 else 's' }}</span>
+      </div>
+    </div>
+    <div class="gate-actions">
+      {% if g.done %}
+        {% if g.mode == 'review' %}
+        <a class="btn btn-secondary" href="/runs/{{ run.id }}/progress#mapping">See Mapping &amp; Synthesis {{ icon('arrow-right', 15) }}</a>
+        {% else %}
+        <a class="btn btn-primary" href="/runs/{{ run.id }}/report">Open the approved document {{ icon('arrow-right', 15) }}</a>
+        {% endif %}
+      {% elif g.available %}
+      <form method="post" action="{{ g.action_url }}" data-gate-form>
+        <button type="submit" class="btn btn-primary btn-lg" {% if g.blockers %}disabled aria-disabled="true"{% endif %}>
+          {{ g.action_label }} {{ icon('arrow-right', 16) }}
+        </button>
+      </form>
+      {% if g.blockers %}
+      <span class="hint">Enabled once every item above has a decision.</span>
+      {% elif g.mode == 'review' %}
+      <span class="hint">Starts the four remaining agents. You can watch them run.</span>
+      {% else %}
+      <span class="hint">Final. The run is locked after this.</span>
+      {% endif %}
+      {% endif %}
+    </div>
+  </div>
+</section>

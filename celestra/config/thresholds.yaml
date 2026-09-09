@@ -18,26 +18,15 @@ sufficiency:
   min_quote_length: 40
 
 confidence:
-  # Evaluated top-down; first match wins.
-  high:
-    min_coverage_score: 0.70
-    min_evidence_items: 2
-    min_primary_tier_items: 1
-    max_open_contradictions: 0
-  medium:
-    # A single primary-tier source that answers the question lands here.
-    min_coverage_score: 0.0
-    min_evidence_items: 1
-    min_primary_tier_items: 1
-    max_open_contradictions: 2
+  # Two states only. A reviewer needs one answer: "do I have to act here?".
+  ready:
+    description: "A vetted (tier 1 or 2) source answered it and no conflict is open"
   requires_input:
-    # Deliberately narrow. Exactly two situations reach a person:
-    #   1. the only evidence is open-web, so no vetted source answered it
-    #   2. an escalated source disagreement is still unresolved
-    # Thin-but-sourced findings are Medium, not Requires Input.
-    description: "Answered only from the open web, or carrying an unresolved conflict"
-  rejected:
-    description: "No usable evidence after every retrieval strategy was exhausted"
+    # Exactly three situations reach a person:
+    #   1. nothing usable was found after every retrieval strategy
+    #   2. the only evidence is open-web, so no vetted source answered it
+    #   3. an escalated source disagreement is still undecided
+    description: "Unanswered, answered only from the open web, or carrying an open conflict"
 
 escalation:
   max_refinement_rounds: 2       # query rewrites against approved sources

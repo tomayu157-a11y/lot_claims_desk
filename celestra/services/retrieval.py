@@ -221,7 +221,11 @@ async def retrieve(
     per_source = max(2, limits["max_evidence_items_per_question"] // max(len(source_ids), 1))
 
     upstream_terms: list[str] = []
-    for value in (context or {}).values():
+    notes: list[str] = [str(n) for n in (context or {}).get("reviewer_notes") or []]
+    for key, value in (context or {}).items():
+        # Reviewer notes are sentences for the model, not terms for a search.
+        if key == "reviewer_notes":
+            continue
         if isinstance(value, list):
             upstream_terms += [str(v) for v in value[:20]]
     terms = build_terms(question.text, question.aspects, synonyms, upstream_terms)
@@ -292,6 +296,7 @@ async def retrieve(
                 answer, evidence = await answer_batch(
                     question.text, question.aspects, docs[start:start + batch_size],
                     question.id, terms, batch_index=batch_no, round_index=round_no,
+                    notes=notes,
                 )
                 if answer is not None:
                     outcome.answers.append(answer)
@@ -351,6 +356,7 @@ async def retrieve(
             answer, extra = await answer_batch(
                 question.text, question.aspects, scraped[start:start + batch_size],
                 question.id, terms, batch_index=batch_no, round_index=99,
+                notes=notes,
             )
             if answer is not None:
                 outcome.answers.append(answer)

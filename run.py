@@ -168,7 +168,7 @@ def demo() -> int:
     print("    python run.py")
     from celestra.settings import get_settings as _gs
 
-    print(f"    http://localhost:{_gs().port}/runs/{run.id}/overview\n")
+    print(f"    http://localhost:{_gs().port}/runs/{run.id}\n")
     return 0
 
 

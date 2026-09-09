@@ -1,0 +1,175 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import agent_tile, agent_status_markup, enum_value, flow_steps %}
+{% block title %}{{ 'Research in progress' if run.is_live else 'Research record' }} — Celestra{% endblock %}
+
+{% block content %}
+{% if run.is_live %}
+<div data-run-stream="{{ run.id }}" data-last-seq="{{ last_seq | default(0) }}"
+     data-next-url="{{ next_url | default('') }}"></div>
+{% endif %}
+
+<div class="page-head">
+  {% set st = enum_value(run.status) %}
+  {% if run.is_live %}
+  <h1 data-page-title>
+    {% if run.phase == 'mapping' %}Mapping &amp; Synthesis is running{% else %}Discovery is running{% endif %}
+  </h1>
+  <p class="sub" data-page-sub>
+    {% if run.phase == 'mapping' %}
+    The four remaining agents are building on the discovery findings you approved. When they
+    finish, the run moves to Final approval.
+    {% else %}
+    Two agents are researching the clinical landscape and treatment evidence in parallel. When they
+    finish, the run pauses for your review before the other four agents start.
+    {% endif %}
+  </p>
+  {% elif st == 'awaiting_review' %}
+  <h1>Discovery finished — waiting for your review</h1>
+  <p class="sub">The two discovery agents are done. The four Mapping &amp; Synthesis agents start once
+    you approve their findings.</p>
+  {% elif st in ['completed', 'approved'] %}
+  <h1>What the agents did</h1>
+  <p class="sub">Every agent has finished. This page is the record of the run; the next step is
+    {% if st == 'approved' %}the approved document{% else %}final approval{% endif %}.</p>
+  {% else %}
+  <h1>The run stopped</h1>
+  <p class="sub">{{ run.error or 'The run did not finish.' }}</p>
+  {% endif %}
+  <div class="meta meta-row mt-1">
+    <span><strong>{{ run.config.indication }}</strong></span>
+    <span class="dot-sep">·</span>
+    <span>{{ run.config.geography }}</span>
+    <span class="dot-sep">·</span>
+    <span>{{ run.config.objective }}</span>
+    {% if run.reference %}
+    <span class="dot-sep">·</span>
+    <span class="mono">{{ run.reference }}</span>
+    {% endif %}
+  </div>
+</div>
+
+<div class="banner is-danger" data-run-error {% if st not in ['failed', 'cancelled'] %}hidden{% endif %} role="alert">
+  {{ icon('alert', 16) }}
+  <div class="banner-body">
+    <strong>The run failed.</strong>
+    <div data-run-error-message>{{ run.error }}</div>
+  </div>
+</div>
+
+<p class="visually-hidden" aria-live="polite" data-stream-live></p>
+
+{% for ph in phases | default([]) %}
+<section class="phase-group is-{{ ph.state }}" id="{{ ph.key }}" data-phase="{{ ph.key }}" aria-label="{{ ph.name }}">
+  <div class="phase-head">
+    <span class="phase-num">{{ loop.index }}</span>
+    <div>
+      <h2>{{ ph.name }} phase</h2>
+      <p class="sub">{{ ph.description }}</p>
+    </div>
+    <span class="phase-state" data-phase-state>
+      {% if ph.state == 'complete' %}{{ icon('check', 15) }} Complete
+      {% elif ph.state == 'running' %}<span class="spinner" aria-hidden="true"></span> Running · {{ ph.done }} / {{ ph.agents | length }} agents done
+      {% elif ph.state == 'failed' %}{{ icon('alert', 15) }} An agent failed
+      {% elif ph.state == 'gated' %}{{ icon('lock', 15) }} Starts after your review
+      {% else %}<span class="chip-dot" aria-hidden="true"></span> Queued{% endif %}
+    </span>
+  </div>
+
+  <div aria-live="polite">
+    {% for a in ph.agents %}
+    {% set ast = enum_value(a.status) %}
+    <article class="agent-card {{ 'is-complete' if ast == 'complete' }}{{ ' is-failed' if ast == 'failed' }}{{ ' is-blocked' if ast in ['blocked', 'skipped'] }}"
+             data-agent-key="{{ a.key }}" data-status="{{ ast }}">
+      <div class="agent-card-top">
+        {{ agent_tile(a.icon) }}
+        <div class="agent-id">
+          <div class="agent-name">{{ a.name }}</div>
+          <div class="agent-tagline">{{ a.tagline }}</div>
+        </div>
+        <div class="agent-status status status-{{ ast }}" data-agent-status>
+          {{ agent_status_markup(a.status) }}
+        </div>
+      </div>
+
+      <div class="progress agent-progress {{ 'is-complete' if ast == 'complete' }}{{ ' is-failed' if ast == 'failed' }}"
+           data-agent-progress role="progressbar" aria-valuemin="0" aria-valuemax="100"
+           aria-valuenow="{{ ((a.progress | default(0)) * 100) | round | int if (a.progress | default(0)) <= 1 else (a.progress | round | int) }}"
+           aria-label="{{ a.name }} progress">
+        <div class="progress-bar"
+             style="width: {{ ((a.progress | default(0)) * 100) | round(1) if (a.progress | default(0)) <= 1 else (a.progress | round(1)) }}%"></div>
+      </div>
+
+      <div class="row-between">
+        <p class="agent-message" data-agent-message>{{ a.message }}</p>
+        <span class="meta mono" data-agent-questions {% if not a.questions_total %}hidden{% endif %}>{{ a.questions_answered }} / {{ a.questions_total }}</span>
+      </div>
+
+      {% if a.error %}
+      <div class="callout is-rose mt-1 text-sm">{{ a.error }}</div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+
+  {% if ph.key == 'discovery' and phases | length > 1 %}
+  {% set passed = run.reviewed_at is not none %}
+  <div class="phase-gate {{ 'is-passed' if passed }}" data-phase-gate>
+    {{ icon('check-circle' if passed else 'lock', 16) }}
+    <span>
+      {% if passed %}
+      <strong>Review gate passed.</strong> You approved the discovery findings
+      {% if run.reviewed_at %}on {{ run.reviewed_at.strftime('%d %b %Y, %H:%M UTC') }}{% endif %}.
+      {% elif st == 'awaiting_review' %}
+      <strong>Review gate.</strong> Discovery is finished. The next phase waits for your decisions.
+      {% else %}
+      <strong>Review gate.</strong> When both discovery agents finish, the run pauses here for your
+      review before the next phase starts.
+      {% endif %}
+    </span>
+    {% if st == 'awaiting_review' %}
+    <a class="btn btn-primary btn-sm" href="/runs/{{ run.id }}/review" style="margin-left:auto">Review the findings {{ icon('arrow-right', 14) }}</a>
+    {% elif passed %}
+    <a class="btn btn-ghost btn-sm" href="/runs/{{ run.id }}/review" style="margin-left:auto">See what was decided</a>
+    {% endif %}
+  </div>
+  {% endif %}
+</section>
+{% else %}
+<div class="empty"><h3>No agents queued</h3><p class="mb-0">This run has no agents to execute.</p></div>
+{% endfor %}
+
+{% if run.is_live %}
+<div class="source-strip" data-source-strip>
+  <h3>Analyzing sources from trusted databases</h3>
+  <div class="chip-row">
+    {% for s in source_chips | default([]) %}
+      {% if s is mapping %}
+      <span class="chip chip-sm chip-source {{ 'is-used' if s.get('used') }}"
+            data-source-key="{{ s.get('key', '') }}" data-source-name="{{ s.get('name', '') }}">{{ s.get('name', '') }}</span>
+      {% else %}
+      <span class="chip chip-sm chip-source" data-source-name="{{ s }}">{{ s }}</span>
+      {% endif %}
+    {% endfor %}
+    <span class="meta" data-source-more>and more…</span>
+  </div>
+  <p class="hint mt-1 mb-0">A source lights up once it has actually returned evidence for this run.</p>
+</div>
+{% endif %}
+
+<div class="row mt-3 wrap">
+  <span class="meta">Live counts:</span>
+  <span class="chip chip-sm">Findings <strong data-live-insights data-count="0">0</strong></span>
+  <span class="chip chip-sm">Conflicts <strong data-live-contradictions data-count="0">0</strong></span>
+  <span class="spacer" style="flex:1 1 auto"></span>
+  {% if st == 'awaiting_review' %}
+  <a class="btn btn-primary btn-sm" href="/runs/{{ run.id }}/review">Review the findings {{ icon('arrow-right', 14) }}</a>
+  {% elif st == 'completed' %}
+  <a class="btn btn-primary btn-sm" href="/runs/{{ run.id }}/approval">Go to final approval {{ icon('arrow-right', 14) }}</a>
+  {% elif st == 'approved' %}
+  <a class="btn btn-primary btn-sm" href="/runs/{{ run.id }}/report">Open the approved document {{ icon('arrow-right', 14) }}</a>
+  {% elif run.is_live %}
+  <span class="meta">This page moves on by itself when the phase finishes.</span>
+  {% endif %}
+</div>
+{% endblock %}

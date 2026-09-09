@@ -1,5 +1,5 @@
 {%- from "partials/icons.html" import icon, ring_logo -%}
-{%- from "partials/macros.html" import run_status_chip -%}
+{%- from "partials/macros.html" import run_status_chip, flow_steps -%}
 <!doctype html>
 <html lang="en">
 <head>
@@ -43,21 +43,25 @@
     {% if run is defined and run %}
     <div class="nav">
       <div class="nav-group-label">This project</div>
-      <a class="nav-item {{ 'is-active' if active == 'discovery' }}" href="/runs/{{ run.id }}"
-         {% if active == 'discovery' %}aria-current="page"{% endif %}>
-        {{ icon('activity', 17) }}<span class="nav-label">Discovery</span>
-      </a>
-      <a class="nav-item {{ 'is-active' if active == 'overview' }}" href="/runs/{{ run.id }}/overview"
-         {% if active == 'overview' %}aria-current="page"{% endif %}>
-        {{ icon('layers', 17) }}<span class="nav-label">Overview</span>
-      </a>
+      <div class="nav-project-meta">
+        <div class="nav-project-name">{{ run.config.indication }}</div>
+        <div class="meta">{{ run_status_chip(run.status) }}</div>
+      </div>
+      {{ flow_steps(run_steps(run), compact=true) }}
+    </div>
+    <div class="nav">
+      <div class="nav-group-label">Detail</div>
       <a class="nav-item {{ 'is-active' if active == 'insights' }}" href="/runs/{{ run.id }}/insights"
          {% if active == 'insights' %}aria-current="page"{% endif %}>
-        {{ icon('list', 17) }}<span class="nav-label">Insights</span>
+        {{ icon('list', 17) }}<span class="nav-label">All findings</span>
       </a>
       <a class="nav-item {{ 'is-active' if active == 'contradictions' }}" href="/runs/{{ run.id }}/contradictions"
          {% if active == 'contradictions' %}aria-current="page"{% endif %}>
-        {{ icon('split', 17) }}<span class="nav-label">Contradictions</span>
+        {{ icon('split', 17) }}<span class="nav-label">Source conflicts</span>
+      </a>
+      <a class="nav-item {{ 'is-active' if active == 'overview' }}" href="/runs/{{ run.id }}/overview"
+         {% if active == 'overview' %}aria-current="page"{% endif %}>
+        {{ icon('layers', 17) }}<span class="nav-label">Stage reports</span>
       </a>
       <a class="nav-item {{ 'is-active' if active == 'sources' }}" href="/runs/{{ run.id }}/sources"
          {% if active == 'sources' %}aria-current="page"{% endif %}>
@@ -65,11 +69,7 @@
       </a>
       <a class="nav-item {{ 'is-active' if active == 'report' }}" href="/runs/{{ run.id }}/report"
          {% if active == 'report' %}aria-current="page"{% endif %}>
-        {{ icon('file-text', 17) }}<span class="nav-label">Report</span>
-      </a>
-      <a class="nav-item {{ 'is-active' if active == 'approval' }}" href="/runs/{{ run.id }}/approval"
-         {% if active == 'approval' %}aria-current="page"{% endif %}>
-        {{ icon('check-circle', 17) }}<span class="nav-label">Approval</span>
+        {{ icon('file-text', 17) }}<span class="nav-label">{{ 'Approved document' if run.status.value == 'approved' else 'Draft document' }}</span>
       </a>
     </div>
     {% endif %}

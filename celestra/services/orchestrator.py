@@ -39,7 +39,7 @@ from ..store import store
 from . import contradictions as contra
 from . import handoff
 from . import planner, qa, retrieval, synthesis
-from .scoring import confidence_for
+from .scoring import assess_confidence
 
 log = logging.getLogger("celestra.orchestrator")
 
@@ -108,6 +108,29 @@ def all_buckets() -> list[str]:
     return [b for b, spec in get_framework()["buckets"].items() if spec.get("mode") != "governance"]
 
 
+def phase_of(bucket: str) -> str:
+    return str(get_framework()["buckets"][bucket].get("phase") or "discovery")
+
+
+def phase_spec(key: str) -> dict:
+    spec = dict((get_framework().get("phases") or {}).get(key) or {})
+    spec.setdefault("name", key.replace("_", " ").title())
+    spec.setdefault("description", "")
+    spec["key"] = key
+    return spec
+
+
+def phases_for(selected: list[str]) -> list[dict]:
+    """The phases this run passes through, each with its agents, in order."""
+    order = list((get_framework().get("phases") or {}).keys()) or ["discovery", "mapping"]
+    out = []
+    for key in order:
+        agents = [b for b in selected if phase_of(b) == key]
+        if agents:
+            out.append({**phase_spec(key), "agents": [agent_key(b) for b in agents]})
+    return out
+
+
 class Orchestrator:
     def __init__(self, run: Run, registry: dict) -> None:
         self.run = run
@@ -168,11 +191,13 @@ class Orchestrator:
             indication=self.cfg.indication,
             agents=[
                 {"key": a.key, "name": a.name, "tagline": a.tagline,
-                 "icon": a.icon, "wave": a.wave}
+                 "icon": a.icon, "wave": a.wave, "phase": phase_of(a.bucket)}
                 for a in self.run.agents.values()
             ],
             waves=[[agent_key(b) for b in w] for w in waves],
+            phases=phases_for(selected),
         )
+        await self._emit_phase(self.run.phase)
 
         try:
             paused = await self._run_waves(waves, start_index=1)
@@ -212,6 +237,11 @@ class Orchestrator:
                 return True
         return False
 
+    async def _emit_phase(self, key: str) -> None:
+        spec = phase_spec(key)
+        await self._emit("phase_started", phase=key, name=spec["name"],
+                         description=spec["description"])
+
     async def _pause_for_review(self, wave_index: int, waves: list[list[str]]) -> None:
         """Stop after a wave and hand the findings so far to a reviewer.
 
@@ -220,22 +250,33 @@ class Orchestrator:
         self.run.status = RunStatus.AWAITING_REVIEW
         self.run.resume_from_wave = wave_index + 1
         store.save_run(self.run)
-        pending = [i for i in self.insights if i.review_action.value == "pending"]
+        needs_input = [i for i in self.insights if i.needs_decision]
         await self._emit(
             "review_required",
             redirect=f"/runs/{self.run.id}/review",
             wave=wave_index,
             insights=len(self.insights),
-            pending=len(pending),
+            requires_input=len(needs_input),
             conflicts=len(self.contradictions),
             remaining_agents=[agent_key(b) for w in waves[wave_index:] for b in w],
         )
 
     async def resume(self) -> None:
         """Continue a run paused at the review gate. State is reloaded from the
-        store, because the process that paused it may not be the one resuming."""
-        if self.run.status is not RunStatus.AWAITING_REVIEW:
+        store, because the process that paused it may not be the one resuming.
+
+        The web handler that triggers this marks the run RUNNING before the
+        task starts, so the live page it redirects to is never bounced back to
+        the review page by a stale status. Both statuses are therefore valid
+        here; what matters is that a resume point was recorded.
+        """
+        if self.run.resume_from_wave < 2 or self.run.status not in (
+            RunStatus.AWAITING_REVIEW, RunStatus.RUNNING
+        ):
             return
+        # The channel was closed when phase one ended. Bring it back before
+        # anything is published, or the resumed run streams into the void.
+        await bus.reopen(self.run.id)
         self.questions = store.get_questions(self.run.id)
         self.evidence = store.get_evidence(self.run.id)
         self.insights = store.get_insights(self.run.id)
@@ -246,13 +287,15 @@ class Orchestrator:
             re.sub(r"\s+", " ", i.summary).strip()[:120].lower() for i in self.insights
         }
         self.run.status = RunStatus.RUNNING
-        self.run.reviewed_at = utcnow()
+        self.run.reviewed_at = self.run.reviewed_at or utcnow()
         store.save_run(self.run)
 
         selected = [a.bucket for a in self.run.agents.values()]
         waves = compute_waves(selected)
         await self._emit("run_resumed", from_wave=self.run.resume_from_wave,
-                         waves=[[agent_key(b) for b in w] for w in waves])
+                         waves=[[agent_key(b) for b in w] for w in waves],
+                         phases=phases_for(selected))
+        await self._emit_phase("mapping")
         try:
             paused = await self._run_waves(waves, start_index=self.run.resume_from_wave)
             if not paused:
@@ -448,7 +491,7 @@ class Orchestrator:
         self, question: ResearchQuestion, evidence: list[Evidence],
         found: list[Contradiction], bucket: str,
     ) -> Insight | None:
-        conf = confidence_for(question, evidence, found)
+        conf, reason = assess_confidence(question, evidence, found)
         best = sorted(evidence, key=lambda e: (e.tier, -e.relevance))
 
         # Two questions in a stage often retrieve the same document, and its
@@ -488,6 +531,7 @@ class Orchestrator:
             summary=summary,
             detail=" ".join(self._fresh_detail(best[1:6])),
             confidence=conf,
+            input_reason=reason,
             evidence_ids=[e.id for e in evidence],
             source_ids=source_ids,
             question_ids=[question.id],
@@ -530,13 +574,12 @@ class Orchestrator:
             counts[i.confidence.value] += 1
         await self._emit(
             "run_complete",
-            redirect=f"/runs/{self.run.id}/overview",
+            redirect=f"/runs/{self.run.id}/approval",
             insights=len(self.insights),
             sources=metrics.distinct_sources,
-            high=counts[Confidence.HIGH.value],
-            medium=counts[Confidence.MEDIUM.value],
+            ready=counts[Confidence.READY.value],
             requires_input=counts[Confidence.REQUIRES_INPUT.value],
-            rejected=counts[Confidence.REJECTED.value],
+            needs_decision=sum(1 for i in self.insights if i.needs_decision),
             questions_answered=metrics.questions_sufficient,
             questions_planned=metrics.questions_planned,
             duration=round(self.run.duration_seconds, 1),

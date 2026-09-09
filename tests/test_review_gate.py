@@ -84,7 +84,14 @@ async def main() -> int:
               and r.headers["location"].endswith("/review"), r.headers.get("location", ""))
         r = await c.get(f"/runs/{run_id}/review")
         check("review page renders", r.status_code == 200, f"HTTP {r.status_code}")
-        check("  offers Continue", "Continue with remaining agents" in r.text)
+        check("  offers the continue action", "start Mapping" in r.text)
+        check("  shows the phase names", "Discovery phase" in r.text and "Mapping &amp; Synthesis" in r.text)
+        check("  every finding is in one of two states",
+              all(i.confidence.value in ("ready", "requires_input") for i in insights))
+        blocked = [i for i in insights if i.needs_decision]
+        check("  gate lists what still needs input", (len(blocked) == 0) == ("Nothing needs your input" in r.text),
+              f"{len(blocked)} blockers")
+
         check("  shows the finished agents", "Clinical Landscape Agent" in r.text
               and "Treatment Evidence Agent" in r.text)
         check("  lists the waiting agents", "Diagnostic Footprint Agent" in r.text)
@@ -92,10 +99,50 @@ async def main() -> int:
         check("  every insight card has a table button",
               r.text.count("View Table") == len(insights), f"{r.text.count('View Table')}")
 
-        print("\n== a decision made at the gate persists ==")
+        print("\n== the live page never bounces ==")
+        r = await c.get(f"/runs/{run_id}/progress")
+        check("progress page renders while paused", r.status_code == 200, f"HTTP {r.status_code}")
+        check("  shows the review gate", "Review gate" in r.text)
+        check("  groups agents by phase", 'data-phase="discovery"' in r.text and 'data-phase="mapping"' in r.text)
+
+        print("\n== decisions at the gate ==")
         r = await c.post(f"/runs/{run_id}/insights/{insights[0].id}/approve", json={})
         check("approve at the gate", r.status_code == 200
               and store.get_insight(run_id, insights[0].id).review_action.value == "approved")
+        check("  card shows the decision", "Approved by you" in r.text)
+        r = await c.post(f"/runs/{run_id}/insights/{insights[1].id}/input", json={})
+        check("add input with no text is refused", r.status_code == 400, f"HTTP {r.status_code}")
+        r = await c.post(f"/runs/{run_id}/insights/{insights[1].id}/input",
+                         json={"user_input": "Use the 2024 SEER release for incidence."})
+        check("add input accepted", r.status_code == 200, f"HTTP {r.status_code}")
+        saved = store.get_insight(run_id, insights[1].id)
+        check("  input attached, finding text unchanged",
+              saved.reviewer_input.startswith("Use the 2024") and saved.summary == insights[1].summary)
+        check("  decision recorded as input added", saved.review_action.value == "input_added")
+        check("  card shows the input", "Your input" in r.text)
+        run = store.get_run(run_id)
+        check("  input handed to the run context",
+              any(e.get("insight_id") == insights[1].id for e in run.context.get("reviewer_inputs", [])))
+        r = await c.post(f"/runs/{run_id}/insights/{insights[2].id}/modify",
+                         json={"user_input": "Restrict to adults."})
+        check("modify accepted", r.status_code == 200, f"HTTP {r.status_code}")
+        saved = store.get_insight(run_id, insights[2].id)
+        check("  decision recorded as revised", saved.review_action.value == "modified")
+        check("  revision note explains what happened", bool(saved.revision_note), saved.revision_note)
+        check("  card shows the instruction", "Your instruction" in r.text)
+
+        # Anything still needing input gets a decision so the gate opens.
+        for i in store.get_insights(run_id):
+            if i.needs_decision:
+                await c.post(f"/runs/{run_id}/insights/{i.id}/approve", json={})
+        for con in store.get_contradictions(run_id):
+            if con.severity.value == "escalated" and con.review_action.value == "pending":
+                await c.post(f"/runs/{run_id}/contradictions/{con.id}/review",
+                             json={"action": "acknowledged"})
+        r = await c.get(f"/runs/{run_id}/gate?mode=review")
+        check("gate panel fragment renders", r.status_code == 200 and "Nothing needs your input" in r.text)
+        check("  approval page not reachable before the run finishes",
+              (await c.get(f"/runs/{run_id}/approval")).status_code == 303)
 
         print("\n== table snapshot ==")
         r = await c.get(f"/runs/{run_id}/insights/{insights[0].id}/table")
@@ -113,6 +160,15 @@ async def main() -> int:
         print("\n== continue ==")
         r = await c.post(f"/runs/{run_id}/continue")
         check("continue accepted", r.status_code == 303, f"HTTP {r.status_code}")
+        check("  lands on the live page", "/progress" in r.headers.get("location", ""),
+              r.headers.get("location", ""))
+        check("  run is RUNNING before the resume task starts",
+              store.get_run(run_id).status is RunStatus.RUNNING)
+        r = await c.get(f"/runs/{run_id}/progress")
+        check("  live page renders without bouncing", r.status_code == 200, f"HTTP {r.status_code}")
+        check("  live page streams", 'data-run-stream' in r.text)
+        r = await c.get(f"/runs/{run_id}")
+        check("  run root goes to the live page", r.headers.get("location", "").endswith("/progress"))
         status = await wait_for(store, run_id, {RunStatus.COMPLETED, RunStatus.FAILED})
         run = store.get_run(run_id)
         check("run completed", status is RunStatus.COMPLETED, run.error or status.value)
@@ -127,10 +183,73 @@ async def main() -> int:
         check("later insights link to their tables", all(i.table_titles for i in later),
               f"{sum(1 for i in later if not i.table_titles)} unlinked")
 
+        check("reviewer input reached the later agents",
+              "reviewer_notes" in str(run.context) or bool(run.context.get("reviewer_inputs")))
+
+        print("\n== the stream of a resumed run does not end at once ==")
+        from celestra.events import EventBus, bus
+        replay = [e.type for e in bus._channels[run_id].replay]
+        check("phase-two events reached the stream", "run_complete" in replay)
+        check("phase one's stream_end was dropped on reopen", replay.count("stream_end") == 1,
+              f"{replay.count('stream_end')} stream_end events in replay")
+        probe = EventBus()
+        await probe.publish("r", "agent_status", status="complete")
+        await probe.publish("r", "review_required", redirect="/x")
+        await probe.close("r")
+        check("closed channel is closed", probe.is_closed("r"))
+        await probe.reopen("r")
+        await probe.publish("r", "run_resumed")
+        q = await probe.subscribe("r", 0)
+        seen = []
+        while not q.empty():
+            seen.append(q.get_nowait().type)
+        check("reopened channel is open", not probe.is_closed("r"))
+        check("a late subscriber sees no stale end or redirect",
+              "stream_end" not in seen and "review_required" not in seen, str(seen))
+        check("  but still sees the history and the resume", seen == ["agent_status", "run_resumed"], str(seen))
+
+        print("\n== final approval ==")
         r = await c.get(f"/runs/{run_id}")
-        check("run root now redirects to overview", r.headers.get("location", "").endswith("/overview"))
+        check("run root now goes to final approval", r.headers.get("location", "").endswith("/approval"))
         r = await c.post(f"/runs/{run_id}/continue")
         check("continue on a finished run is a no-op redirect", r.status_code == 303)
+        r = await c.get(f"/runs/{run_id}/approval")
+        check("approval page renders", r.status_code == 200, f"HTTP {r.status_code}")
+        check("  shows both phases in the document", "Discovery phase" in r.text and "Mapping" in r.text)
+        blockers = [i for i in store.get_insights(run_id) if i.needs_decision]
+        r = await c.post(f"/runs/{run_id}/approve")
+        if blockers:
+            check("approval refused while findings need input", r.status_code == 409,
+                  f"HTTP {r.status_code} with {len(blockers)} blockers")
+            check("  page says why", "still need your input" in r.text)
+            for i in blockers:
+                await c.post(f"/runs/{run_id}/insights/{i.id}/approve", json={})
+            for con in store.get_contradictions(run_id):
+                if con.severity.value == "escalated" and con.review_action.value == "pending":
+                    await c.post(f"/runs/{run_id}/contradictions/{con.id}/review",
+                                 json={"action": "acknowledged"})
+            r = await c.post(f"/runs/{run_id}/approve")
+        else:
+            check("nothing blocked approval", True)
+        check("approval accepted", r.status_code == 303 and r.headers["location"].endswith("/report"),
+              f"HTTP {r.status_code}")
+        run = store.get_run(run_id)
+        check("run is APPROVED and locked", run.status is RunStatus.APPROVED and run.is_locked)
+        check("approval timestamped", run.approved_at is not None)
+        qa = store.get_qa(run_id)
+        check("sign-off recorded in the QA checklist",
+              any(row.get("check") == "Reviewer sign-off" for row in (qa.checklist if qa else [])))
+        r = await c.get(f"/runs/{run_id}/report")
+        check("approved document renders", r.status_code == 200 and "Approved document" in r.text)
+        check("  reviewer input printed in the document", "Use the 2024 SEER release" in r.text)
+        r = await c.post(f"/runs/{run_id}/insights/{insights[0].id}/modify",
+                         json={"user_input": "change it"})
+        check("edits after approval are refused", r.status_code == 409, f"HTTP {r.status_code}")
+        r = await c.get(f"/runs/{run_id}")
+        check("run root now opens the approved document", r.headers.get("location", "").endswith("/report"))
+        r = await c.get(f"/runs/{run_id}/progress")
+        check("the agent record is still viewable after approval",
+              r.status_code == 200 and "Clinical Landscape Agent" in r.text)
 
     print(f"\n{len(failures)} failure(s)")
     return 1 if failures else 0

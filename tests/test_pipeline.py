@@ -217,7 +217,7 @@ async def main() -> int:
     web = [e for e in evidence if e.is_supplementary]
     check("web evidence is tier 5 when present",
           all(e.tier == 5 for e in web), f"{len(web)} supplementary items")
-    check("insights name their sources", all(i.source_ids or i.confidence.value == "rejected"
+    check("insights name their sources", all(i.source_ids or i.confidence.value == "requires_input"
                                              for i in insights))
 
     print("\n== contradictions ==")

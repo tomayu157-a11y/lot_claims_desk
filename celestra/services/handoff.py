@@ -169,4 +169,14 @@ def for_agent(bucket: str, context: dict[str, Any]) -> dict[str, Any]:
         "F": ("drugs", "regimens", "test_names", "icd10_codes", "subtypes"),
         "G": (),
     }.get(bucket, ())
-    return {k: context[k] for k in wants if context.get(k)}
+    out = {k: context[k] for k in wants if context.get(k)}
+    # What the reviewer wrote at the gate goes to every agent that runs after
+    # it. It is the one piece of context that is human, not extracted.
+    notes = [
+        str(n.get("input") if isinstance(n, dict) else n).strip()
+        for n in (context.get("reviewer_inputs") or [])
+    ]
+    notes = [n for n in notes if n]
+    if notes:
+        out["reviewer_notes"] = notes[:12]
+    return out

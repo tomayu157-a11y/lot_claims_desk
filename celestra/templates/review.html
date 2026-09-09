@@ -1,57 +1,52 @@
 {% extends "base.html" %}
 {% from "partials/icons.html" import icon %}
-{% from "partials/macros.html" import stat_tile, tinted_tile, agent_tile %}
-{% block title %}Review findings — {{ app_name }}{% endblock %}
+{% from "partials/macros.html" import stat_tile, agent_tile, flow_steps %}
+{% block title %}Review gate — {{ app_name }}{% endblock %}
 
 {% block content %}
 {%- set rid = run.id -%}
+{%- set c = gate.counts -%}
 <div class="page-head">
   <div>
-    <h1>Review before continuing</h1>
+    <p class="eyebrow">Step 2 of 5 · Review gate</p>
+    <h1>{% if gate.done %}What you decided at the review gate{% else %}Review the discovery findings{% endif %}</h1>
     <p class="sub">
-      The first agents have finished. The remaining agents build on these findings, so a wrong
-      one approved here propagates downstream. Approve, modify or add input, decide each source
-      conflict, then continue.
+      {% if gate.done %}
+      These are the discovery findings as they were approved. Mapping &amp; Synthesis built on
+      them, so they cannot be changed for this run.
+      {% else %}
+      The Clinical Landscape and Treatment Evidence agents have finished. The four Mapping &amp;
+      Synthesis agents build on these findings, so a wrong one approved here propagates. For each
+      finding you can <strong>Approve</strong> it as stated, <strong>Modify</strong> it (Celestra
+      rewrites it on your instruction), or <strong>Add Input</strong> (your knowledge is attached
+      and passed to the next agents). Findings marked <strong>Requires Input</strong> must get one
+      of those before you can continue.
+      {% endif %}
     </p>
     <p class="meta">
       {{ run.config.indication }} · {{ run.config.geography }} · {{ run.config.population }} ·
       <code>{{ run.reference }}</code>
     </p>
   </div>
-  <div class="page-actions">
-    {% if can_continue %}
-    <form method="post" action="/runs/{{ rid }}/continue">
-      <button type="submit" class="btn btn-primary btn-lg">
-        Continue with remaining agents {{ icon('arrow-right', 16) }}
-      </button>
-    </form>
-    {% else %}
-    <a class="btn btn-secondary" href="/runs/{{ rid }}">Back to run</a>
-    {% endif %}
-  </div>
 </div>
 
-<div class="stats mb-3">
-  {{ stat_tile(counts.insights, 'Findings so far', 'blue') }}
-  {{ stat_tile(counts.pending, 'Awaiting your decision', 'amber') }}
-  {{ stat_tile(counts.approved + counts.modified, 'Approved or modified', 'green') }}
-  {{ stat_tile(counts.conflicts_open, 'Open source conflicts', 'rose') }}
-</div>
+{% include "partials/gate_panel.html" %}
 
-<div class="grid grid-2 mb-3">
+<div class="grid grid-2 mt-3 mb-3">
   <section class="card">
     <div class="card-body">
-      <h2>Finished</h2>
+      <h2>Discovery phase — finished</h2>
       <ul class="agent-list">
         {% for a in completed_agents %}
         <li>{{ agent_tile(a.icon) }}<div><strong>{{ a.name }}</strong><div class="sub">{{ a.tagline }}</div></div></li>
         {% endfor %}
       </ul>
+      <a class="btn btn-ghost btn-sm mt-1" href="/runs/{{ rid }}/progress">See what the agents did</a>
     </div>
   </section>
   <section class="card">
     <div class="card-body">
-      <h2>Waiting on your review</h2>
+      <h2>Mapping &amp; Synthesis phase — {{ 'done' if gate.done else 'waiting on this review' }}</h2>
       <ul class="agent-list">
         {% for a in remaining_agents %}
         <li>{{ agent_tile(a.icon) }}<div><strong>{{ a.name }}</strong><div class="sub">{{ a.tagline }}</div></div></li>
@@ -63,26 +58,35 @@
   </section>
 </div>
 
-<h2 class="section-head">Findings ({{ counts.insights }})</h2>
+<h2 class="section-head">Findings ({{ c.insights }})</h2>
 <div class="chips mb-2" data-filter-group>
-  <button type="button" class="chip is-active" data-filter="all">All ({{ counts.insights }})</button>
-  {% for c in categories %}
-  <button type="button" class="chip" data-filter="{{ c.key }}">{{ c.label }} ({{ c.count }})</button>
+  <button type="button" class="pill" data-filter-category="all" aria-pressed="true">All ({{ c.insights }})</button>
+  <button type="button" class="pill" data-filter-category="requires_input" aria-pressed="false">Needs input ({{ c.needs_decision }})</button>
+  <button type="button" class="pill" data-filter-category="ready" aria-pressed="false">Ready ({{ c.ready }})</button>
+  {% for cat in categories %}
+  <button type="button" class="pill" data-filter-category="{{ cat.key }}" aria-pressed="false">{{ cat.label }} ({{ cat.count }})</button>
   {% endfor %}
 </div>
 <div class="stack" data-insight-list>
   {% for insight in insights | default([]) %}
     {% include "partials/insight_card.html" %}
   {% else %}
-  <p class="sub">No findings were produced by the finished agents.</p>
+  <p class="sub">No findings were produced by the discovery agents.</p>
   {% endfor %}
 </div>
+<div class="empty mt-2" data-insight-empty {% if insights %}hidden{% endif %}>
+  <h3>No findings match that filter</h3>
+  <p class="mb-0">Pick a different filter.</p>
+</div>
 
-<h2 class="section-head">Source conflicts ({{ counts.conflicts }})</h2>
+<h2 class="section-head">Source conflicts ({{ c.conflicts }})</h2>
 {% if contradictions %}
-<div class="banner is-danger" role="status">
+<div class="banner {{ 'is-danger' if c.conflicts_blocking else 'is-info' }}" role="status">
   {{ icon('alert', 16) }}
-  <div class="banner-body">Nothing here has been auto-resolved. Each conflict waits on your decision.</div>
+  <div class="banner-body">
+    Nothing here is auto-resolved. Escalated conflicts must be decided before you continue;
+    noted ones can be acknowledged. Both claims stay in the document either way.
+  </div>
 </div>
 <div class="stack">
   {% for contradiction in contradictions %}
@@ -90,23 +94,8 @@
   {% endfor %}
 </div>
 {% else %}
-<p class="sub">The finished agents surfaced no disagreements between sources.</p>
+<p class="sub">The discovery agents surfaced no disagreements between sources.</p>
 {% endif %}
 
-{% if can_continue %}
-<div class="card mt-3">
-  <div class="card-body page-actions">
-    <div>
-      <strong>Ready?</strong>
-      <div class="sub">
-        {% if counts.pending %}{{ counts.pending }} finding(s) are still undecided. You can continue anyway;
-        undecided findings carry forward as pending.{% else %}Every finding has a decision.{% endif %}
-      </div>
-    </div>
-    <form method="post" action="/runs/{{ rid }}/continue">
-      <button type="submit" class="btn btn-primary btn-lg">Continue with remaining agents {{ icon('arrow-right', 16) }}</button>
-    </form>
-  </div>
-</div>
-{% endif %}
+<div class="mt-3" data-gate-mirror></div>
 {% endblock %}

@@ -1,58 +1,101 @@
 {% extends "base.html" %}
 {% from "partials/icons.html" import icon %}
 {% from "partials/macros.html" import stat_tile, agent_tile %}
-{% block title %}Approval — Celestra{% endblock %}
+{% block title %}Final approval — Celestra{% endblock %}
 
 {% set c = counts | default({}) %}
 
 {% block content %}
+{%- set rid = run.id -%}
 <div class="page-head">
-  <h1>Discovery Context Ready for Approval</h1>
+  <p class="eyebrow">Step {{ '5 of 5 · Approved' if gate.done else '4 of 5 · Final approval' }}</p>
+  <h1>{% if gate.done %}The document is approved{% else %}Approve the research document{% endif %}</h1>
   <p class="sub">
-    You have reviewed and provided input on the agent findings. Once approved, this context is
-    saved and can be used across downstream workflows.
+    {% if gate.done %}
+    Every finding was reviewed and the document is locked. Open it below, or start a new project
+    to research this indication again.
+    {% else %}
+    Every agent has finished. Below is everything that still needs your input, then every finding
+    from both phases. When nothing needs input, approve: the document is locked and your decisions
+    are recorded in it.
+    {% endif %}
   </p>
 </div>
 
-<div class="stats mb-3">
-  {{ stat_tile(c.get('approved', 0), 'Approved', 'green', check=true) }}
-  {{ stat_tile(c.get('modified', 0), 'Modified', 'amber') }}
-  {{ stat_tile(c.get('user_inputs', 0), 'User Inputs', 'blue') }}
-  {{ stat_tile(c.get('assumptions', 0), 'Assumptions', 'slate') }}
+{% include "partials/gate_panel.html" %}
+
+<div class="stats mt-3 mb-3">
+  {{ stat_tile(c.get('ready', 0), 'Ready', 'green', check=true) }}
+  {{ stat_tile(c.get('needs_decision', 0), 'Need your input', 'rose' if c.get('needs_decision') else 'slate') }}
+  {{ stat_tile(c.get('decided', 0), 'Decided by you', 'blue',
+               note=(c.get('approved', 0) ~ ' approved · ' ~ c.get('modified', 0) ~ ' revised · ' ~ c.get('input_added', 0) ~ ' with input')) }}
+  {{ stat_tile(c.get('conflicts_open', 0), 'Open source conflicts', 'amber' if c.get('conflicts_open') else 'slate') }}
 </div>
 
 <section class="section">
-  <h2 class="section-title">What's Included</h2>
+  <h2 class="section-title">What the document contains</h2>
   <div class="card card-pad">
     {% for item in included | default([]) %}
     <div class="included-item">
       {{ agent_tile(item.icon | default('sparkle', true), 'tile-sm') }}
       <div>
-        <div class="included-name">{{ item.name }}</div>
+        <div class="included-name">{{ item.name }}{% if item.get("phase") %} <span class="meta">· {{ item.phase }} phase</span>{% endif %}</div>
         <div class="included-desc">{{ item.description }}</div>
       </div>
     </div>
     {% else %}
     <p class="meta mb-0">Nothing has been produced for this run yet.</p>
     {% endfor %}
+    <div class="meta mt-1">
+      {{ c.get('stages', 0) }} stage reports · {{ c.get('evidence', 0) }} evidence items ·
+      {{ c.get('assumptions', 0) }} stated assumptions
+    </div>
   </div>
 </section>
 
-{% if run.approved_at %}
-<div class="banner is-ok mb-2" role="status">
-  {{ icon('check-circle', 16) }}
-  <div class="banner-body">
-    <strong>Approved.</strong> This discovery context was approved and is available downstream.
+{% if reviewer_inputs %}
+<section class="section">
+  <h2 class="section-title">Your inputs in the document ({{ reviewer_inputs | length }})</h2>
+  <div class="card card-pad">
+    {% for r in reviewer_inputs %}
+    <div class="review-note is-input mb-1"><strong>{{ r.title }}:</strong> {{ r.input }}</div>
+    {% endfor %}
   </div>
+</section>
+{% endif %}
+
+<h2 class="section-head">All findings ({{ c.insights }})</h2>
+<div class="chips mb-2" data-filter-group>
+  <button type="button" class="pill" data-filter-category="all" aria-pressed="true">All ({{ c.insights }})</button>
+  <button type="button" class="pill" data-filter-category="requires_input" aria-pressed="false">Needs input ({{ c.needs_decision }})</button>
+  <button type="button" class="pill" data-filter-category="ready" aria-pressed="false">Ready ({{ c.ready }})</button>
+  {% for cat in categories %}
+  <button type="button" class="pill" data-filter-category="{{ cat.key }}" aria-pressed="false">{{ cat.label }} ({{ cat.count }})</button>
+  {% endfor %}
+</div>
+<div class="stack" data-insight-list>
+  {% for insight in insights | default([]) %}
+    {% include "partials/insight_card.html" %}
+  {% else %}
+  <p class="sub">No findings were produced.</p>
+  {% endfor %}
+</div>
+<div class="empty mt-2" data-insight-empty {% if insights %}hidden{% endif %}>
+  <h3>No findings match that filter</h3>
+  <p class="mb-0">Pick a different filter.</p>
+</div>
+
+{% if contradictions %}
+<h2 class="section-head">Source conflicts ({{ contradictions | length }})</h2>
+<div class="stack">
+  {% for contradiction in contradictions %}
+    {% include "partials/contradiction_card.html" %}
+  {% endfor %}
 </div>
 {% endif %}
 
-<form method="post" action="/runs/{{ run.id }}/approve">
-  <div class="btn-row btn-row-end mt-3">
-    <a class="btn btn-secondary btn-lg" href="/runs/{{ run.id }}/insights">Review Insights</a>
-    <button type="submit" class="btn btn-primary btn-lg">
-      {{ icon('check', 16) }} Approve Discovery Context
-    </button>
-  </div>
-</form>
+<div class="btn-row btn-row-end mt-3">
+  <a class="btn btn-secondary" href="/runs/{{ rid }}/report">{{ 'Open the approved document' if gate.done else 'Preview the draft document' }}</a>
+  {% if not gate.done %}<a class="btn btn-ghost" href="#gate">Back to the approval decision ↑</a>{% endif %}
+</div>
 {% endblock %}

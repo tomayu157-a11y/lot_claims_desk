@@ -1,6 +1,6 @@
 {# ---------------------------------------------------------------------------
-   One insight card. Rendered inside insights.html and re-rendered on its own
-   after an action, then swapped in place by data-insight-id.
+   One finding. Rendered in the review, approval and findings pages, and
+   re-rendered on its own after a decision, then swapped in place.
    Context: insight, run (optional), source_names (optional), agent_by_stage (optional)
    --------------------------------------------------------------------------- #}
 {% from "partials/icons.html" import icon %}
@@ -8,6 +8,9 @@
 
 {%- set rid = (run.id if run is defined and run else insight.run_id) -%}
 {%- set conf = enum_value(insight.confidence) -%}
+{%- set decision = enum_value(insight.review_action) -%}
+{%- set decided = decision not in ['pending', ''] -%}
+{%- set locked = (run.is_locked if run is defined and run and run.is_locked is defined else false) -%}
 {%- set names = source_names | default({}) -%}
 {%- set cat_style = {
   'clinical':   ('leaf', 'green'),
@@ -20,10 +23,12 @@
 {%- set style = cat_style.get((insight.category | default('') | lower), ('sparkle', 'blue')) -%}
 {%- set agent = (agent_by_stage | default({})).get(insight.stage) -%}
 
-<article class="card card-hover insight-card {{ 'is-reviewed' if enum_value(insight.review_action) not in ['pending', ''] }}"
+<article class="card card-hover insight-card {{ 'is-reviewed' if decided }}{{ ' is-requires-input' if conf == 'requires_input' }}{{ ' is-locked' if locked }}"
+         id="insight-{{ insight.id }}"
          data-insight-id="{{ insight.id }}"
          data-category="{{ insight.category | lower }}"
          data-confidence="{{ conf }}"
+         data-decision="{{ decision }}"
          data-stage="{{ insight.stage }}"
          data-sources="{{ insight.source_ids | length }}"
          data-search="{{ insight.title }} {{ insight.summary }} {{ insight.category }} {% for sid in insight.source_ids %}{{ names.get(sid, sid) }} {% endfor %}"
@@ -54,9 +59,28 @@
       </div>
       {% endif %}
 
+      {% if insight.input_reason %}
+      <div class="input-reason {{ 'is-resolved' if decided }}">
+        {% if decided %}
+        <strong>Was flagged:</strong> {{ insight.input_reason }}
+        <strong>Resolved</strong> by your decision below.
+        {% else %}
+        <strong>Why this needs you:</strong> {{ insight.input_reason }}
+        {% endif %}
+      </div>
+      {% endif %}
+
       {% if insight.user_input %}
-      <div class="review-note">
-        <strong>Your input:</strong> {{ insight.user_input }}
+      <div class="review-note is-revision">
+        <strong>Your instruction:</strong> {{ insight.user_input }}
+        {% if insight.revision_note %}<br><strong>What Celestra did:</strong> {{ insight.revision_note }}{% endif %}
+      </div>
+      {% endif %}
+
+      {% if insight.reviewer_input %}
+      <div class="review-note is-input">
+        <strong>Your input (attached, passed to later agents, printed in the document):</strong>
+        {{ insight.reviewer_input }}
       </div>
       {% endif %}
     </div>
@@ -75,19 +99,31 @@
         <span class="dot-sep">·</span>
         <span class="vtag vtag-{{ enum_value(insight.tag) | lower | replace(' ', '-') }}">[{{ enum_value(insight.tag) }}]</span>
       {% endif %}
+      {% if not locked and not decided %}
+        <span class="dot-sep">·</span>
+        <span>{{ 'Needs one of the three decisions' if conf == 'requires_input' else 'Carries forward as generated unless you decide otherwise' }}</span>
+      {% endif %}
     </div>
 
     <div class="btn-row">
+      {% if locked %}
+      <span class="meta">{{ icon('lock', 13) }} Approved document; findings are final.</span>
+      {% else %}
+      {% if decision != 'approved' %}
       <button type="button" class="btn btn-sm btn-soft"
+              title="Accept this finding exactly as written"
               data-action-url="/runs/{{ rid }}/insights/{{ insight.id }}/approve"
-              data-swap="[data-insight-id='{{ insight.id }}']">Approve</button>
+              data-swap="[data-insight-id='{{ insight.id }}']">{{ icon('check', 13) }} Approve</button>
+      {% endif %}
 
       <button type="button" class="btn btn-sm btn-secondary"
-              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/modify">Modify</button>
+              title="Tell Celestra what to change; it rewrites the finding"
+              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/modify">{{ icon('edit', 13) }} Modify</button>
 
       <button type="button" class="btn btn-sm btn-secondary"
-              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/input">Add Input</button>
-
+              title="Attach what you know; it is kept as your input and passed to later agents"
+              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/input">{{ icon('plus-circle', 13) }} Add Input</button>
+      {% endif %}
 
       {% if insight.table_titles %}
       <button type="button" class="btn btn-sm btn-secondary"

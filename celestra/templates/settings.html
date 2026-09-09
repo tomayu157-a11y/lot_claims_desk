@@ -22,9 +22,9 @@
           <th scope="row">{{ key | replace('_', ' ') | title }}</th>
           <td>
             {% if ok %}
-            <span class="chip chip-sm chip-high">{{ icon('check', 12) }} Configured</span>
+            <span class="chip chip-sm chip-ready">{{ icon('check', 12) }} Configured</span>
             {% else %}
-            <span class="chip chip-sm chip-medium">{{ icon('alert', 12) }} Not configured</span>
+            <span class="chip chip-sm chip-amber">{{ icon('alert', 12) }} Not configured</span>
             {% endif %}
           </td>
         </tr>
@@ -101,9 +101,9 @@
           <td class="nowrap">{{ d.get('installed_at') or d.get('installed') or '—' }}</td>
           <td class="nowrap">
             {% if d.get('available', true) %}
-            <span class="chip chip-sm chip-high">Available</span>
+            <span class="chip chip-sm chip-ready">Available</span>
             {% else %}
-            <span class="chip chip-sm chip-rejected">Missing</span>
+            <span class="chip chip-sm chip-muted">Missing</span>
             {% endif %}
           </td>
         </tr>

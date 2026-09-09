@@ -1,16 +1,17 @@
 {% extends "base.html" %}
 {% from "partials/icons.html" import icon %}
 {% from "partials/macros.html" import stat_tile, confidence_chip, agent_tile, tinted_tile %}
-{% block title %}Discovery complete — Celestra{% endblock %}
+{% block title %}Stage reports — Celestra{% endblock %}
 
 {% set c = counts | default({}) %}
 
 {% block content %}
 <div class="page-head page-head-row">
   <div>
-    <h1>Discovery Complete</h1>
+    <h1>Stage reports</h1>
     <p class="sub">
-      {{ c.get('insights', 0) }} insights generated from {{ c.get('sources', 0) }} trusted sources
+      {{ c.get('insights', 0) }} findings from {{ c.get('sources', 0) }} sources across
+      {{ stages | length }} stage report{{ '' if stages | length == 1 else 's' }}
     </p>
     <div class="meta meta-row mt-1">
       <span><strong>{{ run.config.indication }}</strong></span>
@@ -30,10 +31,10 @@
 </div>
 
 <div class="stats mb-3">
-  {{ stat_tile(c.get('high', 0), 'High Confidence', 'green') }}
-  {{ stat_tile(c.get('medium', 0), 'Medium Confidence', 'amber') }}
-  {{ stat_tile(c.get('requires_input', 0), 'Require Input', 'rose') }}
-  {{ stat_tile(c.get('rejected', 0), 'Rejected', 'slate') }}
+  {{ stat_tile(c.get('ready', 0), 'Ready', 'green') }}
+  {{ stat_tile(c.get('needs_decision', 0), 'Need your input', 'rose' if c.get('needs_decision') else 'slate') }}
+  {{ stat_tile(c.get('decided', 0), 'Decided by you', 'blue') }}
+  {{ stat_tile(c.get('sources', 0), 'Sources cited', 'slate') }}
 </div>
 
 {% if categories %}
@@ -97,11 +98,10 @@
 {% endif %}
 
 <div class="btn-row mt-3">
-  <a class="btn btn-primary" href="/runs/{{ run.id }}/insights">
-    Review insights {{ icon('arrow-right', 15) }}
+  <a class="btn btn-primary" href="/runs/{{ run.id }}">
+    Back to the current step {{ icon('arrow-right', 15) }}
   </a>
-  <a class="btn btn-secondary" href="/runs/{{ run.id }}/contradictions">Source conflicts</a>
-  <a class="btn btn-secondary" href="/runs/{{ run.id }}/report">Full report</a>
-  <a class="btn btn-ghost" href="/runs/{{ run.id }}/approval">Approval</a>
+  <a class="btn btn-secondary" href="/runs/{{ run.id }}/insights">All findings</a>
+  <a class="btn btn-secondary" href="/runs/{{ run.id }}/report">Document</a>
 </div>
 {% endblock %}

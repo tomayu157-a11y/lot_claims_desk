@@ -68,7 +68,7 @@
       {{ tinted_tile('file-text', 'blue', 'tile-sm') }}
       <div class="run-main">
         <div class="run-title">
-          <a href="/runs/{{ r.id }}/overview">{{ r.config.indication }}</a>
+          <a href="/runs/{{ r.id }}">{{ r.config.indication }}</a>
           {% if r.config.drug_brand %}<span class="text-faint">· {{ r.config.drug_brand }}</span>{% endif %}
         </div>
         <div class="meta meta-row">
@@ -82,7 +82,7 @@
         </div>
       </div>
       {{ run_status_chip(r.status) }}
-      <a class="btn btn-secondary btn-sm" href="/runs/{{ r.id }}/overview">Open</a>
+      <a class="btn btn-secondary btn-sm" href="/runs/{{ r.id }}">Open</a>
     </div>
     {% endfor %}
   </div>

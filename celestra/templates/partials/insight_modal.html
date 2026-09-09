@@ -1,13 +1,15 @@
 {# ---------------------------------------------------------------------------
-   Modify Insight dialog.
-   Context: insight, impacts (list of {agent_name, description}), evidence (list of Evidence),
-            run (optional), source_names (optional)
+   The Modify and Add Input dialogs. Same shell, different contract:
+     modify  the text is an instruction; the model rewrites the finding
+     input   the text is knowledge; it is attached, never rewritten
+   Context: insight, mode ('modify'|'input'), impacts, evidence, downstream_agents,
+            web_available, run (optional)
    --------------------------------------------------------------------------- #}
 {% from "partials/icons.html" import icon %}
 {% from "partials/macros.html" import confidence_chip, tinted_tile, enum_value, tier_badge %}
 
 {%- set rid = (run.id if run is defined and run else insight.run_id) -%}
-{%- set conf = enum_value(insight.confidence) -%}
+{%- set is_input = (mode | default('modify')) == 'input' -%}
 {%- set cat_style = {
   'clinical': ('leaf', 'green'), 'treatment': ('pill', 'blue'),
   'diagnostic': ('microscope', 'purple'), 'logic': ('flow', 'indigo'),
@@ -19,7 +21,7 @@
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title-{{ insight.id }}"
        data-action-scope>
     <div class="modal-head">
-      <h2 id="modal-title-{{ insight.id }}">Modify Insight</h2>
+      <h2 id="modal-title-{{ insight.id }}">{{ 'Add your input' if is_input else 'Modify this finding' }}</h2>
       <button type="button" class="icon-btn" data-modal-close aria-label="Close dialog">
         {{ icon('x', 16) }}
       </button>
@@ -35,31 +37,64 @@
         <div class="insight-aside">{{ confidence_chip(insight.confidence) }}</div>
       </div>
 
+      {% if insight.input_reason and enum_value(insight.review_action) == 'pending' %}
+      <div class="input-reason mb-2"><strong>Why this needs you:</strong> {{ insight.input_reason }}</div>
+      {% endif %}
+
+      {% if is_input %}
+      <div class="modal-explain is-input">
+        <strong>What Add Input does.</strong> Your text is attached to this finding as reviewer
+        input. The finding itself is not rewritten.
+        <ul>
+          <li>It is printed with the finding in the final document, marked as yours.</li>
+          {% if downstream_agents %}
+          <li>It is handed to the agents that have not run yet
+            ({{ downstream_agents | join(', ') }}) so their research takes it into account.</li>
+          {% else %}
+          <li>Every agent has already run, so it goes into the document only.</li>
+          {% endif %}
+          <li>It counts as your decision on this finding.</li>
+        </ul>
+      </div>
+      {% else %}
+      <div class="modal-explain is-modify">
+        <strong>What Modify does.</strong> Your text is an instruction to Celestra.
+        <ul>
+          <li>It re-reads the evidence it holds for this finding and, if that is not enough,
+            {% if web_available %}searches the web{% else %}would search the web (web search is not configured, so it will use held evidence only){% endif %}.</li>
+          <li>It rewrites the finding and its answer in the document, citing what it used.</li>
+          <li>It counts as your decision on this finding. You see the result immediately.</li>
+        </ul>
+      </div>
+      {% endif %}
+
       <div class="field">
-        <span class="label">Celestra's Recommendation</span>
+        <span class="label">Current finding</span>
         <div class="readonly-block">
           {{ (insight.detail or insight.summary) | tagify }}
         </div>
       </div>
 
       <div class="field">
-        <label for="insight-input-{{ insight.id }}">Your Input</label>
+        <label for="insight-input-{{ insight.id }}">{{ 'Your input' if is_input else 'What should change' }}</label>
         <textarea id="insight-input-{{ insight.id }}" rows="4" maxlength="500"
                   data-field="user_input" data-autofocus
                   aria-describedby="counter-{{ insight.id }}"
-                  placeholder="Tell Celestra what to change, and why.">{{ insight.user_input }}</textarea>
+                  placeholder="{% if is_input %}For example: our claims data shows first-line venetoclax use is mostly in del(17p) patients; use 2024 SEER incidence.{% else %}For example: restrict this to adults; the 5-year survival figure should come from SEER 2024, not the older review.{% endif %}">{{ insight.reviewer_input if is_input else insight.user_input }}</textarea>
         <div class="counter" id="counter-{{ insight.id }}" aria-live="polite"
              data-counter-for="insight-input-{{ insight.id }}" data-counter-max="500">0/500</div>
       </div>
 
+      {% if not is_input %}
       <div class="impact">
-        <h4>{{ icon('activity', 15) }} Impact Analysis</h4>
+        <h4>{{ icon('activity', 15) }} What else this touches</h4>
         <p class="lead">
           {% if impacts %}
-            Your input will update {{ impacts | length }} related
-            insight{{ '' if impacts | length == 1 else 's' }} across different areas.
+            {{ impacts | length }} related finding{{ '' if impacts | length == 1 else 's' }} share
+            sources or a stage with this one. They are listed so you can check them after the
+            rewrite; they are not rewritten automatically.
           {% else %}
-            No related insights are expected to change. Only this finding will be recalculated.
+            No other finding shares a source or stage with this one. Only this finding changes.
           {% endif %}
         </p>
         {% for im in impacts | default([]) %}
@@ -67,15 +102,16 @@
           {{ tinted_tile('sparkle', ['green', 'blue', 'purple', 'indigo', 'teal'][loop.index0 % 5], 'tile-sm') }}
           <div>
             <div class="impact-name">{{ im.agent_name }}</div>
-            <div class="impact-desc">{{ im.description }}</div>
+            <div class="impact-desc">{{ im.get("title") or im.get("description", "") }}</div>
           </div>
         </div>
         {% endfor %}
       </div>
+      {% endif %}
 
       {% if evidence %}
       <div class="subblock">
-        <h3>Supporting evidence ({{ evidence | length }})</h3>
+        <h3>Evidence held ({{ evidence | length }})</h3>
         <ul class="list-plain stack-sm">
           {% for ev in evidence[:4] %}
           <li>
@@ -96,10 +132,21 @@
 
     <div class="modal-foot">
       <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+      {% if is_input %}
+      <button type="button" class="btn btn-primary"
+              data-action-url="/runs/{{ rid }}/insights/{{ insight.id }}/input"
+              data-swap="[data-insight-id='{{ insight.id }}']"
+              data-requires-field="user_input"
+              data-busy-label="Attaching…"
+              data-closes-modal>{{ icon('plus-circle', 14) }} Attach input</button>
+      {% else %}
       <button type="button" class="btn btn-primary"
               data-action-url="/runs/{{ rid }}/insights/{{ insight.id }}/modify"
               data-swap="[data-insight-id='{{ insight.id }}']"
-              data-closes-modal>Apply &amp; Recalculate</button>
+              data-requires-field="user_input"
+              data-busy-label="Revising… this can take a minute"
+              data-closes-modal>{{ icon('edit', 14) }} Revise finding</button>
+      {% endif %}
     </div>
   </div>
 </div>

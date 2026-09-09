@@ -8,9 +8,35 @@
 {% block content %}
 <div class="report">
 
+{% if run.status.value == 'approved' %}
+<div class="doc-state is-approved no-print">
+  {{ icon('check-circle', 17) }}
+  <span><strong>Approved document.</strong> Signed off
+    {% if run.approved_at %}on {{ run.approved_at.strftime('%d %b %Y, %H:%M UTC') }}{% endif %} and locked.
+    {% if reviewer_inputs %}{{ reviewer_inputs | length }} reviewer input{{ '' if reviewer_inputs | length == 1 else 's' }} are printed with their findings.{% endif %}
+  </span>
+  <span class="spacer"></span>
+  <a class="btn btn-secondary btn-sm" href="/projects/new">Start another project</a>
+</div>
+{% elif run.status.value == 'completed' %}
+<div class="doc-state is-draft no-print">
+  {{ icon('edit', 17) }}
+  <span><strong>Draft.</strong> This document is not approved yet. It changes as you decide findings.</span>
+  <span class="spacer"></span>
+  <a class="btn btn-primary btn-sm" href="/runs/{{ run.id }}/approval">Go to final approval {{ icon('arrow-right', 14) }}</a>
+</div>
+{% elif run.status.value in ['running', 'pending', 'awaiting_review'] %}
+<div class="doc-state is-draft no-print">
+  {{ icon('activity', 17) }}
+  <span><strong>In progress.</strong> Agents are still running; this is a partial draft.</span>
+  <span class="spacer"></span>
+  <a class="btn btn-secondary btn-sm" href="/runs/{{ run.id }}">Back to the run {{ icon('arrow-right', 14) }}</a>
+</div>
+{% endif %}
+
 <div class="page-head page-head-row">
   <div>
-    <div class="eyebrow">Phase 1 · Clinical foundation research</div>
+    <div class="eyebrow">Clinical foundation research · {{ 'Approved' if run.status.value == 'approved' else 'Draft' }}</div>
     <h1 class="doc-title">
       {{ report_title | default('Applying the Phase 1 Clinical Foundation Research Framework to ' ~ run.config.indication, true) }}
     </h1>
@@ -20,7 +46,7 @@
     </p>
   </div>
   <div class="btn-row no-print">
-    <a class="btn btn-secondary" href="/runs/{{ run.id }}/overview">Overview</a>
+    <a class="btn btn-secondary" href="/runs/{{ run.id }}/overview">Stage reports</a>
     <a class="btn btn-secondary" href="/runs/{{ run.id }}/sources">Sources</a>
     <button type="button" class="btn btn-ghost" onclick="window.print()">{{ icon('download', 15) }} Print</button>
   </div>
@@ -255,7 +281,7 @@
         <tr>
           <td>{{ pick(row, ['check', 'name', 'rule']) }}</td>
           <td class="nowrap">
-            <span class="chip chip-sm {{ 'chip-high' if status | upper == 'PASS' else ('chip-requires_input' if status | upper == 'FAIL' else 'chip-medium') }}">
+            <span class="chip chip-sm {{ 'chip-ready' if status | upper == 'PASS' else ('chip-requires_input' if status | upper == 'FAIL' else 'chip-amber') }}">
               {{ status or 'n/a' }}
             </span>
           </td>

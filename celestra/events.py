@@ -97,6 +97,22 @@ class EventBus:
             if ch:
                 ch.closed = True
 
+    async def reopen(self, run_id: str) -> None:
+        """Take a closed channel back into service for a resumed run.
+
+        The replay buffer keeps the phase-one history so a late tab still
+        sees what happened, but the two events that ended that phase are
+        dropped: a replayed `stream_end` would tear the new stream down at
+        once, and a replayed `review_required` would bounce the live page
+        straight back to the review it just left.
+        """
+        async with self._lock:
+            ch = self._channel(run_id)
+            ch.closed = False
+            kept = [e for e in ch.replay if e.type not in ("stream_end", "review_required")]
+            ch.replay.clear()
+            ch.replay.extend(kept)
+
     def is_closed(self, run_id: str) -> bool:
         ch = self._channels.get(run_id)
         return bool(ch and ch.closed)

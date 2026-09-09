@@ -10,7 +10,9 @@
 {%- set rid = (run.id if run is defined and run else contradiction.run_id) -%}
 {%- set decided = enum_value(contradiction.review_action) not in ['pending', ''] -%}
 
-<article class="card contra" data-contradiction-id="{{ contradiction.id }}" data-action-scope>
+{%- set locked = (run.is_locked if run is defined and run and run.is_locked is defined else false) -%}
+<article class="card contra {{ 'is-locked' if locked }}" id="conflict-{{ contradiction.id }}"
+         data-contradiction-id="{{ contradiction.id }}" data-action-scope>
   <div class="contra-head">
     <div>
       <div class="meta text-sm">{{ contradiction.stage }}</div>
@@ -65,6 +67,9 @@
     </div>
 
     <div class="btn-row">
+      {% if locked %}
+      <span class="meta">{{ icon('lock', 13) }} Document approved; decisions are final.</span>
+      {% else %}
       <button type="button" class="btn btn-sm btn-secondary"
               data-action-url="/runs/{{ rid }}/contradictions/{{ contradiction.id }}/review"
               data-payload='{"action": "prefer_a"}'
@@ -79,6 +84,9 @@
               data-swap="[data-contradiction-id='{{ contradiction.id }}']">Acknowledge both</button>
       {% if decided %}
       <span class="meta">{{ icon('check', 13) }} Decision recorded — you can change it.</span>
+      {% elif enum_value(contradiction.severity) == 'escalated' %}
+      <span class="meta">Escalated: a decision is required before the next step.</span>
+      {% endif %}
       {% endif %}
     </div>
   </div>

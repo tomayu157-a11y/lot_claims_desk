@@ -32,7 +32,7 @@
         {% for r in runs %}
         <tr>
           <td>
-            <a href="/runs/{{ r.id }}/overview"><strong>{{ r.config.indication }}</strong></a>
+            <a href="/runs/{{ r.id }}"><strong>{{ r.config.indication }}</strong></a>
             {% if r.config.drug_brand %}<div class="text-faint text-sm">{{ r.config.drug_brand }}</div>{% endif %}
           </td>
           <td class="mono">{{ r.reference or r.id }}</td>
@@ -45,7 +45,7 @@
           <td>{{ run_status_chip(r.status) }}</td>
           <td class="nowrap">{{ dt(r.created_at, '%d %b %Y') }}</td>
           <td class="nowrap">
-            <a class="btn btn-secondary btn-sm" href="/runs/{{ r.id }}/overview">Overview</a>
+            <a class="btn btn-secondary btn-sm" href="/runs/{{ r.id }}">Open</a>
             <a class="btn btn-ghost btn-sm" href="/runs/{{ r.id }}/report">Report</a>
           </td>
         </tr>

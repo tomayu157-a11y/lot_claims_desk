@@ -81,16 +81,36 @@ to Redis.
 
 ## Two modes
 
-**Run all agents.** Every agent, ordered by the dependency graph. Agents with no
-unmet dependency form a wave and run concurrently; a reconciliation gate closes
-each wave before the next begins.
+**Run all agents.** Every agent, in one linear flow with a human gate in the
+middle and a sign-off at the end:
 
 ```
-wave 1   Clinical Landscape        Treatment Evidence
-wave 2   Diagnostic Footprint      Treatment Logic
-wave 3   Patient Journey
-wave 4   Information Synthesis
+1  Discovery            Clinical Landscape + Treatment Evidence run in parallel
+2  Review gate          you decide the discovery findings before they propagate
+3  Mapping & Synthesis  Diagnostic Footprint, Treatment Logic, Patient Journey,
+                        Information Synthesis run by dependency wave
+4  Final approval       anything still needing input is listed; approve to lock
+5  Approved document    the signed-off research document
 ```
+
+`/runs/{id}` always sends you to the step the run is on. The live page shows
+the agents grouped by phase and stays viewable after they finish.
+
+At both gates the rule is the same: every finding marked **Requires Input** and
+every escalated source conflict needs a decision before you can continue;
+findings marked **Ready** carry forward as generated unless you change them.
+A finding takes one of three decisions:
+
+- **Approve** accepts it as written.
+- **Modify** sends your instruction to the model, which re-reads the held
+  evidence, searches the web if that is not enough, and rewrites the finding
+  and its answer in the document.
+- **Add Input** attaches your own knowledge. It is not rewritten; it is printed
+  with the finding in the document and handed to every agent that runs after
+  the gate.
+
+Approval locks the run: no further edits are accepted, the QA checklist records
+the sign-off, and the document is marked Approved.
 
 **Run a single agent.** One agent on its own, for when you only need that
 output. Dependencies outside the selection are ignored rather than forcing a
@@ -129,10 +149,12 @@ All of it is `celestra/config/thresholds.yaml`; none of it is hardcoded.
 | `max_refinement_rounds` | 2 | query rewrites before fallback |
 | `escalate_on_tier_gap` | 2 | tier distance that escalates a conflict |
 
-Confidence is a property of the evidence, not of the writing: **High**,
-**Medium**, **Requires Input**, **Rejected**. A question that fails every
-strategy is reported as unanswered with the reason and the sources tried, rather
-than being quietly dropped.
+Every finding is in exactly one of two states. **Ready**: a tier 1 or 2 source
+answered it and no conflict is open. **Requires Input**: a person has to act,
+because nothing usable was found, only the open web answered it, or an
+escalated source conflict is undecided. The card says which. A question that
+fails every strategy is reported as unanswered with the reason and the sources
+tried, rather than being quietly dropped.
 
 ## Contradictions
 

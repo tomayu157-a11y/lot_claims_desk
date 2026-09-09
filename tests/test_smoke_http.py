@@ -87,8 +87,8 @@ async def main() -> int:
 
         print("\n== result pages ==")
         pages = {
-            f"/runs/{run_id}": "discovery or redirect",
-            f"/runs/{run_id}/overview": "Discovery",
+            f"/runs/{run_id}/progress": "agents",
+            f"/runs/{run_id}/overview": "Stage reports",
             f"/runs/{run_id}/insights": "Insights",
             f"/runs/{run_id}/contradictions": "",
             f"/runs/{run_id}/sources": "",
@@ -153,9 +153,18 @@ async def main() -> int:
         else:
             check("contradictions detected", False, "none found to review")
 
+        for i in test_store.get_insights(run_id):
+            if i.needs_decision:
+                await c.post(f"/runs/{run_id}/insights/{i.id}/approve", json={})
+        for con in test_store.get_contradictions(run_id):
+            if con.severity.value == "escalated" and con.review_action.value == "pending":
+                await c.post(f"/runs/{run_id}/contradictions/{con.id}/review",
+                             json={"action": "acknowledged"})
         r = await c.post(f"/runs/{run_id}/approve")
-        check("POST approve run", r.status_code == 200, f"HTTP {r.status_code}")
-        check("  approval timestamped", test_store.get_run(run_id).approved_at is not None)
+        check("POST approve run", r.status_code == 200 and "Approved document" in r.text,
+              f"HTTP {r.status_code}")
+        run = test_store.get_run(run_id)
+        check("  approval timestamped and locked", run.approved_at is not None and run.is_locked)
 
         print("\n== errors ==")
         r = await c.get("/runs/run_doesnotexist/overview")

@@ -17,8 +17,10 @@ from markupsafe import Markup
 
 from .events import bus
 from .models import (
+    PHASES,
     AgentStatus,
     Confidence,
+    Contradiction,
     ContradictionSeverity,
     Insight,
     ReviewAction,
@@ -29,7 +31,7 @@ from .models import (
     utcnow,
 )
 from .services import orchestrator as orch
-from .services.scoring import confidence_for
+from .services.scoring import assess_confidence
 from .settings import (
     BASE_DIR,
     ensure_dirs,
@@ -176,6 +178,61 @@ def pct(value: Any) -> str:
 
 templates.env.filters["tagify"] = tagify
 templates.env.filters["pct"] = pct
+
+
+_PHASE_INDEX = {p["key"]: i for i, p in enumerate(PHASES)}
+
+
+def run_steps(run: Run | None) -> list[dict[str, Any]]:
+    """The one flow every run follows, as the sidebar and page headers show
+    it: which step is done, which is current, which is still to come, and
+    where each one lives. A single-agent run skips the gate and the phase it
+    does not execute."""
+    if run is None:
+        return []
+    rid = run.id
+    urls = {
+        "discovery": f"/runs/{rid}/progress",
+        "review": f"/runs/{rid}/review",
+        "mapping": f"/runs/{rid}/progress#mapping",
+        "approval": f"/runs/{rid}/approval",
+        "approved": f"/runs/{rid}/report",
+    }
+    phase = run.phase
+    failed = phase == "failed"
+    if failed:
+        # Where it was when it broke: the live page still shows the agents.
+        phase = "mapping" if run.resume_from_wave > 1 else "discovery"
+        if run.config.mode is RunMode.SINGLE:
+            phase = "mapping" if (run.config.selected_agent or "A") not in ("A", "C") else "discovery"
+    current = _PHASE_INDEX.get(phase, 0)
+
+    keys = [p["key"] for p in PHASES]
+    if run.config.mode is RunMode.SINGLE:
+        own = "discovery" if (run.config.selected_agent or "A") in ("A", "C") else "mapping"
+        keys = [own, "approval", "approved"]
+
+    out = []
+    for spec in PHASES:
+        if spec["key"] not in keys:
+            continue
+        idx = _PHASE_INDEX[spec["key"]]
+        if idx < current:
+            state = "done"
+        elif idx == current:
+            state = "failed" if failed else "current"
+        else:
+            state = "upcoming"
+        out.append({
+            **spec,
+            "state": state,
+            "url": urls[spec["key"]] if state != "upcoming" else "",
+            "number": len(out) + 1,
+        })
+    return out
+
+
+templates.env.globals["run_steps"] = run_steps
 
 
 def base_ctx(request: Request, active: str = "") -> dict[str, Any]:
@@ -395,7 +452,7 @@ async def create_project(
     task = asyncio.create_task(_execute(run.id))
     _RUNNING[run.id] = task
     task.add_done_callback(lambda t, rid=run.id: _RUNNING.pop(rid, None))
-    return RedirectResponse(f"/runs/{run.id}/discovery", status_code=303)
+    return RedirectResponse(f"/runs/{run.id}/progress", status_code=303)
 
 
 def _resolve_indication_key(text: str) -> str | None:
@@ -432,21 +489,59 @@ async def _execute(run_id: str) -> None:
     await orch.Orchestrator(run, registry()).execute()
 
 
+def _step_url(run: Run) -> str:
+    """Where a run's one flow currently is. Every entry point lands here."""
+    return {
+        RunStatus.AWAITING_REVIEW: f"/runs/{run.id}/review",
+        RunStatus.COMPLETED: f"/runs/{run.id}/approval",
+        RunStatus.APPROVED: f"/runs/{run.id}/report",
+    }.get(run.status, f"/runs/{run.id}/progress")
+
+
 @app.get("/runs/{run_id}", response_class=HTMLResponse)
 @app.get("/runs/{run_id}/discovery", response_class=HTMLResponse)
-async def discovery(request: Request, run_id: str):
-    """Live progress. A finished run has nothing left to watch, so it goes
-    straight to the results."""
+async def run_root(run_id: str):
+    """The run has one flow. Its root always sends you to the step it is on."""
+    return RedirectResponse(_step_url(get_run_or_404(run_id)), status_code=303)
+
+
+def _phase_groups(run: Run) -> list[dict]:
+    """Agents grouped by phase, with the phase's own state derived from its
+    agents so a header can say Complete, Running or Waiting without a second
+    source of truth."""
+    groups = []
+    for spec in orch.phases_for([a.bucket for a in run.agents.values()]):
+        agents = sorted(
+            (a for a in run.agents.values() if orch.phase_of(a.bucket) == spec["key"]),
+            key=lambda a: (a.wave, a.name),
+        )
+        statuses = {a.status for a in agents}
+        if statuses and statuses <= {AgentStatus.COMPLETE}:
+            state = "complete"
+        elif AgentStatus.FAILED in statuses:
+            state = "failed"
+        elif statuses & {AgentStatus.RESEARCHING, AgentStatus.SYNTHESISING}:
+            state = "running"
+        elif run.phase == "review" and spec["key"] == "mapping":
+            state = "gated"
+        else:
+            state = "queued"
+        groups.append({**spec, "agents": agents, "state": state,
+                       "done": sum(1 for a in agents if a.status is AgentStatus.COMPLETE)})
+    return groups
+
+
+@app.get("/runs/{run_id}/progress", response_class=HTMLResponse)
+async def progress(request: Request, run_id: str):
+    """The agents, live while the run is running and as a record afterwards.
+    This page never redirects away: a reviewer who wants to see what the
+    agents did can always come back to it."""
     run = get_run_or_404(run_id)
-    if run.status is RunStatus.COMPLETED:
-        return RedirectResponse(f"/runs/{run_id}/overview", status_code=303)
-    if run.status is RunStatus.AWAITING_REVIEW:
-        return RedirectResponse(f"/runs/{run_id}/review", status_code=303)
-    agents = sorted(run.agents.values(), key=lambda a: (a.wave, a.name))
     return templates.TemplateResponse(
-        request, "discovery.html",
-        {**base_ctx(request, "projects"), "run": run, "agents": agents,
-         "source_chips": source_chip_names(), "last_seq": 0},
+        request, "progress.html",
+        {**base_ctx(request, "progress"), "run": run, "phases": _phase_groups(run),
+         "source_chips": source_chip_names(), "last_seq": 0,
+         "next_url": _step_url(run)},
     )
 
 
@@ -504,7 +599,75 @@ def _counts(insights: list[Insight]) -> dict[str, int]:
         c[i.confidence.value] += 1
     c["insights"] = len(insights)
     c["sources"] = len({s for i in insights for s in i.source_ids})
+    c["needs_decision"] = sum(1 for i in insights if i.needs_decision)
+    c["pending"] = sum(1 for i in insights if not i.review_action.is_decided)
+    c["approved"] = sum(1 for i in insights if i.review_action is ReviewAction.APPROVED)
+    c["modified"] = sum(1 for i in insights if i.review_action is ReviewAction.MODIFIED)
+    c["input_added"] = sum(1 for i in insights if i.review_action is ReviewAction.INPUT_ADDED)
+    c["decided"] = c["approved"] + c["modified"] + c["input_added"]
+    c["user_inputs"] = sum(1 for i in insights if i.reviewer_input)
     return c
+
+
+def _gate(run: Run, insights: list[Insight], contradictions: list[Contradiction],
+          mode: str) -> dict[str, Any]:
+    """What still blocks the next step, in words a reviewer can act on.
+
+    The rule is the same at both gates: every finding that Requires Input
+    needs a decision, and every escalated conflict needs one. Findings that
+    are Ready may carry forward undecided; they are accepted as generated.
+    """
+    blockers: list[dict[str, str]] = []
+    for i in insights:
+        if i.needs_decision:
+            blockers.append({
+                "kind": "finding", "id": i.id, "title": i.title,
+                "reason": i.input_reason or "This finding needs your input.",
+                "anchor": f"#insight-{i.id}",
+            })
+    open_conflicts = [
+        c for c in contradictions
+        if c.severity is ContradictionSeverity.ESCALATED
+        and c.review_action is ReviewAction.PENDING
+    ]
+    for c in open_conflicts:
+        blockers.append({
+            "kind": "conflict", "id": c.id, "title": c.topic,
+            "reason": f"{c.source_a_name} and {c.source_b_name} disagree. Pick one, or "
+                      "acknowledge that both are recorded.",
+            "anchor": f"#conflict-{c.id}",
+        })
+    counts = _counts(insights)
+    counts["conflicts"] = len(contradictions)
+    counts["conflicts_open"] = sum(
+        1 for c in contradictions if c.review_action is ReviewAction.PENDING
+    )
+    counts["conflicts_blocking"] = len(open_conflicts)
+    if mode == "review":
+        available = run.status is RunStatus.AWAITING_REVIEW
+        action_url = f"/runs/{run.id}/continue"
+        action_label = "Approve discovery and start Mapping & Synthesis"
+        done_label = "Discovery approved"
+        done = run.status not in (RunStatus.PENDING, RunStatus.RUNNING, RunStatus.AWAITING_REVIEW) \
+            or (run.status is RunStatus.RUNNING and run.resume_from_wave > 1)
+    else:
+        available = run.status is RunStatus.COMPLETED
+        action_url = f"/runs/{run.id}/approve"
+        action_label = "Approve the research document"
+        done_label = "Document approved"
+        done = run.status is RunStatus.APPROVED
+    return {
+        "mode": mode,
+        "blockers": blockers,
+        "counts": counts,
+        "available": available,
+        "can_proceed": available and not blockers,
+        "done": done,
+        "action_url": action_url,
+        "action_label": action_label,
+        "done_label": done_label,
+        "refresh_url": f"/runs/{run.id}/gate?mode={mode}",
+    }
 
 
 def _categories(insights: list[Insight]) -> list[dict]:
@@ -524,10 +687,7 @@ async def overview(request: Request, run_id: str):
     stages = store.get_stage_reports(run_id)
     ranked = sorted(
         insights,
-        key=lambda i: (
-            {"high": 0, "medium": 1, "requires_input": 2, "rejected": 3}[i.confidence.value],
-            -i.source_count,
-        ),
+        key=lambda i: (i.confidence is Confidence.REQUIRES_INPUT, -i.source_count),
     )
     takeaways = ranked[:2] + [i for i in insights if i.confidence is Confidence.REQUIRES_INPUT][:1]
     return templates.TemplateResponse(
@@ -548,9 +708,10 @@ async def insights_page(request: Request, run_id: str):
     return templates.TemplateResponse(
         request, "insights.html",
         {
-            **base_ctx(request, "projects"), "run": run, "insights": insights,
+            **base_ctx(request, "insights"), "run": run, "insights": insights,
             "categories": _categories(insights), "agents": agent_catalogue(),
-            "source_names": _source_names(),
+            "source_names": _source_names(), "counts": _counts(insights),
+            "next_url": _step_url(run),
         },
     )
 
@@ -558,17 +719,27 @@ async def insights_page(request: Request, run_id: str):
 @app.get("/runs/{run_id}/insights/{insight_id}/modify", response_class=HTMLResponse)
 @app.get("/runs/{run_id}/insights/{insight_id}/input", response_class=HTMLResponse)
 async def insight_modal(request: Request, run_id: str, insight_id: str):
-    get_run_or_404(run_id)
+    """Two dialogs, one template. Modify hands an instruction to the model;
+    Add Input attaches the reviewer's own knowledge. They do different things
+    and the dialog says which."""
+    run = get_run_or_404(run_id)
     insight = store.get_insight(run_id, insight_id)
     if insight is None:
         raise HTTPException(404, "Insight not found")
+    mode = "input" if request.url.path.endswith("/input") else "modify"
     others = [i for i in store.get_insights(run_id) if i.id != insight_id]
-    impacts = _impacts(insight, others)
+    impacts = _impacts(insight, others) if mode == "modify" else []
     evidence = [e for e in store.get_evidence(run_id) if e.id in set(insight.evidence_ids)]
+    fw = get_framework()["buckets"]
+    downstream = [
+        fw[a.bucket]["agent_name"] for a in sorted(run.agents.values(), key=lambda x: x.wave)
+        if a.status is AgentStatus.QUEUED
+    ]
     return templates.TemplateResponse(
         request, "partials/insight_modal.html",
-        {**base_ctx(request), "insight": insight, "impacts": impacts,
-         "evidence": evidence, "run_id": run_id, "run": store.get_run(run_id),
+        {**base_ctx(request), "insight": insight, "impacts": impacts, "mode": mode,
+         "evidence": evidence, "run_id": run_id, "run": run,
+         "downstream_agents": downstream, "web_available": web_search_status()["available"],
          "agent_by_stage": _agent_by_stage()},
     )
 
@@ -650,29 +821,83 @@ async def _body(request: Request) -> dict[str, Any]:
 async def _apply_insight_action(
     run_id: str, insight_id: str, action: str, user_input: str
 ) -> Insight:
+    """The three decisions a reviewer can make on a finding.
+
+    approve  accept it as generated
+    modify   tell the model what to change; it re-checks the evidence, searches
+             the web if needed, and rewrites the finding and the document
+    input    attach your own knowledge; it is printed with the finding, goes
+             into the document, and is handed to the agents still to run
+
+    Any of the three settles a finding that Requires Input: a person looked.
+    """
+    run = get_run_or_404(run_id)
+    if run.is_locked:
+        raise HTTPException(409, "This document is approved and locked. Start a new "
+                                 "project to research it again.")
     insight = store.get_insight(run_id, insight_id)
     if insight is None:
         raise HTTPException(404, "Insight not found")
+    text = user_input.strip()[:500]
 
     if action == "approve":
         insight.review_action = ReviewAction.APPROVED
-        store.save_insights(run_id, [insight])
-        return insight
-
-    if action not in ("modify", "input"):
+    elif action == "modify":
+        if not text:
+            raise HTTPException(400, "Say what should change. Modify sends your "
+                                     "instruction to the model; it cannot act on nothing.")
+        insight.review_action = ReviewAction.MODIFIED
+        insight.user_input = text
+        others = [i for i in store.get_insights(run_id) if i.id != insight_id]
+        impacted = {x["title"] for x in _impacts(insight, others)}
+        insight.impacted_insight_ids = [o.id for o in others if o.title in impacted]
+        await _revise_insight(run_id, insight)
+    elif action == "input":
+        if not text:
+            raise HTTPException(400, "Write the input you want attached to this finding.")
+        insight.review_action = ReviewAction.INPUT_ADDED
+        insight.reviewer_input = text
+        _record_reviewer_input(run, insight)
+    else:
         raise HTTPException(400, f"Unknown action '{action}'")
 
-    insight.review_action = ReviewAction.MODIFIED
-    insight.user_input = user_input.strip()[:500]
-    others = [i for i in store.get_insights(run_id) if i.id != insight_id]
-    impacted = {x["title"] for x in _impacts(insight, others)}
-    insight.impacted_insight_ids = [o.id for o in others if o.title in impacted]
-
-    if insight.user_input:
-        await _revise_insight(run_id, insight)
-
+    # A reviewed finding no longer needs one. The reason it was flagged is
+    # kept on the card so the decision stays explainable.
+    insight.confidence = Confidence.READY
+    insight.reviewed_at = utcnow()
     store.save_insights(run_id, [insight])
     return insight
+
+
+def _record_reviewer_input(run: Run, insight: Insight) -> None:
+    """Attach the reviewer's input to the run, the document and the agents
+    that have not run yet. Nothing is rewritten by it."""
+    entries = [
+        e for e in (run.context.get("reviewer_inputs") or [])
+        if isinstance(e, dict) and e.get("insight_id") != insight.id
+    ]
+    entries.append({
+        "insight_id": insight.id, "stage": insight.stage, "title": insight.title,
+        "input": insight.reviewer_input, "at": utcnow().isoformat(),
+    })
+    run.context["reviewer_inputs"] = entries
+    store.save_run(run)
+
+    question = next(
+        (q for q in store.get_questions(run.id) if q.id in set(insight.question_ids)), None
+    )
+    if question is None:
+        return
+    for report in store.get_stage_reports(run.id):
+        if report.stage != question.stage:
+            continue
+        changed = False
+        for row in report.answers:
+            if row.get("question") == question.text or row.get("seed") == question.seed_text:
+                row["reviewer_input"] = insight.reviewer_input
+                changed = True
+        if changed:
+            store.save_stage_reports(run.id, [report])
 
 
 async def _revise_insight(run_id: str, insight: Insight) -> None:
@@ -717,13 +942,15 @@ async def _revise_insight(run_id: str, insight: Insight) -> None:
             insight.source_ids = list(dict.fromkeys(
                 [e.source_id for e in result.evidence]
             ))
-        # A revision that consulted the open web is no longer purely
-        # approved-source evidence, and the confidence must say so.
-        insight.confidence = confidence_for(
-            question, result.evidence, store.get_contradictions(run_id)
-        )
-    if result.note:
-        insight.detail = (f"Reviewer instruction: {insight.user_input} — {result.note}")
+        insight.used_web_fallback = insight.used_web_fallback or bool(result.searched)
+    where = (
+        f"searched the web ({len(result.sites)} page(s))" if result.searched
+        else "re-read the evidence it already held"
+    )
+    insight.revision_note = (
+        (result.note or ("Finding rewritten." if result.text else "Finding left unchanged."))
+        + f" Celestra {where}."
+    )[:400]
 
     store.save_questions(run_id, [question])
 
@@ -756,61 +983,87 @@ async def insight_action(request: Request, run_id: str, insight_id: str, action:
     )
 
 
+@app.get("/runs/{run_id}/gate", response_class=HTMLResponse)
+async def gate_panel(request: Request, run_id: str, mode: str = Query("review")):
+    """The gate summary on its own, so the page can refresh it after every
+    decision without reloading."""
+    run = get_run_or_404(run_id)
+    mode = "approval" if mode == "approval" else "review"
+    gate = _gate(run, store.get_insights(run_id), store.get_contradictions(run_id), mode)
+    return templates.TemplateResponse(
+        request, "partials/gate_panel.html", {**base_ctx(request), "run": run, "gate": gate},
+    )
+
+
 
 # --------------------------------------------------------------------------
 # Human review gate
 # --------------------------------------------------------------------------
 @app.get("/runs/{run_id}/review", response_class=HTMLResponse)
 async def review_page(request: Request, run_id: str):
-    """Findings and conflicts from the agents that have finished so far, with
-    the decision to continue. Downstream agents build on these, so a wrong
-    finding approved here propagates; that is why the gate sits here."""
+    """The gate between Discovery and Mapping & Synthesis. The later agents
+    build on these findings, so a wrong one approved here propagates; that is
+    why the gate sits here and why it blocks on anything that needs input."""
     run = get_run_or_404(run_id)
     insights = store.get_insights(run_id)
     contradictions = store.get_contradictions(run_id)
     contradictions.sort(key=lambda c: (c.severity is not ContradictionSeverity.ESCALATED, c.topic))
-    fw = get_framework()["buckets"]
-    done = [a for a in run.agents.values() if a.status is AgentStatus.COMPLETE]
-    remaining = [
-        a for a in sorted(run.agents.values(), key=lambda x: x.wave)
-        if a.status is not AgentStatus.COMPLETE
+    # At the gate only the discovery findings exist. Afterwards this page is a
+    # record of what was decided, and shows only what was decided here.
+    discovery = {b for b in run.agents if orch.phase_of(b) == "discovery"}
+    insights = [i for i in insights if i.bucket in discovery]
+    contradictions = [
+        c for c in contradictions
+        if any(c.stage in (run.agents[b].stages or []) for b in discovery)
     ]
-    counts = {
-        "insights": len(insights),
-        "pending": sum(1 for i in insights if i.review_action is ReviewAction.PENDING),
-        "approved": sum(1 for i in insights if i.review_action is ReviewAction.APPROVED),
-        "modified": sum(1 for i in insights if i.review_action is ReviewAction.MODIFIED),
-        "conflicts": len(contradictions),
-        "conflicts_open": sum(1 for c in contradictions
-                              if c.review_action is ReviewAction.PENDING),
-    }
+    insights.sort(key=lambda i: (not i.needs_decision, i.stage))
+    fw = get_framework()["buckets"]
+    phases = _phase_groups(run)
     return templates.TemplateResponse(
         request, "review.html",
         {
-            **base_ctx(request, "projects"), "run": run, "insights": insights,
-            "contradictions": contradictions, "counts": counts,
+            **base_ctx(request, "review"), "run": run, "insights": insights,
+            "contradictions": contradictions,
+            "gate": _gate(run, insights, contradictions, "review"),
             "categories": _categories(insights), "agents": agent_catalogue(),
-            "agent_by_stage": _agent_by_stage(),
+            "agent_by_stage": _agent_by_stage(), "source_names": _source_names(),
+            "phases": phases,
             "completed_agents": [
                 {"name": fw[a.bucket]["agent_name"], "icon": fw[a.bucket].get("agent_icon", "dot"),
-                 "tagline": fw[a.bucket]["agent_tagline"]} for a in done
+                 "tagline": fw[a.bucket]["agent_tagline"]}
+                for a in sorted(run.agents.values(), key=lambda x: x.wave)
+                if a.bucket in discovery
             ],
             "remaining_agents": [
                 {"name": fw[a.bucket]["agent_name"], "icon": fw[a.bucket].get("agent_icon", "dot"),
-                 "tagline": fw[a.bucket]["agent_tagline"], "wave": a.wave} for a in remaining
+                 "tagline": fw[a.bucket]["agent_tagline"], "wave": a.wave}
+                for a in sorted(run.agents.values(), key=lambda x: x.wave)
+                if a.bucket not in discovery
             ],
-            "can_continue": run.status is RunStatus.AWAITING_REVIEW,
         },
     )
 
 
 @app.post("/runs/{run_id}/continue")
 async def continue_run(run_id: str):
+    """Approve the discovery findings and start Mapping & Synthesis.
+
+    The status flips to RUNNING here, before the resume task is scheduled,
+    so the live page this redirects to sees a running run and not a stale
+    AWAITING_REVIEW that would bounce it straight back to the review page.
+    """
     run = get_run_or_404(run_id)
     if run.status is not RunStatus.AWAITING_REVIEW:
-        return RedirectResponse(f"/runs/{run_id}", status_code=303)
+        return RedirectResponse(_step_url(run), status_code=303)
     if run_id in _RUNNING:
-        return RedirectResponse(f"/runs/{run_id}/discovery", status_code=303)
+        return RedirectResponse(f"/runs/{run_id}/progress", status_code=303)
+    gate = _gate(run, store.get_insights(run_id), store.get_contradictions(run_id), "review")
+    if gate["blockers"]:
+        return RedirectResponse(f"/runs/{run_id}/review#gate", status_code=303)
+
+    run.status = RunStatus.RUNNING
+    run.reviewed_at = utcnow()
+    store.save_run(run)
 
     async def _resume() -> None:
         current = store.get_run(run_id)
@@ -820,7 +1073,7 @@ async def continue_run(run_id: str):
     task = asyncio.create_task(_resume())
     _RUNNING[run_id] = task
     task.add_done_callback(lambda t, rid=run_id: _RUNNING.pop(rid, None))
-    return RedirectResponse(f"/runs/{run_id}/discovery", status_code=303)
+    return RedirectResponse(f"/runs/{run_id}/progress#mapping", status_code=303)
 
 
 @app.get("/runs/{run_id}/insights/{insight_id}/table", response_class=HTMLResponse)
@@ -852,13 +1105,16 @@ async def contradictions_page(request: Request, run_id: str):
     items.sort(key=lambda c: (c.severity is not ContradictionSeverity.ESCALATED, c.topic))
     return templates.TemplateResponse(
         request, "contradictions.html",
-        {**base_ctx(request, "projects"), "run": run, "contradictions": items},
+        {**base_ctx(request, "contradictions"), "run": run, "contradictions": items,
+         "next_url": _step_url(run)},
     )
 
 
 @app.post("/runs/{run_id}/contradictions/{cid}/review", response_class=HTMLResponse)
 async def contradiction_review(request: Request, run_id: str, cid: str):
-    get_run_or_404(run_id)
+    run = get_run_or_404(run_id)
+    if run.is_locked:
+        raise HTTPException(409, "This document is approved and locked.")
     item = store.get_contradiction(run_id, cid)
     if item is None:
         raise HTTPException(404, "Contradiction not found")
@@ -877,11 +1133,36 @@ async def contradiction_review(request: Request, run_id: str, cid: str):
     item.review_action = mapping[action]
     item.reviewer_note = str(body.get("note", "")).strip()[:500]
     store.save_contradictions(run_id, [item])
+    _settle_conflict_findings(run_id, item)
     return templates.TemplateResponse(
         request, "partials/contradiction_card.html",
         {**base_ctx(request), "contradiction": item, "run_id": run_id,
          "run": store.get_run(run_id)},
     )
+
+
+def _settle_conflict_findings(run_id: str, decided: Contradiction) -> None:
+    """A finding flagged only because of this conflict is Ready once the
+    conflict is decided. Re-assess the undecided findings in its stage."""
+    remaining = store.get_contradictions(run_id)
+    evidence = store.get_evidence(run_id)
+    questions = {q.id: q for q in store.get_questions(run_id)}
+    changed: list[Insight] = []
+    for insight in store.get_insights(run_id):
+        if insight.stage != decided.stage or insight.review_action.is_decided:
+            continue
+        if insight.confidence is not Confidence.REQUIRES_INPUT:
+            continue
+        question = next((questions[q] for q in insight.question_ids if q in questions), None)
+        if question is None:
+            continue
+        own = [e for e in evidence if e.id in set(insight.evidence_ids)]
+        conf, reason = assess_confidence(question, own, remaining)
+        if conf is not insight.confidence or reason != insight.input_reason:
+            insight.confidence, insight.input_reason = conf, reason
+            changed.append(insight)
+    if changed:
+        store.save_insights(run_id, changed)
 
 
 @app.get("/runs/{run_id}/report", response_class=HTMLResponse)
@@ -949,7 +1230,9 @@ async def report(request: Request, run_id: str):
     return templates.TemplateResponse(
         request, "report.html",
         {
-            **base_ctx(request, "projects"), "run": run, "stages": stages,
+            **base_ctx(request, "report"), "run": run, "stages": stages,
+            "reviewer_inputs": list(run.context.get("reviewer_inputs") or []),
+            "insights": store.get_insights(run_id),
             "qa": qa_metrics, "contradictions": store.get_contradictions(run_id),
             "sources": sources, "execution_plan": execution_plan, "params": params,
             "questions": store.get_questions(run_id),
@@ -1031,7 +1314,7 @@ async def sources_panel(request: Request, run_id: str):
 
     return templates.TemplateResponse(
         request, "sources_panel.html",
-        {**base_ctx(request, "projects"), "run": run,
+        {**base_ctx(request, "sources"), "run": run,
          "used": sorted(used.values(), key=lambda r: (r["tier"], -r["evidence_items"])),
          "unavailable": empty + blocked,
          "health": connector_health(),
@@ -1039,43 +1322,111 @@ async def sources_panel(request: Request, run_id: str):
     )
 
 
+def _approval_ctx(request: Request, run: Run) -> dict[str, Any]:
+    insights = store.get_insights(run.id)
+    contradictions = store.get_contradictions(run.id)
+    stages = store.get_stage_reports(run.id)
+    fw = get_framework()["buckets"]
+    gate = _gate(run, insights, contradictions, "approval")
+    counts = dict(gate["counts"])
+    counts["assumptions"] = sum(len(s.assumptions) for s in stages)
+    counts["stages"] = len(stages)
+    counts["evidence"] = sum(s.evidence_count for s in stages)
+    # Findings that still need a decision come first, so the page reads as a
+    # to-do list until it reads as a sign-off.
+    ordered = sorted(insights, key=lambda i: (not i.needs_decision, i.stage))
+    return {
+        **base_ctx(request, "approval"), "run": run, "counts": counts, "gate": gate,
+        "insights": ordered, "contradictions": contradictions,
+        "categories": _categories(insights), "source_names": _source_names(),
+        "agent_by_stage": _agent_by_stage(), "phases": _phase_groups(run),
+        "reviewer_inputs": list(run.context.get("reviewer_inputs") or []),
+        "included": [
+            {
+                "name": fw[a.bucket]["agent_name"],
+                "description": fw[a.bucket]["agent_tagline"],
+                "icon": fw[a.bucket].get("agent_icon", "dot"),
+                "output": fw[a.bucket]["output"],
+                "phase": orch.phase_spec(orch.phase_of(a.bucket))["name"],
+            }
+            for a in sorted(run.agents.values(), key=lambda x: x.wave)
+            if a.status is AgentStatus.COMPLETE
+        ],
+    }
+
+
 @app.get("/runs/{run_id}/approval", response_class=HTMLResponse)
 async def approval(request: Request, run_id: str):
+    """The last step. Everything that still needs input is listed as a
+    blocker; when nothing does, the reviewer signs the document off."""
     run = get_run_or_404(run_id)
-    insights = store.get_insights(run_id)
-    stages = store.get_stage_reports(run_id)
-    fw = get_framework()["buckets"]
-    counts = {
-        "approved": sum(1 for i in insights if i.review_action is ReviewAction.APPROVED),
-        "modified": sum(1 for i in insights if i.review_action is ReviewAction.MODIFIED),
-        "user_inputs": sum(1 for i in insights if i.user_input),
-        "assumptions": sum(len(s.assumptions) for s in stages),
-        "pending": sum(1 for i in insights if i.review_action is ReviewAction.PENDING),
-        "total": len(insights),
-    }
-    included = [
-        {
-            "name": fw[a.bucket]["agent_name"],
-            "description": fw[a.bucket]["agent_tagline"],
-            "icon": fw[a.bucket].get("agent_icon", "dot"),
-            "output": fw[a.bucket]["output"],
-        }
-        for a in sorted(run.agents.values(), key=lambda x: x.wave)
-        if a.status is AgentStatus.COMPLETE
-    ]
-    return templates.TemplateResponse(
-        request, "approval.html",
-        {**base_ctx(request, "projects"), "run": run, "counts": counts,
-         "included": included, "contradictions": store.get_contradictions(run_id)},
-    )
+    if run.is_live or run.status is RunStatus.AWAITING_REVIEW:
+        # Nothing to approve until every agent has finished.
+        return RedirectResponse(_step_url(run), status_code=303)
+    return templates.TemplateResponse(request, "approval.html", _approval_ctx(request, run))
 
 
 @app.post("/runs/{run_id}/approve")
-async def approve(run_id: str):
+async def approve(request: Request, run_id: str):
+    """Sign the document off. Refused, with the reasons on the page, while
+    anything still needs input. On success the run is locked, the QA
+    narrative is rebuilt with the reviewer's decisions in it, and the
+    approved document opens."""
     run = get_run_or_404(run_id)
+    if run.status is RunStatus.APPROVED:
+        return RedirectResponse(f"/runs/{run_id}/report", status_code=303)
+    if run.status is not RunStatus.COMPLETED:
+        return RedirectResponse(_step_url(run), status_code=303)
+    gate = _gate(run, store.get_insights(run_id), store.get_contradictions(run_id), "approval")
+    if gate["blockers"]:
+        ctx = _approval_ctx(request, run)
+        ctx["messages"] = [{
+            "level": "danger",
+            "text": f"Not approved: {len(gate['blockers'])} item(s) still need your input. "
+                    "They are listed below.",
+        }]
+        return templates.TemplateResponse(request, "approval.html", ctx, status_code=409)
+
+    await _finalise_approval(run)
+    return RedirectResponse(f"/runs/{run_id}/report", status_code=303)
+
+
+async def _finalise_approval(run: Run) -> None:
+    from .services import qa
+
+    questions = store.get_questions(run.id)
+    evidence = store.get_evidence(run.id)
+    contradictions = store.get_contradictions(run.id)
+    stages = store.get_stage_reports(run.id)
+    insights = store.get_insights(run.id)
+    try:
+        metrics = qa.build_metrics(run.config, questions, evidence, contradictions, stages)
+        metrics = qa.build_narrative(run.config, metrics, stages, questions)
+        decided = [i for i in insights if i.review_action.is_decided]
+        metrics.checklist.append({
+            "check": "Reviewer sign-off",
+            "status": "PASS",
+            "detail": (
+                f"{len(decided)} of {len(insights)} findings decided by the reviewer "
+                f"({sum(1 for i in insights if i.review_action is ReviewAction.APPROVED)} approved, "
+                f"{sum(1 for i in insights if i.review_action is ReviewAction.MODIFIED)} revised, "
+                f"{sum(1 for i in insights if i.review_action is ReviewAction.INPUT_ADDED)} with "
+                "reviewer input); the rest accepted as generated. "
+                f"{sum(1 for c in contradictions if c.review_action.is_decided)} of "
+                f"{len(contradictions)} source conflicts decided."
+            ),
+        })
+        try:
+            metrics = await qa.polish_readiness(metrics, run.config)
+        except Exception:
+            log.warning("readiness polish skipped on approval", exc_info=True)
+        store.save_qa(run.id, metrics)
+    except Exception:
+        log.exception("qa rebuild failed on approval; approving with the existing narrative")
+
+    run.status = RunStatus.APPROVED
     run.approved_at = utcnow()
     store.save_run(run)
-    return RedirectResponse(f"/runs/{run_id}/report", status_code=303)
 
 
 @app.get("/settings", response_class=HTMLResponse)

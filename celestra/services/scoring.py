@@ -139,41 +139,48 @@ def confidence_for(
     evidence: list[Evidence],
     contradictions: list[Contradiction],
 ) -> Confidence:
-    """Confidence is a property of the evidence, not of the writing.
+    return assess_confidence(question, evidence, contradictions)[0]
 
-    Requires Input is deliberately narrow. It means a person must act, and it
-    fires for exactly two reasons: nothing but the open web answered the
-    question, or two sources disagree and nobody has adjudicated. A finding
-    that is thin but carries a vetted source behind it is Medium, because
-    thinness is a quality signal, not something a reviewer can resolve.
+
+def assess_confidence(
+    question: ResearchQuestion,
+    evidence: list[Evidence],
+    contradictions: list[Contradiction],
+) -> tuple[Confidence, str]:
+    """Two states, and the reason in words when a person has to act.
+
+    Requires Input fires for exactly three reasons: nothing usable was found,
+    only the open web answered the question, or two sources disagree and
+    nobody has decided. Everything else is Ready: a vetted source answered
+    it, which is the sufficiency rule this app runs on.
     """
-    conf = get_thresholds()["confidence"]
     ceiling = get_thresholds()["sufficiency"]["primary_tier_ceiling"]
     if not evidence:
-        return Confidence.REJECTED
+        return Confidence.REQUIRES_INPUT, (
+            "No source returned usable evidence. Add what you know, or tell "
+            "Celestra where to look."
+        )
 
     primary = [e for e in evidence if e.tier <= ceiling and not e.is_supplementary]
     if not primary:
-        # Only open-web evidence. A vetted source has to confirm this before it
-        # can be used, which is a human decision.
-        return Confidence.REQUIRES_INPUT
+        return Confidence.REQUIRES_INPUT, (
+            "Only open-web pages answered this. No approved source confirmed it, "
+            "so a person has to accept it, correct it, or add a source."
+        )
 
-    if any(
-        c.severity is ContradictionSeverity.ESCALATED
+    open_conflicts = [
+        c for c in contradictions
+        if c.severity is ContradictionSeverity.ESCALATED
         and c.review_action is ReviewAction.PENDING
-        for c in contradictions
-    ):
-        return Confidence.REQUIRES_INPUT
-
-    s = assess(question, evidence)
-    spec = conf["high"]
-    if (
-        s.coverage >= spec["min_coverage_score"]
-        and s.evidence_items >= spec["min_evidence_items"]
-        and len(primary) >= spec["min_primary_tier_items"]
-    ):
-        return Confidence.HIGH
-    return Confidence.MEDIUM
+        and (not c.stage or c.stage == question.stage)
+    ]
+    if open_conflicts:
+        c = open_conflicts[0]
+        return Confidence.REQUIRES_INPUT, (
+            f"{c.source_a_name} and {c.source_b_name} disagree on {c.topic}. "
+            "Decide the conflict below, or add input, before this can be used."
+        )
+    return Confidence.READY, ""
 
 
 def status_after_retrieval(question: ResearchQuestion, suff: Sufficiency) -> QuestionStatus:

@@ -44,25 +44,49 @@
 
 {% macro severity_chip(sev) -%}
 {%- set v = (sev.value if sev.value is defined else sev) | string -%}
-<span class="chip chip-sm {{ 'chip-requires_input' if v == 'escalated' else 'chip-rejected' }}">
+<span class="chip chip-sm {{ 'chip-requires_input' if v == 'escalated' else 'chip-muted' }}">
   {{ 'Escalated' if v == 'escalated' else 'Noted' }}
 </span>
 {%- endmacro %}
 
 {% macro review_chip(action) -%}
 {%- set v = (action.value if action.value is defined else action) | string -%}
+{%- set labels = {'approved': 'Approved by you', 'modified': 'Revised on your instruction',
+                  'input_added': 'Your input attached', 'acknowledged': 'Acknowledged',
+                  'prefer_a': 'Source A preferred', 'prefer_b': 'Source B preferred'} -%}
 {%- if v and v != 'pending' -%}
-<span class="chip chip-sm {{ 'chip-high' if v in ['approved', 'acknowledged'] else 'chip-blue' }}">
-  {{ icon('check', 12) }}{{ v | replace('_', ' ') | title }}
+<span class="chip chip-sm {{ 'chip-ready' if v in ['approved', 'acknowledged'] else 'chip-blue' }}">
+  {{ icon('check', 12) }}{{ labels.get(v, v | replace('_', ' ') | title) }}
 </span>
 {%- endif -%}
 {%- endmacro %}
 
 {% macro run_status_chip(status) -%}
 {%- set v = (status.value if status.value is defined else status) | string -%}
-{%- set cls = {'completed': 'chip-high', 'running': 'chip-blue', 'failed': 'chip-requires_input',
-               'cancelled': 'chip-rejected', 'pending': 'chip-rejected'} -%}
-<span class="chip chip-sm {{ cls.get(v, 'chip-rejected') }}">{{ v | replace('_', ' ') | title }}</span>
+{%- set cls = {'completed': 'chip-blue', 'approved': 'chip-ready', 'running': 'chip-blue',
+               'awaiting_review': 'chip-requires_input', 'failed': 'chip-requires_input',
+               'cancelled': 'chip-muted', 'pending': 'chip-muted'} -%}
+{%- set labels = {'completed': 'Awaiting approval', 'approved': 'Approved',
+                  'awaiting_review': 'Awaiting review', 'running': 'Running',
+                  'pending': 'Queued', 'failed': 'Failed', 'cancelled': 'Cancelled'} -%}
+<span class="chip chip-sm {{ cls.get(v, 'chip-muted') }}">{{ labels.get(v, v | replace('_', ' ') | title) }}</span>
+{%- endmacro %}
+
+{# The flow stepper: one row per step, state from run_steps(). #}
+{% macro flow_steps(steps, compact=false) -%}
+<ol class="flow {{ 'is-compact' if compact }}">
+  {% for s in steps %}
+  <li class="flow-step is-{{ s.state }}" data-step="{{ s.key }}">
+    {% if s.url %}<a class="flow-link" href="{{ s.url }}"{% if s.state == 'current' %} aria-current="step"{% endif %}>{% else %}<span class="flow-link is-disabled">{% endif %}
+      <span class="flow-num">{% if s.state == 'done' %}{{ icon('check', 12) }}{% elif s.state == 'failed' %}{{ icon('alert', 12) }}{% else %}{{ s.number }}{% endif %}</span>
+      <span class="flow-text">
+        <span class="flow-name">{{ s.name }}</span>
+        {% if not compact %}<span class="flow-desc">{{ s.description }}</span>{% endif %}
+      </span>
+    {% if s.url %}</a>{% else %}</span>{% endif %}
+  </li>
+  {% endfor %}
+</ol>
 {%- endmacro %}
 
 {% macro agent_status_markup(status) -%}

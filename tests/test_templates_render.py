@@ -84,6 +84,8 @@ def env() -> Environment:
     )
     environment.filters["tagify"] = tagify
     environment.globals["url_for"] = url_for
+    from celestra.main import run_steps
+    environment.globals["run_steps"] = run_steps
     return environment
 
 
@@ -192,13 +194,13 @@ def make_evidence() -> list[Evidence]:
 def make_insights() -> list[Insight]:
     specs = [
         ("Patient Population", "Adults with metastatic NSCLC receiving systemic treatment.",
-         "Clinical", "stage_1", Confidence.HIGH, VerificationTag.VERIFIED,
+         "Clinical", "stage_1", Confidence.READY, VerificationTag.VERIFIED,
          ["nci_pdq", "seer", "acs", "ash"], ReviewAction.APPROVED, ""),
         ("Disease Journey", "Diagnosis → Biomarker Testing → Treatment → Progression.",
-         "Journey", "stage_5", Confidence.HIGH, VerificationTag.INFERENCE,
+         "Journey", "stage_5", Confidence.READY, VerificationTag.INFERENCE,
          ["nci_pdq", "acs"], ReviewAction.PENDING, ""),
         ("Combination Therapy", "Combination therapy is frequently used in first-line treatment.",
-         "Treatment", "stage_2", Confidence.MEDIUM, VerificationTag.VERIFIED,
+         "Treatment", "stage_2", Confidence.READY, VerificationTag.VERIFIED,
          ["dailymed", "nccn", "acs"], ReviewAction.MODIFIED,
          "For this analysis, focus only on patients receiving systemic therapy."),
         ("Progression Detection",
@@ -206,7 +208,7 @@ def make_insights() -> list[Insight]:
          "Diagnostic", "stage_3", Confidence.REQUIRES_INPUT, VerificationTag.ORIGINAL,
          ["cms", "loinc"], ReviewAction.PENDING, ""),
         ("Deprecated code family", "ICD-9 mapping could not be confirmed in any coding authority.",
-         "Logic", "stage_4", Confidence.REJECTED, VerificationTag.NOT_VERIFIED,
+         "Logic", "stage_4", Confidence.REQUIRES_INPUT, VerificationTag.NOT_VERIFIED,
          [], ReviewAction.PENDING, ""),
     ]
     out = []
@@ -381,7 +383,8 @@ def context() -> dict:
             {"key": "fda", "name": "FDA", "used": False},
             "NCCN", "ASCO", "EMA",
         ],
-        "counts": {"high": 16, "medium": 6, "requires_input": 2, "rejected": 0,
+        "counts": {"ready": 22, "requires_input": 2, "needs_decision": 2, "decided": 22,
+                   "input_added": 3, "stages": 6, "evidence": 21,
                    "insights": 24, "sources": 18, "pending": 2,
                    "approved": 18, "modified": 4, "user_inputs": 3, "assumptions": 2,
                    "conflicts": 1, "conflicts_open": 1, "total": 24},
@@ -473,6 +476,23 @@ def context() -> dict:
         "remaining_agents": [{"name": "Diagnostic Footprint Agent", "icon": "microscope",
                               "tagline": "Claims signals", "wave": 2}],
         "can_continue": True,
+        "gate": {"mode": "review", "blockers": [
+                     {"kind": "finding", "id": "ins_4", "title": "Diagnostic coding",
+                      "reason": "Only open-web pages answered this.", "anchor": "#insight-ins_4"}],
+                 "counts": {"insights": 24, "ready": 22, "needs_decision": 1, "decided": 22,
+                            "conflicts_open": 1, "conflicts_blocking": 1, "conflicts": 1},
+                 "available": True, "can_proceed": False, "done": False,
+                 "action_url": "/runs/run_test/continue",
+                 "action_label": "Approve discovery and start Mapping & Synthesis",
+                 "done_label": "Discovery approved", "refresh_url": "/runs/run_test/gate?mode=review"},
+        "phases": [{"key": "discovery", "name": "Discovery", "description": "First two agents",
+                    "agents": [a for a in agents if a.bucket in ("A", "C")], "state": "complete", "done": 2},
+                   {"key": "mapping", "name": "Mapping & Synthesis", "description": "The rest",
+                    "agents": [a for a in agents if a.bucket not in ("A", "C")], "state": "queued", "done": 0}],
+        "mode": "modify", "downstream_agents": ["Diagnostic Footprint Agent"], "web_available": True,
+        "next_url": "/runs/run_test/approval", "reviewer_inputs": [
+            {"insight_id": "ins_1", "stage": "stage_1", "title": "Epidemiology",
+             "input": "Use the 2024 SEER release.", "at": "2026-09-01T00:00:00Z"}],
         # table snapshot fragment
         "tables": [InsightTable(title="Epidemiology snapshot", columns=["Metric", "Value", "Source"],
                                 rows=[["Incidence", "[VERIFIED] 4.7 per 100,000", "[Source: SEER]"]],
@@ -480,7 +500,7 @@ def context() -> dict:
         "report": None,
         "run_id": "run_test",
         "thresholds": {"sufficiency": {"min_evidence_items": 3, "min_distinct_sources": 2},
-                       "confidence": {"high": {"min_coverage_score": 0.8}}},
+                       "confidence": {"ready": {"description": "x"}}},
         "datasets": [
             {"name": "ICD-10-CM", "version": "2026", "rows": 74260,
              "installed_at": "2026-08-30", "available": True,
@@ -505,7 +525,7 @@ PAGE_TEMPLATES = [n for n in all_templates() if not n.startswith("partials/")]
 
 def test_expected_templates_exist():
     expected = {
-        "base.html", "home.html", "new_project.html", "discovery.html", "overview.html",
+        "base.html", "home.html", "new_project.html", "progress.html", "overview.html",
         "insights.html", "contradictions.html", "stage_report.html", "report.html",
         "approval.html", "sources_panel.html", "projects.html", "settings.html", "error.html",
         "partials/insight_card.html", "partials/insight_modal.html",
@@ -561,7 +581,7 @@ def test_contradictions_are_not_auto_resolved(env, context):
 
 def test_confidence_chip_labels(env, context):
     out = env.get_template("overview.html").render(**context)
-    for label in ("High Confidence", "Medium Confidence", "Require Input", "Rejected"):
+    for label in ("Ready", "Need your input", "Decided by you"):
         assert label in out
 
 
@@ -572,7 +592,7 @@ def test_verification_tags_become_pills(env, context):
 
 
 def test_agent_names_not_letters(env, context):
-    out = env.get_template("discovery.html").render(**context)
+    out = env.get_template("progress.html").render(**context)
     for agent in make_agents():
         assert agent.name in out
 
@@ -628,8 +648,9 @@ def sparse_context(context) -> dict:
         "active": None, "credentials": {}, "messages": [], "run": run, "runs": [],
         "agents": [], "agent_by_stage": {}, "source_chips": [],
         "counts": {"insights": 0, "pending": 0, "approved": 0, "modified": 0,
-                   "conflicts": 0, "conflicts_open": 0, "high": 0, "medium": 0,
-                   "requires_input": 0, "rejected": 0, "sources": 0,
+                   "conflicts": 0, "conflicts_open": 0, "ready": 0, "needs_decision": 0,
+                   "decided": 0, "input_added": 0,
+                   "requires_input": 0, "sources": 0,
                    "user_inputs": 0, "assumptions": 0, "total": 0},
         "categories": [], "takeaways": [], "insights": [], "source_names": {},
         "impacts": [], "evidence": [], "contradictions": [], "stage": stage, "stages": [],
@@ -640,6 +661,14 @@ def sparse_context(context) -> dict:
                 "model": "my-deployment", "gaps": []},
         "app_name": "Celestra",
         "completed_agents": [], "remaining_agents": [], "can_continue": False,
+        "gate": {"mode": "approval", "blockers": [], "counts": {
+                     "insights": 0, "ready": 0, "needs_decision": 0, "decided": 0,
+                     "conflicts_open": 0, "conflicts_blocking": 0, "conflicts": 0},
+                 "available": False, "can_proceed": False, "done": False,
+                 "action_url": "/x", "action_label": "Approve", "done_label": "Approved",
+                 "refresh_url": "/x"},
+        "phases": [], "mode": "input", "downstream_agents": [], "web_available": False,
+        "next_url": "/runs/run_empty", "reviewer_inputs": [],
         "tables": [], "report": None, "run_id": "run_test",
         "thresholds": {}, "datasets": [], "last_seq": 0,
     })
