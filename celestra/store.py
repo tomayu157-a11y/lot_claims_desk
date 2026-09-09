@@ -6,11 +6,11 @@ table is keyed by run_id so a run can be loaded or deleted atomically.
 """
 from __future__ import annotations
 
-import json
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Iterable, TypeVar
+from typing import Any, TypeVar
+from collections.abc import Iterable
 
 from .models import (
     Contradiction,

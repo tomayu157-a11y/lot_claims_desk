@@ -174,3 +174,27 @@
 {{ value.strftime(fmt) if value.strftime is defined else value }}
 {%- else -%}—{%- endif -%}
 {%- endmacro %}
+
+{# First non-empty value among candidate keys, rendered with inline tag pills. #}
+{% macro pick(row, keys, fallback='') -%}
+{%- set ns = namespace(found=none) -%}
+{%- for k in keys -%}
+  {%- if ns.found is none -%}
+    {%- set v = (row.get(k) if row.get is defined else (row[k] if k in row else none)) -%}
+    {%- if v -%}{%- set ns.found = v -%}{%- endif -%}
+  {%- endif -%}
+{%- endfor -%}
+{{ (ns.found if ns.found is not none else fallback) | tagify }}
+{%- endmacro %}
+
+{# Any dict rendered as a labelled block, whatever its keys happen to be. #}
+{% macro pairs_block(row, tone='is-slate') -%}
+<div class="callout {{ tone }} mb-1">
+  {% for k, v in row.items() %}
+  <div class="mb-0">
+    <span class="text-faint text-sm">{{ k | replace('_', ' ') | title }}:</span>
+    <span>{{ v | tagify }}</span>
+  </div>
+  {% endfor %}
+</div>
+{%- endmacro %}

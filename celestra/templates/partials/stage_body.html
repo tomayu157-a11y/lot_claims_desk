@@ -1,0 +1,209 @@
+{# ---------------------------------------------------------------------------
+   The body of one stage report. Shared by stage_report.html (standalone page)
+   and report.html (full run document).
+   Context: stage (StageReport), run (optional),
+            stage_contradictions or contradictions (optional)
+   --------------------------------------------------------------------------- #}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import data_table, pick, pairs_block, tier_badge, agent_tile %}
+
+{%- set sc = stage_contradictions if stage_contradictions is defined
+             else (contradictions | default([]) | selectattr('stage', 'equalto', stage.stage) | list) -%}
+{%- set approved = (stage.evidence_count | default(0)) - (stage.supplementary_count | default(0)) -%}
+
+<section class="stage" id="{{ stage.stage }}" aria-labelledby="{{ stage.stage }}-title">
+  <div class="stage-head">
+    {{ agent_tile('sparkle') }}
+    <div>
+      <div class="stage-id">{{ stage.stage | replace('_', ' ') | title }} · {{ stage.agent_name }}</div>
+      <h2 id="{{ stage.stage }}-title">{{ stage.name }}</h2>
+    </div>
+  </div>
+
+  {% if stage.core_question %}
+  <div class="core-question"><strong>Core question:</strong> {{ stage.core_question }}</div>
+  {% endif %}
+
+  <div class="stage-meta">
+    <span class="chip chip-sm">{{ stage.evidence_count }} evidence items</span>
+    <span class="chip chip-sm">{{ stage.source_count }} distinct sources</span>
+    {% if stage.supplementary_count %}
+    <span class="chip chip-sm chip-medium">{{ stage.supplementary_count }} supplementary web</span>
+    {% endif %}
+    {% for t in stage.tiers_represented | default([]) %}{{ tier_badge(t) }}{% endfor %}
+  </div>
+
+  {% if stage.framework_steps %}
+  <div class="subblock">
+    <h3>Framework steps included</h3>
+    <p class="mb-1">
+      <strong>
+      {%- for name in stage.framework_steps -%}
+        {%- if stage.step_numbers and loop.index0 < (stage.step_numbers | length) -%}
+          Step {{ stage.step_numbers[loop.index0] }} ({{ name }})
+        {%- else -%}{{ name }}{%- endif -%}
+        {{ ', ' if not loop.last }}
+      {%- endfor -%}
+      </strong>
+    </p>
+    {% if stage.substeps %}
+    <ul>
+      {% for key, text in stage.substeps.items() %}
+      <li><em>Step {{ key }}</em> — {{ text }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if stage.output_name or stage.gate %}
+    <p class="meta mb-0">
+      {% if stage.output_name %}
+      Execution: {{ stage.agent_name }} → <span class="mono">{{ stage.output_name }}</span>.
+      {% endif %}
+      {% if stage.gate %}Gate: {{ stage.gate }}{% endif %}
+    </p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if stage.what_happens %}
+  <div class="subblock">
+    <h3>What happens in this stage</h3>
+    <div class="prose">{{ stage.what_happens | tagify }}</div>
+  </div>
+  {% endif %}
+
+  {% if stage.expected_output %}
+  <div class="subblock">
+    <h3>Expected output</h3>
+    <ul>
+      {% for item in stage.expected_output %}<li>{{ item }}</li>{% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if stage.synthesis %}
+  <div class="subblock">
+    <h3>Synthesis</h3>
+    <div class="prose">{{ stage.synthesis | tagify }}</div>
+  </div>
+  {% endif %}
+
+  {% for table in stage.tables | default([]) %}
+    {{ data_table(table) }}
+  {% endfor %}
+
+  {% for n in stage.narratives | default([]) %}
+  <div class="subblock">
+    <h3>{{ n.get('heading', '') if n.get is defined else n['heading'] }}</h3>
+    <div class="prose">{{ (n.get('body', '') if n.get is defined else n['body']) | tagify }}</div>
+  </div>
+  {% endfor %}
+
+  {% if stage.observability %}
+  <div class="subblock">
+    <h3>Claims observability</h3>
+    <div class="table-wrap">
+      <table class="data">
+        <thead>
+          <tr>
+            <th scope="col">Clinical concept</th>
+            <th scope="col">Signal classification</th>
+            <th scope="col">Basis</th>
+            <th scope="col">Limitation</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in stage.observability %}
+          <tr>
+            <td>{{ pick(row, ['concept', 'clinical_concept', 'name', 'topic']) }}</td>
+            <td>{{ pick(row, ['classification', 'signal', 'signal_classification', 'status']) }}</td>
+            <td>{{ pick(row, ['basis', 'evidence', 'detail']) }}</td>
+            <td>{{ pick(row, ['limitation', 'limitations', 'caveat'], '—') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="table-footnote">
+      A proxy signal is observable in claims only through the listed surrogate; it is not a direct field.
+    </p>
+  </div>
+  {% endif %}
+
+  <div class="subblock">
+    <h3>Source disagreements identified in this stage</h3>
+    {% if sc %}
+    <div class="table-wrap">
+      <table class="data">
+        <thead>
+          <tr>
+            <th scope="col">Topic</th>
+            <th scope="col">Source A</th>
+            <th scope="col">Source A says</th>
+            <th scope="col">Source B</th>
+            <th scope="col">Source B says</th>
+            <th scope="col">Possible reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for con in sc %}
+          <tr>
+            <td>{{ con.topic }}</td>
+            <td class="nowrap">{{ con.source_a_name }} {{ tier_badge(con.source_a_tier) }}</td>
+            <td>{{ con.source_a_claim }}</td>
+            <td class="nowrap">{{ con.source_b_name }} {{ tier_badge(con.source_b_tier) }}</td>
+            <td>{{ con.source_b_claim }}</td>
+            <td>{{ con.reason }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <p class="table-footnote">Disagreements are surfaced, not resolved. SME adjudication required.</p>
+    {% else %}
+    <p class="meta mb-0">No source disagreements were identified in this stage.</p>
+    {% endif %}
+  </div>
+
+  {% if stage.takeaways %}
+  <div class="subblock">
+    <h3>Key takeaways from this stage</h3>
+    <ol class="takeaways">
+      {% for t in stage.takeaways %}<li>{{ t | tagify }}</li>{% endfor %}
+    </ol>
+  </div>
+  {% endif %}
+
+  {% if stage.assumptions %}
+  <div class="subblock">
+    <h3>Assumptions made in this stage</h3>
+    <ul>{% for a in stage.assumptions %}<li>{{ a | tagify }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  {% if stage.limitations %}
+  <div class="subblock">
+    <h3>Limitations of this stage</h3>
+    <ul>{% for l in stage.limitations %}<li>{{ l | tagify }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+
+  <blockquote class="callout mt-2">
+    <strong>Evidence base for this stage:</strong>
+    {{ stage.evidence_count }} item(s) from {{ stage.source_count }} source(s);
+    {{ approved }} from approved sources, {{ stage.supplementary_count }} supplementary web.
+    {% if stage.tiers_represented %}
+    Tiers represented: {{ stage.tiers_represented | join(', ') }}.
+    {% endif %}
+  </blockquote>
+
+  <div class="subblock">
+    <h3>Unanswered sub-questions</h3>
+    {% if stage.unanswered %}
+      {% for item in stage.unanswered %}
+        {% if item is mapping %}{{ pairs_block(item) }}{% else %}<p>{{ item }}</p>{% endif %}
+      {% endfor %}
+    {% else %}
+    <p class="meta mb-0">All planned sub-aspects were supported by retrieved evidence.</p>
+    {% endif %}
+  </div>
+</section>

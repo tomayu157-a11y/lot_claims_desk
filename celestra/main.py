@@ -8,7 +8,7 @@ import re
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, Form, HTTPException, Query, Request
+from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -28,7 +28,6 @@ from .models import (
     utcnow,
 )
 from .services import orchestrator as orch
-from .services import planner
 from .settings import (
     BASE_DIR,
     ensure_dirs,
@@ -237,7 +236,6 @@ async def new_project(request: Request):
 @app.post("/projects")
 async def create_project(
     request: Request,
-    background: BackgroundTasks,
     indication: str = Form(...),
     drug_brand: str = Form(""),
     geography: str = Form("United States"),
@@ -296,13 +294,30 @@ async def create_project(
 
 
 def _resolve_indication_key(text: str) -> str | None:
-    text_l = text.strip().lower()
+    """Map free text to a configured indication.
+
+    Exact matches first across the key, label, abbreviation and synonyms. Only
+    then a containment check against the full label, so that a partial entry
+    like "chronic lymphocytic" still resolves while a vague one like "leukemia"
+    matches nothing rather than silently picking whichever came first.
+    """
+    text_l = " ".join(text.strip().lower().split())
+    if not text_l:
+        return None
+    table: dict[str, list[str]] = {}
     for key, spec in get_questions()["indications"].items():
-        candidates = [key.lower(), spec["label"].lower(), spec["abbreviation"].lower()]
-        candidates += [s.lower() for s in spec.get("synonyms", [])]
-        if text_l in candidates or any(text_l in c or c in text_l for c in candidates[:2]):
+        table[key] = [
+            key.lower(), spec["label"].lower(), spec["abbreviation"].lower(),
+            *(s.lower() for s in spec.get("synonyms", [])),
+        ]
+    for key, candidates in table.items():
+        if text_l in candidates:
             return key
-    return None
+    matches = [
+        key for key, candidates in table.items()
+        if any(len(text_l) >= 6 and text_l in c for c in candidates)
+    ]
+    return matches[0] if len(matches) == 1 else None
 
 
 async def _execute(run_id: str) -> None:

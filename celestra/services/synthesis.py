@@ -12,7 +12,6 @@ import re
 from collections import defaultdict
 
 from ..models import (
-    Confidence,
     Contradiction,
     Evidence,
     InsightTable,
@@ -24,7 +23,6 @@ from ..models import (
 )
 from ..settings import get_framework, get_questions
 from .llm import LLMUnavailable, llm
-from .scoring import assess
 
 log = logging.getLogger("celestra.synthesis")
 

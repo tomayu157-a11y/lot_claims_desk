@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% block title %}{{ stage.name }} — Celestra{% endblock %}
+
+{% block content %}
+<div class="page-head page-head-row">
+  <div>
+    <div class="eyebrow">Stage report</div>
+    <h1>{{ stage.agent_name }}</h1>
+    <p class="sub">{{ stage.core_question }}</p>
+  </div>
+  <div class="btn-row">
+    {% if run is defined and run %}
+    <a class="btn btn-secondary" href="/runs/{{ run.id }}/overview">Overview</a>
+    <a class="btn btn-secondary" href="/runs/{{ run.id }}/report">Full report</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="report">
+  {% include "partials/stage_body.html" %}
+</div>
+{% endblock %}
