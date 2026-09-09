@@ -35,16 +35,22 @@ escalation:
   # costs a web-search credit. They are consulted only after the API sources
   # have failed to answer the question, and before the open web.
   enable_targeted_search_fallback: true
-  targeted_search_max_sources: 4
+  targeted_search_max_sources: 2
   enable_open_web_fallback: true
+  # After this many consecutive failures to reach Firecrawl, web search is
+  # switched off for the session so no question waits on it again. A 402 (no
+  # credits) or a rejected key switches it off at once.
+  firecrawl_max_consecutive_failures: 2
   # Last-resort harvest of a domain's own sitemap, used when every search
   # front-end is blocked. Off by default: it costs 60-90s per domain, and the
   # domains that matter most here (cdc.gov, who.int, lls.org, fda.gov) refuse
   # the request or publish no usable index, so it usually buys nothing. Turn
   # it on for a network where search is blocked but sitemaps are reachable.
   enable_domain_index: false
-  open_web_max_results: 6
-  open_web_max_scrapes: 4
+  # Pages fetched per question from the open web. Search and page content
+  # come back in one call, so this is also the credit cost of the fallback.
+  open_web_max_results: 3
+  open_web_max_scrapes: 3
   # Open-web evidence is always tier 5 and always labelled SUPPLEMENTARY WEB EVIDENCE.
   open_web_never_overrides_tier: 4
 
@@ -69,6 +75,12 @@ limits:
   max_concurrent_connectors: 6
   connector_timeout_seconds: 30
   connector_retries: 2
+  # Wall-clock budget per question. Once spent, the remaining tiers (domain
+  # search, open web) are skipped and the question reports what it has; the
+  # hard timeout is the ceiling after which the question is abandoned so an
+  # agent can never sit on one question indefinitely.
+  question_time_budget_seconds: 240
+  question_hard_timeout_seconds: 480
   http_cache_ttl_seconds: 86400
   max_parallel_agents: 3
 

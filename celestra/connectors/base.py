@@ -173,23 +173,32 @@ class HttpClient:
         headers: dict[str, str] | None = None,
         as_json: bool = True,
         use_cache: bool = True,
+        retries: int | None = None,
+        timeout: float | None = None,
     ) -> Any:
         """Returns parsed JSON or text. Raises on final failure so the calling
-        connector can translate it into a ConnectorResult reason."""
+        connector can translate it into a ConnectorResult reason.
+
+        Only a rate limit, a server error or a transport failure is retried.
+        Every other 4xx is the server's final word (a bad key, no credits, a
+        malformed request) and retrying it only spends time.
+        """
         key = self._key(method, url, params, json_body or data)
         if use_cache and method.upper() == "GET":
             hit = self._cache.get(key)
             if hit is not None:
                 return hit
 
+        attempts = (self.retries if retries is None else max(0, retries)) + 1
         last_exc: Exception | None = None
         async with self._sem:
             client = await self.client()
-            for attempt in range(self.retries + 1):
+            for attempt in range(attempts):
                 try:
                     resp = await client.request(
                         method, url, params=params, json=json_body,
                         data=data, headers=headers,
+                        timeout=httpx.Timeout(timeout) if timeout else httpx.USE_CLIENT_DEFAULT,
                     )
                     if resp.status_code in (429, 500, 502, 503, 504):
                         raise httpx.HTTPStatusError(
@@ -203,7 +212,8 @@ class HttpClient:
                 except (httpx.HTTPError, ValueError) as exc:
                     last_exc = exc
                     status = getattr(getattr(exc, "response", None), "status_code", None)
-                    if status in (401, 403, 404) or attempt == self.retries:
+                    final = status is not None and status not in (429, 500, 502, 503, 504)
+                    if final or attempt == attempts - 1:
                         break
                     await asyncio.sleep(0.5 * (2 ** attempt))
         assert last_exc is not None

@@ -728,6 +728,7 @@ async def insights_page(request: Request, run_id: str):
         request, "insights.html",
         {
             **base_ctx(request, "insights"), "run": run, "insights": insights,
+            "sections": _phase_sections(run, insights),
             "categories": _categories(insights), "agents": agent_catalogue(),
             "source_names": _source_names(), "counts": _counts(insights),
             "next_url": _step_url(run),
@@ -1341,6 +1342,28 @@ async def sources_panel(request: Request, run_id: str):
     )
 
 
+def _phase_sections(run: Run, insights: list[Insight]) -> list[dict[str, Any]]:
+    """Cards grouped by phase, the newest phase first. A reviewer coming from
+    the gate has already seen the discovery cards; what they have not seen
+    goes on top."""
+    specs = orch.phases_for([a.bucket for a in run.agents.values()])
+    sections = []
+    for spec in reversed(specs):
+        buckets = {b for b in run.agents if orch.phase_of(b) == spec["key"]}
+        cards = sorted((i for i in insights if i.bucket in buckets),
+                       key=lambda i: (i.number or 999, i.stage))
+        if not cards:
+            continue
+        reviewed_at_gate = spec["key"] == "discovery" and run.reviewed_at is not None
+        sections.append({
+            **spec, "cards": cards,
+            "label": ("Reviewed at the gate" if reviewed_at_gate else "New since your last review"),
+            "is_new": not reviewed_at_gate,
+            "needs": sum(1 for i in cards if i.needs_decision),
+        })
+    return sections
+
+
 def _approval_ctx(request: Request, run: Run) -> dict[str, Any]:
     insights = store.get_insights(run.id)
     contradictions = store.get_contradictions(run.id)
@@ -1356,7 +1379,8 @@ def _approval_ctx(request: Request, run: Run) -> dict[str, Any]:
     ordered = sorted(insights, key=lambda i: (i.number or 999, i.stage))
     return {
         **base_ctx(request, "approval"), "run": run, "counts": counts, "gate": gate,
-        "insights": ordered, "contradictions": contradictions,
+        "insights": ordered, "sections": _phase_sections(run, insights),
+        "contradictions": contradictions,
         "categories": _categories(insights), "source_names": _source_names(),
         "agent_by_stage": _agent_by_stage(), "phases": _phase_groups(run),
         "reviewer_inputs": list(run.context.get("reviewer_inputs") or []),

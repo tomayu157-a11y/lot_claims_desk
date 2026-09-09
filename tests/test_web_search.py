@@ -13,7 +13,9 @@ import httpx
 
 from celestra.connectors import base as base_mod
 from celestra.connectors.base import describe_http_error, explain_transport_error, remedy_for
-from celestra.connectors.firecrawl import FirecrawlConnector, firecrawl_status
+from celestra.connectors.firecrawl import (
+    FirecrawlConnector, firecrawl_blocked, firecrawl_status, reset_firecrawl_status,
+)
 from celestra.settings import Settings, get_settings
 
 failures: list[str] = []
@@ -92,6 +94,7 @@ def main() -> int:
     check("401 is a rejected key with a remedy", "rejected" in describe_http_error(e401) and "dashboard" in remedy_for(e401))
 
     print("\n== search falls back and records the cause ==")
+    reset_firecrawl_status()
     async def failing_request(*a, **kw):
         raise ssl_err
 
@@ -110,10 +113,55 @@ def main() -> int:
         probe = asyncio.run(FirecrawlConnector.probe())
         check("probe reports the same", probe["ok"] is False and "CA_BUNDLE" in probe["remedy"], probe["detail"])
         check("probe names the endpoint", probe["endpoint"].endswith("/v2/search"))
+        check("two transport failures switch web search off for the session",
+              bool(firecrawl_blocked()) and "off" in firecrawl_blocked(), firecrawl_blocked()[:80])
+        calls_before = firecrawl_status["calls"]
+        results = asyncio.run(FirecrawlConnector().search("another question", 3))
+        check("a blocked session makes no further call",
+              results == [] and firecrawl_status["calls"] == calls_before
+              and firecrawl_status["skipped"] >= 1)
+
+        print("\n== no credits stops at once ==")
+        reset_firecrawl_status()
+        resp402 = httpx.Response(402, request=httpx.Request("POST", "https://api.firecrawl.dev/v2/search"),
+                                 json={"error": "Insufficient credits"})
+        async def no_credits(*a, **kw):
+            raise httpx.HTTPStatusError("402", request=resp402.request, response=resp402)
+        base_mod.http.request = no_credits
+        results = asyncio.run(FirecrawlConnector().search("chronic lymphocytic leukemia staging", 3))
+        check("first 402 blocks the session", "credits" in firecrawl_blocked(), firecrawl_blocked()[:80])
+        check("status carries the reason for the UI", "402" in firecrawl_status["error"])
+        d = asyncio.run(FirecrawlConnector().discover(
+            __import__("celestra.connectors.base", fromlist=["RetrievalContext"]).RetrievalContext(
+                indication="CLL", indication_key="CLL", synonyms=[], geography="US",
+                population="", stage="stage_1", question="staging", aspects=[], cutoff=""), 3))
+        check("a domain search reports the block instead of calling", d.ok is False and "credits" in d.reason)
+
+        print("\n== one call brings back the pages ==")
+        reset_firecrawl_status()
+        seen_bodies = []
+        async def v2_search(method, url, *, json_body=None, **kw):
+            seen_bodies.append(json_body)
+            return {"success": True, "data": {"web": [
+                {"url": "https://cancer.gov/a", "title": "CLL staging", "description": "Rai and Binet staging",
+                 "markdown": "# A\n" + "Staging uses Rai and Binet systems. " * 20}]}}
+        base_mod.http.request = v2_search
+        conn = FirecrawlConnector()
+        refs = asyncio.run(conn.search_refs("cll staging", 3))
+        check("search asks for page content in the same call",
+              seen_bodies and seen_bodies[-1].get("scrapeOptions", {}).get("formats") == ["markdown"])
+        check("search asks only for the pages it will read", seen_bodies[-1]["limit"] == 3)
+        check("result carries the page text", refs and "Rai and Binet" in refs[0].raw["markdown"])
+        page = asyncio.run(conn.scrape(refs[0].url, refs[0].raw["markdown"]))
+        check("scrape with markdown in hand makes no call",
+              page.get("backend") == "firecrawl" and len(seen_bodies) == 1)
+        asyncio.run(conn.search_refs("cll staging", 3))
+        check("the same query is not searched twice", len(seen_bodies) == 1)
     finally:
         base_mod.http.request = real
         os.environ.pop("FIRECRAWL_API_KEY", None)
         get_settings.cache_clear()
+        reset_firecrawl_status()
 
     print(f"\n{len(failures)} failure(s)")
     return 1 if failures else 0

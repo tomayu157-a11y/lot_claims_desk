@@ -111,7 +111,10 @@ def main() -> int:
     rounds = get_thresholds()["escalation"]["max_refinement_rounds"] + 1
     check("API sources were tried across every round before any search",
           all(a.calls == rounds for a in apis if a.calls), str({a.sid: a.calls for a in apis}))
-    check("domain searches were then made", all(t.calls == 1 for t in targeted))
+    cap = get_thresholds()["escalation"]["targeted_search_max_sources"]
+    check("domain searches were then made, within the cap",
+          sum(1 for t in targeted if t.calls) == min(len(targeted), cap)
+          and all(t.calls <= 1 for t in targeted), str({t.sid: t.calls for t in targeted}))
     check("open web still not touched", web.calls == 0)
     check("targeted evidence is approved-tier, not supplementary",
           outcome.evidence and all(not e.is_supplementary for e in outcome.evidence))

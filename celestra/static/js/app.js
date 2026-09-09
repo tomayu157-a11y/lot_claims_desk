@@ -332,6 +332,11 @@
           announce(live, 'Mapping & Synthesis started.');
           break;
 
+        case 'notice':
+          if (data.text) flash(data.text, data.level === 'warning' ? 'is-danger' : 'is-info');
+          announce(live, data.text || '');
+          break;
+
         case 'run_failed':
           announce(live, 'Run failed: ' + (data.error || data.message || 'unknown error'));
           var banner = $('[data-run-error]');
@@ -364,7 +369,7 @@
 
     var TYPES = ['run_started', 'phase_started', 'agent_status', 'agent_progress', 'source_used',
       'question_status', 'insight_added', 'contradiction_added', 'stage_complete',
-      'review_required', 'run_resumed', 'context_published', 'wave_started', 'wave_complete',
+      'review_required', 'run_resumed', 'context_published', 'wave_started', 'wave_complete', 'notice',
       'run_complete', 'run_failed', 'stream_end', 'heartbeat'];
 
     function connect() {
@@ -408,14 +413,17 @@
   var CONF_RANK = { requires_input: 0, ready: 1 };
 
   function initInsights() {
-    var list = $('[data-insight-list]');
-    if (!list) return;
+    var lists = $$('[data-insight-list]');
+    if (!lists.length) return;
+    var list = lists[0];
 
     var state = { category: 'all', query: '', sort: 'confidence' };
     var countEl = $('[data-insight-count]');
     var emptyEl = $('[data-insight-empty]');
 
-    function cards() { return $$('[data-insight-id]', list); }
+    function cards() {
+      return lists.reduce(function (acc, l) { return acc.concat($$('[data-insight-id]', l)); }, []);
+    }
 
     function matches(card) {
       var cat = (card.getAttribute('data-category') || '').toLowerCase();
@@ -445,8 +453,8 @@
       if (emptyEl) emptyEl.hidden = visible !== 0;
     }
 
-    function sort() {
-      var items = cards();
+    function sortList(l) {
+      var items = $$('[data-insight-id]', l);
       items.sort(function (a, b) {
         if (state.sort === 'sources') {
           return (parseInt(b.getAttribute('data-sources'), 10) || 0) -
@@ -459,10 +467,13 @@
         var rb = CONF_RANK[b.getAttribute('data-confidence')];
         ra = ra === undefined ? 9 : ra;
         rb = rb === undefined ? 9 : rb;
-        return ra - rb;
+        if (ra !== rb) return ra - rb;
+        return (parseInt(a.getAttribute('data-number'), 10) || 999) -
+               (parseInt(b.getAttribute('data-number'), 10) || 999);
       });
-      items.forEach(function (card) { list.appendChild(card); });
+      items.forEach(function (card) { l.appendChild(card); });
     }
+    function sort() { lists.forEach(sortList); }
 
     on(document, 'click', '[data-filter-category]', function (ev, btn) {
       ev.preventDefault();

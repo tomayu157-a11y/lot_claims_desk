@@ -23,12 +23,15 @@ import asyncio
 import functools
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 
 from ..connectors.base import ConnectorResult, RetrievalContext
+from ..connectors.firecrawl import firecrawl_blocked
 from ..models import (
     Answer,
     Evidence,
+    EvidenceOrigin,
     QuestionStatus,
     ResearchQuestion,
     RunConfig,
@@ -56,6 +59,8 @@ class RetrievalOutcome:
     used_web: bool = False
     used_targeted: bool = False
     rounds: int = 0
+    search_query: str = ""          # the model-drafted web query, if one was made
+    skipped: str = ""               # why later tiers were not tried
 
 
 @functools.lru_cache(maxsize=1)
@@ -152,6 +157,56 @@ async def refine_query(
     return _broaden(question.text, question.aspects, synonyms, round_no)
 
 
+async def draft_search_query(question: ResearchQuestion, cfg: RunConfig,
+                             notes: list[str]) -> str:
+    """One short search-engine query for this question, written by the model.
+
+    A research question is phrased for a person ("What CPT and HCPCS codes
+    cover bone marrow biopsy ... in ALL?"); a search engine wants the terms
+    ("acute lymphoblastic leukemia bone marrow biopsy CPT HCPCS codes"). One
+    small call here saves failed searches later, which cost credits.
+    """
+    plain = re.sub(r"\s*\([^)]*\)", "", question.text).strip(" ?")
+    fallback = f"{cfg.indication} {plain}"
+    if not llm.available:
+        return fallback
+    try:
+        result = await llm.complete_json(
+            "You write web search queries for clinical desk research. You return the "
+            "6-12 most discriminating terms, no question words, no quotes, no operators.",
+            f"Indication: {cfg.indication}. Geography: {cfg.geography}.\n"
+            f"Question: {question.text}\n"
+            + (f"Reviewer context: {' '.join(notes)[:300]}\n" if notes else "")
+            + 'Return JSON: {"query": str}.',
+            max_tokens=80,
+        )
+        q = re.sub(r"\s+", " ", str((result or {}).get("query", ""))).strip().strip('"')
+        if 3 <= len(q.split()) <= 16:
+            return q
+    except LLMUnavailable:
+        pass
+    except Exception:  # noqa: BLE001 - a failed draft is not a failed question
+        log.debug("search query draft failed", exc_info=True)
+    return fallback
+
+
+def _as_ref(item, source_id: str = "open_web", tier: int = 3) -> SourceRef | None:
+    """Web search results as SourceRefs, whichever shape a backend returned."""
+    if isinstance(item, SourceRef):
+        return item
+    if isinstance(item, dict) and item.get("url"):
+        text = str(item.get("markdown") or item.get("snippet") or "")
+        return SourceRef(
+            source_id=source_id, source_name="Open Web (Supplementary)", tier=tier,
+            url=str(item["url"]), title=str(item.get("title") or item["url"]),
+            organization="Open web", snippet=text[:1500],
+            raw={"markdown": str(item.get("markdown") or ""), "page_text": text[:20000],
+                 "text": text[:20000], "search_backend": item.get("backend", "")},
+            origin=EvidenceOrigin.OPEN_WEB,
+        )
+    return None
+
+
 async def _gather(
     registry: dict, source_ids: list[str], ctx: RetrievalContext, per_source: int
 ) -> list[ConnectorResult]:
@@ -241,6 +296,18 @@ async def retrieve(
     th = get_thresholds()
     limits, esc = th["limits"], th["escalation"]
     outcome = RetrievalOutcome()
+    started_at = time.monotonic()
+    budget = float(limits.get("question_time_budget_seconds", 240))
+
+    def over_budget(step: str) -> bool:
+        spent = time.monotonic() - started_at
+        if spent < budget:
+            return False
+        if not outcome.skipped:
+            outcome.skipped = (f"time budget of {int(budget)}s spent before {step}; "
+                               "reported with what was found")
+            log.warning("q=%s %s", question.id, outcome.skipped)
+        return True
 
     approved = sources_for(question.stage, cfg.indication_key)[: limits["max_sources_per_question"]]
     source_ids = [s["id"] for s in approved]
@@ -358,6 +425,8 @@ async def retrieve(
 
         # 6. widen: keep more candidates next round and rewrite the query
         if round_no < esc["max_refinement_rounds"]:
+            if over_budget(f"refinement round {round_no + 1}"):
+                break
             top_k += int(limits.get("rank_top_k_step", 4))
             query = await refine_query(question, cfg, synonyms, outcome.sufficiency, round_no + 1)
             log.info("refining q=%s round=%s top_k=%s -> %s",
@@ -367,15 +436,23 @@ async def retrieve(
     # Only now. Every call here is a web-search credit, and the answer may
     # already be in the APIs above. These are still approved, tier 1-2 sources.
     targeted = targeted_sources_for(question.stage, cfg.indication_key)
-    targeted = targeted[: int(esc.get("targeted_search_max_sources", 4))]
+    targeted = targeted[: int(esc.get("targeted_search_max_sources", 2))]
+    web_off = firecrawl_blocked()
     if targeted and esc.get("enable_targeted_search_fallback", True):
-        names.update({s["id"]: s["name"] for s in targeted})
-        outcome.used_targeted = True
-        log.info("q=%s unanswered by API sources; searching approved domains %s",
-                 question.id, [s["id"] for s in targeted])
-        await run_round([s["id"] for s in targeted], outcome.rounds + 1, query)
-        if answered():
-            return outcome
+        if web_off:
+            outcome.failures["targeted_search"] = web_off[:160]
+            outcome.skipped = outcome.skipped or web_off
+        elif not over_budget("domain search"):
+            names.update({s["id"]: s["name"] for s in targeted})
+            outcome.used_targeted = True
+            # One drafted query serves the domain searches and the open web.
+            outcome.search_query = await draft_search_query(question, cfg, notes)
+            log.info("q=%s unanswered by API sources; searching approved domains %s for %r",
+                     question.id, [s["id"] for s in targeted], outcome.search_query)
+            context = {**(context or {}), "search_query": outcome.search_query}
+            await run_round([s["id"] for s in targeted], outcome.rounds + 1, query)
+            if answered():
+                return outcome
 
     if not esc["enable_open_web_fallback"]:
         return outcome
@@ -387,13 +464,25 @@ async def retrieve(
     fire = registry.get("open_web")
     if fire is None:
         return outcome
+    if firecrawl_blocked():
+        outcome.failures["open_web"] = firecrawl_blocked()[:160]
+        outcome.skipped = outcome.skipped or firecrawl_blocked()
+        if on_source:
+            await on_source("open_web", "Open Web (Supplementary)", False, 0,
+                            "web search unavailable")
+        outcome.sufficiency = assess(question, outcome.evidence)
+        return outcome
+    if over_budget("open-web search"):
+        outcome.sufficiency = assess(question, outcome.evidence)
+        return outcome
     outcome.used_web = True
     if "open_web" not in outcome.attempted:
         outcome.attempted.append("open_web")
     try:
-        plain = re.sub(r"\s*\([^)]*\)", "", question.text).strip(" ?")
-        web_query = f"{cfg.indication} {plain}"
-        web_refs = await fire.search(web_query, esc["open_web_max_results"])
+        web_query = outcome.search_query or await draft_search_query(question, cfg, notes)
+        outcome.search_query = web_query
+        raw_results = await fire.search(web_query, esc["open_web_max_results"])
+        web_refs = [r for r in (_as_ref(x) for x in raw_results) if r is not None]
         # Record every page the search returned, whether or not it was read,
         # so the evidence trail shows where the fallback actually looked.
         outcome.web_sites = [
@@ -403,7 +492,16 @@ async def retrieve(
         ]
         scraped: list[SourceRef] = []
         for i, ref in enumerate(web_refs[: esc["open_web_max_scrapes"]]):
-            page = await fire.scrape(ref.url)
+            markdown = str((ref.raw or {}).get("markdown") or "")
+            if markdown:
+                # The search already returned the page; no scrape call needed.
+                page: SourceRef | dict | None = ref
+            else:
+                page = await fire.scrape(ref.url)
+            if isinstance(page, dict):
+                page = _as_ref({**page, "backend": page.get("backend", "")}) or ref
+                if page is not ref:
+                    page.raw["page_text"] = str(page.snippet or "")
             if i < len(outcome.web_sites):
                 outcome.web_sites[i]["scraped"] = True
             scraped.append(page or ref)
@@ -478,6 +576,7 @@ def apply_outcome(question: ResearchQuestion, outcome: RetrievalOutcome) -> None
         question.status = QuestionStatus.INSUFFICIENT
         question.unmet_reason = (
             "evidence was retrieved but no source answered the question"
+            + (f"; {outcome.skipped[:160]}" if outcome.skipped else "")
         )
         return
 
@@ -493,3 +592,5 @@ def apply_outcome(question: ResearchQuestion, outcome: RetrievalOutcome) -> None
     else:
         question.status = QuestionStatus.INSUFFICIENT
         question.unmet_reason = suff.reason if suff else "below sufficiency threshold"
+    if outcome.skipped and outcome.skipped[:60] not in question.unmet_reason:
+        question.unmet_reason += f"; {outcome.skipped[:160]}"

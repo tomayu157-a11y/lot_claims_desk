@@ -190,7 +190,7 @@ def _evidence_from_report(card: dict, report: StageReport, linked: list[Research
         if t.title in used_tables:
             continue
         used_tables.add(t.title)
-        return "table", {"columns": list(t.columns), "rows": [list(r) for r in t.rows[:8]]}
+        return "table", {"columns": list(t.columns), "rows": [list(r) for r in t.rows[:5]]}
     quotes = []
     for e in own_evidence:
         q = _clean_text(e.quote, 200)

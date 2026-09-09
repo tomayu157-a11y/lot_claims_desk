@@ -239,6 +239,20 @@ class Orchestrator:
                 return True
         return False
 
+    async def _web_notice_if_needed(self, state: AgentState) -> None:
+        """Say once, on the live page and in the run, when web search has been
+        switched off for the session, so unanswered questions are explained
+        where the person is looking."""
+        from ..connectors.firecrawl import firecrawl_blocked
+
+        reason = firecrawl_blocked()
+        if not reason or self.run.context.get("web_search_notice") == reason:
+            return
+        self.run.context["web_search_notice"] = reason
+        store.save_run(self.run)
+        await self._emit("notice", level="warning", agent_key=state.key,
+                         text=f"Web search switched off: {reason}")
+
     async def _phase_cards_if_complete(self) -> None:
         """A phase whose agents have all finished owes its phase-level cards,
         written from every stage document in it. Once per phase."""
@@ -387,11 +401,26 @@ class Orchestrator:
                     await self._emit("source_used", agent_key=_s.key, source_id=sid,
                                      source_name=sname, ok=ok, count=count, reason=reason)
 
-                outcome = await retrieval.retrieve(
-                    question, self.cfg, self.synonyms, self.registry, on_source,
-                    context=inbound_context,
-                )
+                hard_limit = float(get_thresholds()["limits"].get(
+                    "question_hard_timeout_seconds", 480))
+                try:
+                    outcome = await asyncio.wait_for(
+                        retrieval.retrieve(
+                            question, self.cfg, self.synonyms, self.registry, on_source,
+                            context=inbound_context,
+                        ),
+                        timeout=hard_limit,
+                    )
+                except asyncio.TimeoutError:
+                    # The agent must never sit on one question. Report it as
+                    # unanswered with the reason and move on.
+                    log.warning("q=%s abandoned after %ss", question.id, int(hard_limit))
+                    outcome = retrieval.RetrievalOutcome(
+                        skipped=f"abandoned after {int(hard_limit)}s; sources did not respond",
+                    )
+                    outcome.sufficiency = retrieval.assess(question, [])
                 retrieval.apply_outcome(question, outcome)
+                await self._web_notice_if_needed(state)
                 agent_evidence += outcome.evidence
                 for a in outcome.answers:
                     a.run_id, a.stage = self.run.id, question.stage

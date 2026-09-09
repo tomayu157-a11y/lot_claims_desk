@@ -34,6 +34,7 @@ import re
 import time
 from urllib.parse import parse_qs, unquote, urlparse
 
+import httpx
 from selectolax.parser import HTMLParser
 
 from ..models import EvidenceOrigin, SourceRef
@@ -50,8 +51,11 @@ log = logging.getLogger("celestra.connector.web")
 BROWSER_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
               "Chrome/124.0.0.0 Safari/537.36")
 
-MAX_SCRAPES = 4
+MAX_SCRAPES = 3                 # open-web pages read per question
+MAX_SCRAPES_TARGETED = 2        # per approved domain, per question
 MIN_PAGE_CHARS = 200
+FIRECRAWL_RETRIES = 1
+FIRECRAWL_TIMEOUT = 25.0
 
 # Domains the open-web fallback harvests when no search front-end is reachable.
 # Public, high-credibility health publishers whose sitemaps carry topical URLs.
@@ -161,14 +165,62 @@ breaker = _SearchBreaker()
 # The most recent Firecrawl failure across every instance, in words, with the
 # time it happened. Empty once a call succeeds. The Settings page and the
 # banner read this so a failing key is visible without opening a log.
-firecrawl_status: dict[str, str] = {"error": "", "at": ""}
+firecrawl_status: dict = {
+    "error": "", "at": "",
+    # A definitive refusal (no credits, key rejected) or repeated transport
+    # failures stop every further Firecrawl call in this process. Questions
+    # then rely on the registry sources and are reported as unanswered where
+    # those did not suffice; the run never stops or hangs on the web.
+    "blocked": "", "consecutive_failures": 0, "calls": 0, "skipped": 0,
+}
+
+# Search results for the process, so a refined query or a second agent asking
+# the same thing never pays for the same search twice.
+_SEARCH_CACHE: dict[tuple[str, int, bool], list[dict]] = {}
 
 
-def _record_firecrawl_failure(message: str) -> None:
+def _record_firecrawl_failure(message: str, *, status: int | None = None,
+                              transport: bool = False) -> None:
     from datetime import datetime, timezone
 
     firecrawl_status["error"] = message
     firecrawl_status["at"] = datetime.now(timezone.utc).isoformat(timespec="seconds") if message else ""
+    if not message:
+        firecrawl_status["consecutive_failures"] = 0
+        return
+    if status == 402:
+        firecrawl_status["blocked"] = (
+            "Firecrawl credits are exhausted (402). Web search is off for the rest of this "
+            "session; questions the registry sources cannot answer stay unanswered. Top up "
+            "the account and restart to re-enable it."
+        )
+    elif status in (401, 403):
+        firecrawl_status["blocked"] = (
+            f"Firecrawl rejected the API key ({status}). Web search is off until the key "
+            "in .env is fixed and the server restarted."
+        )
+    elif transport:
+        firecrawl_status["consecutive_failures"] += 1
+        limit = int(get_thresholds()["escalation"].get("firecrawl_max_consecutive_failures", 2))
+        if firecrawl_status["consecutive_failures"] >= limit:
+            firecrawl_status["blocked"] = (
+                f"Firecrawl could not be reached {limit} times in a row ({message[:120]}). "
+                "Web search is off for the rest of this session so the run does not wait "
+                "on it; fix the network setting shown on the Settings page and restart."
+            )
+    if firecrawl_status["blocked"]:
+        log.warning("firecrawl disabled for this session: %s", firecrawl_status["blocked"])
+
+
+def firecrawl_blocked() -> str:
+    """Why Firecrawl must not be called right now, or '' when it may be."""
+    return str(firecrawl_status.get("blocked") or "")
+
+
+def reset_firecrawl_status() -> None:
+    firecrawl_status.update({"error": "", "at": "", "blocked": "",
+                             "consecutive_failures": 0, "calls": 0, "skipped": 0})
+    _SEARCH_CACHE.clear()
 
 # domain -> harvested sitemap URLs, or [] when the domain will not serve them.
 # Process-lifetime, because a sitemap changes far more slowly than a run.
@@ -259,16 +311,31 @@ class FirecrawlConnector:
             })
         return out
 
-    async def _firecrawl_search(self, query: str, limit: int) -> list[dict]:
+    async def _firecrawl_search(self, query: str, limit: int,
+                                with_content: bool = True) -> list[dict]:
+        """One search call. With `with_content` the pages come back in the same
+        call as markdown, so no separate scrape is paid for or waited on.
+        `limit` is the number of pages actually wanted, never more."""
         s = get_settings()
-        body: dict = {"query": self._scoped(query), "limit": max(1, min(limit, 20))}
+        scoped = self._scoped(query)
+        limit = max(1, min(limit, 10))
+        key = (scoped, limit, with_content)
+        if key in _SEARCH_CACHE:
+            return [dict(r) for r in _SEARCH_CACHE[key]]
+        body: dict = {"query": scoped, "limit": limit}
         if s.firecrawl_version == "v2":
             body["sources"] = ["web"]
+        if with_content:
+            body["scrapeOptions"] = {"formats": ["markdown"], "onlyMainContent": True}
+        firecrawl_status["calls"] += 1
         payload = await http.request(
             "POST", s.firecrawl_endpoint("search"), json_body=body,
             headers=self._firecrawl_headers(), use_cache=False,
+            retries=FIRECRAWL_RETRIES, timeout=FIRECRAWL_TIMEOUT,
         )
-        return self.parse_search_payload(payload)
+        results = self.parse_search_payload(payload)
+        _SEARCH_CACHE[key] = [dict(r) for r in results]
+        return results
 
     @classmethod
     async def probe(cls, query: str = "chronic lymphocytic leukemia incidence") -> dict:
@@ -299,6 +366,14 @@ class FirecrawlConnector:
         except Exception as exc:  # noqa: BLE001 - this is the diagnostic
             info["detail"] = describe_http_error(exc)
             info["remedy"] = remedy_for(exc)
+            # A failed probe is a real failed call and counts like one.
+            _record_firecrawl_failure(
+                f"{info['detail']}. {info['remedy']}".strip(),
+                status=getattr(getattr(exc, "response", None), "status_code", None),
+                transport=isinstance(exc, (httpx.TransportError, OSError)),
+            )
+        else:
+            _record_firecrawl_failure("")
         info["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
         return info
 
@@ -458,6 +533,13 @@ class FirecrawlConnector:
         keyed = get_settings().firecrawl_enabled
         if not keyed and breaker.open:
             return []
+        if keyed and firecrawl_blocked():
+            # A refused key or exhausted credits: do not spend a call, and do
+            # not drag the run through the keyless engines either. The
+            # question falls back to whatever the registry sources gave.
+            firecrawl_status["skipped"] += 1
+            self.last_error = firecrawl_blocked()
+            return []
 
         backends = []
         if keyed:
@@ -483,11 +565,21 @@ class FirecrawlConnector:
                     # looks exactly like a working one. Say what broke and
                     # what fixes it; "ConnectError" alone helps nobody.
                     remedy = remedy_for(exc) if isinstance(exc, Exception) else ""
+                    status = getattr(getattr(exc, "response", None), "status_code", None)
                     log.warning("firecrawl search failed: %s. %s Falling back to a "
                                 "keyless engine for query=%r",
                                 detail, remedy, query[:120])
                     self.last_error = f"{detail}. {remedy}".strip()
-                    _record_firecrawl_failure(self.last_error)
+                    _record_firecrawl_failure(
+                        self.last_error, status=status,
+                        transport=isinstance(exc, (httpx.TransportError, OSError)),
+                    )
+                    if firecrawl_blocked() and breaker.open:
+                        return []
+                elif breaker.open:
+                    # The keyless engines have already proved unreachable
+                    # on this network; do not pay their timeouts again.
+                    continue
                 continue
             if name == "firecrawl":
                 _record_firecrawl_failure("")
@@ -502,30 +594,39 @@ class FirecrawlConnector:
                 # Sitemap URLs carry no title or snippet, so their relevance
                 # was already decided by the token match on the URL itself.
                 if item.get("backend") != "domain-index" and not is_relevant(
-                        query, item.get("title", ""), item.get("snippet", ""), url):
+                        query, item.get("title", ""), item.get("snippet", ""), url,
+                        str(item.get("markdown", ""))[:3000]):
                     continue
                 if url not in {k["url"] for k in kept}:
                     kept.append(item)
             if kept:
-                if not keyed:
+                if name != "firecrawl":
                     breaker.record_success()
                 return kept[:limit]
 
-        if not keyed:
+        if not any(n == "firecrawl" and not firecrawl_blocked() for n, _ in backends):
+            # Every engine tried was keyless (or Firecrawl was already
+            # blocked); count the miss towards the keyless breaker so a
+            # blocked network stops costing a timeout chain per question.
             breaker.record_failure(last_error)
         return []
 
-    async def scrape(self, url: str) -> dict:
-        """Page text as {url, title, text, backend}. Never raises."""
+    async def scrape(self, url: str, markdown: str = "") -> dict:
+        """Page text as {url, title, text, backend}. Never raises. Pass the
+        markdown a search already returned to skip the scrape call."""
         url = clean(url)
         if not url:
             return {}
-        if get_settings().firecrawl_enabled:
+        if markdown and len(clean(markdown)) >= MIN_PAGE_CHARS:
+            return {"url": url, "title": "", "text": clean(markdown), "backend": "firecrawl"}
+        if get_settings().firecrawl_enabled and not firecrawl_blocked():
             try:
+                firecrawl_status["calls"] += 1
                 payload = await http.request(
                     "POST", get_settings().firecrawl_endpoint("scrape"),
-                    json_body={"url": url, "formats": ["markdown"]},
+                    json_body={"url": url, "formats": ["markdown"], "onlyMainContent": True},
                     headers=self._firecrawl_headers(), use_cache=False,
+                    retries=FIRECRAWL_RETRIES, timeout=FIRECRAWL_TIMEOUT,
                 )
                 if isinstance(payload, dict) and payload.get("success") is False:
                     raise RuntimeError(str(payload.get("error") or "success=false"))
@@ -540,6 +641,11 @@ class FirecrawlConnector:
                 log.warning("firecrawl scrape failed: %s. %s Fetching %s directly.",
                             detail, remedy_for(exc), url)
                 self.last_error = f"scrape: {detail}"
+                _record_firecrawl_failure(
+                    self.last_error,
+                    status=getattr(getattr(exc, "response", None), "status_code", None),
+                    transport=isinstance(exc, (httpx.TransportError, OSError)),
+                )
         try:
             html = await http.get_text(url, headers={"User-Agent": BROWSER_UA})
         except Exception:  # noqa: BLE001 - an unreachable page is not an error
@@ -557,12 +663,43 @@ class FirecrawlConnector:
         return {"url": url, "title": clean(title_node.text()) if title_node else "",
                 "text": text, "backend": "direct"}
 
+    def refs_from_results(self, results: list[dict], query: str = "") -> list[SourceRef]:
+        """Search results as SourceRefs, carrying any page text the search
+        already returned so a later scrape can be skipped."""
+        refs: list[SourceRef] = []
+        for item in results:
+            url = clean(item.get("url"))
+            if not url:
+                continue
+            text = clean(item.get("markdown")) or clean(item.get("snippet"))
+            refs.append(SourceRef(
+                source_id=self.source_id, source_name=self.source_name, tier=self.tier,
+                url=url, title=clean(item.get("title")) or url,
+                organization=self.organization,
+                identifiers={"domain": _domain_of(url),
+                             "search_backend": item.get("backend", "")},
+                snippet=clip(text, 1500),
+                raw={"query": query, "search_backend": item.get("backend", ""),
+                     "markdown": clean(item.get("markdown")),
+                     "result_snippet": clean(item.get("snippet")),
+                     "page_text": text[:20000], "text": text[:20000]},
+                origin=self.origin,
+            ))
+        return refs
+
+    async def search_refs(self, query: str, limit: int) -> list[SourceRef]:
+        return self.refs_from_results(await self.search(query, limit), query)
+
     async def discover(self, ctx: RetrievalContext, limit: int) -> ConnectorResult:
         started = time.perf_counter()
         calls = 0
+        if get_settings().firecrawl_enabled and firecrawl_blocked():
+            return ConnectorResult.failure(self.source_id, firecrawl_blocked()[:160])
         try:
-            query = self.build_query(ctx)
-            results = await self.search(query, max(1, limit))
+            query = clean(ctx.extra.get("search_query") or "") if ctx.extra else ""
+            query = query or self.build_query(ctx)
+            results = await self.search(query, max(1, min(limit,
+                                        MAX_SCRAPES_TARGETED if self.domain else MAX_SCRAPES)))
             calls += 1
             if not results:
                 return ConnectorResult(
@@ -572,8 +709,9 @@ class FirecrawlConnector:
                     elapsed_ms=int((time.perf_counter() - started) * 1000))
 
             refs: list[SourceRef] = []
-            for item in results[:min(limit, MAX_SCRAPES)]:
-                page = await self.scrape(item["url"])
+            cap = MAX_SCRAPES_TARGETED if self.domain else MAX_SCRAPES
+            for item in results[:min(limit, cap)]:
+                page = await self.scrape(item["url"], item.get("markdown", ""))
                 calls += 1
                 text = clean(page.get("text"))
                 if len(text) < MIN_PAGE_CHARS:

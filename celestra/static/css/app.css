@@ -1255,7 +1255,7 @@ textarea.is-invalid { border-color: var(--danger); }
 /* --------------------------------------------------------------------------
    21. Insight cards (five-part review cards) and the card grid
    -------------------------------------------------------------------------- */
-.insight-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 16px; align-items: start; }
+.insight-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
 @media (max-width: 900px) { .insight-grid { grid-template-columns: 1fr; } }
 .insight-grid > [data-hidden="1"] { display: none; }
 
@@ -1326,3 +1326,9 @@ textarea.is-invalid { border-color: var(--danger); }
 .icard-link.as-button { background: none; border: 0; padding: 0; cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--primary-text); }
 .icard-link:hover, .icard-link.as-button:hover { text-decoration: underline; }
 .icard-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.phase-cards { margin-bottom: 28px; }
+.phase-cards-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.phase-cards-head h3 { margin: 0; font-size: 15px; }
+.phase-cards-head .count { color: var(--text-3); font-weight: 500; }
+.phase-cards.is-new .phase-cards-head h3 { color: var(--primary-text); }

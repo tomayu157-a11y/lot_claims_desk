@@ -65,6 +65,8 @@
 {% endif %}
 
 <h2 class="section-head">All findings ({{ c.insights }})</h2>
+<p class="sub mb-2">Cards from the latest phase come first; the discovery cards you reviewed at the
+  gate are below them.</p>
 <div class="chips mb-2" data-filter-group>
   <button type="button" class="pill" data-filter-category="all" aria-pressed="true">All ({{ c.insights }})</button>
   <button type="button" class="pill" data-filter-category="requires_input" aria-pressed="false">Needs input ({{ c.needs_decision }})</button>
@@ -73,6 +75,20 @@
   <button type="button" class="pill" data-filter-category="{{ cat.key }}" aria-pressed="false">{{ cat.label }} ({{ cat.count }})</button>
   {% endfor %}
 </div>
+{% for sec in sections | default([]) %}
+<section class="phase-cards {{ 'is-new' if sec.is_new }}" id="cards-{{ sec.key }}">
+  <div class="phase-cards-head">
+    <h3>{{ sec.name }} phase <span class="count">({{ sec.cards | length }} cards)</span></h3>
+    <span class="chip chip-sm {{ 'chip-blue' if sec.is_new else 'chip-muted' }}">{{ sec.label }}</span>
+    {% if sec.needs %}<span class="meta">{{ sec.needs }} need{{ '' if sec.needs == 1 else 's' }} your review</span>{% endif %}
+  </div>
+  <div class="insight-grid" data-insight-list>
+    {% for insight in sec.cards %}
+      {% include "partials/insight_card.html" %}
+    {% endfor %}
+  </div>
+</section>
+{% else %}
 <div class="insight-grid" data-insight-list>
   {% for insight in insights | default([]) %}
     {% include "partials/insight_card.html" %}
@@ -80,6 +96,7 @@
   <p class="sub">No findings were produced.</p>
   {% endfor %}
 </div>
+{% endfor %}
 <div class="empty mt-2" data-insight-empty {% if insights %}hidden{% endif %}>
   <h3>No findings match that filter</h3>
   <p class="mb-0">Pick a different filter.</p>
