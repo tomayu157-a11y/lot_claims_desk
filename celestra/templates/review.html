@@ -31,14 +31,14 @@
   </div>
 </div>
 
-<div class="tiles">
+<div class="stats mb-3">
   {{ stat_tile(counts.insights, 'Findings so far', 'blue') }}
   {{ stat_tile(counts.pending, 'Awaiting your decision', 'amber') }}
   {{ stat_tile(counts.approved + counts.modified, 'Approved or modified', 'green') }}
   {{ stat_tile(counts.conflicts_open, 'Open source conflicts', 'rose') }}
 </div>
 
-<div class="two-col">
+<div class="grid grid-2 mb-3">
   <section class="card">
     <div class="card-body">
       <h2>Finished</h2>

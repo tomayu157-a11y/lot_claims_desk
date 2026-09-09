@@ -30,7 +30,6 @@
       {% if tables %}
         {% for table in tables %}
           {{ data_table(table) }}
-          {% if table.footnote %}<p class="table-footnote">{{ table.footnote }}</p>{% endif %}
         {% endfor %}
       {% else %}
         <p><strong>No table has been built for this finding yet.</strong></p>

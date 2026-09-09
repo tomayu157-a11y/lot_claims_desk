@@ -1075,3 +1075,8 @@ ul.checks .ic { flex: 0 0 auto; margin-top: 2px; color: var(--ok); }
 
 /* Wide dialog for table snapshots: report tables need the room. */
 .modal.modal-wide { width: min(1100px, 96vw); max-width: none; }
+
+/* Agent roster on the review gate page. */
+.agent-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+.agent-list li { display: flex; align-items: flex-start; gap: 12px; }
+.agent-list li .sub { margin: 2px 0 0; }
