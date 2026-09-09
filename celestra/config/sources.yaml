@@ -3,16 +3,26 @@
 # connector: key resolved by connectors/registry.py. null => search-only source.
 
 tiers:
-  1: {label: "Tier 1 — Government, regulators, official guidelines, coding authorities, product labels", weight: 1.00, primary: true}
-  2: {label: "Tier 2 — Peer-reviewed literature, trial registries, systematic reviews", weight: 0.80, primary: true}
-  3: {label: "Tier 3 — Professional / disease organizations, high-quality secondary evidence", weight: 0.60, primary: false}
-  4: {label: "Tier 4 — Industry / contextual sources", weight: 0.40, primary: false}
-  5: {label: "Tier 5 — General web (supplementary only)", weight: 0.20, primary: false}
+  1:
+    label: "Tier 1 — Government, regulators, official guidelines, coding authorities, product labels"
+    weight: 1.00
+    primary: true
+  2:
+    label: "Tier 2 — Peer-reviewed literature, trial registries, professional and disease organisations"
+    weight: 0.85
+    primary: true
+  3:
+    label: "Tier 3 — Open-web search (supplementary, lowest)"
+    weight: 0.30
+    primary: false
 
 tier_policy:
-  never_override_below_tier: 5
-  supplementary_tier_floor: 5
-  approved_max_tier: 4
+  # Every registered source is credible, so tiers 1 and 2 are both primary and
+  # either can answer a question on its own. Tier 3 is the open web: it may
+  # support a finding but never carries one alone.
+  never_override_below_tier: 3
+  supplementary_tier_floor: 3
+  approved_max_tier: 2
 
 sources:
 
@@ -403,7 +413,7 @@ sources:
   - id: asco
     name: ASCO
     domain: asco.org
-    tier: 3
+    tier: 2
     types: [guideline, literature]
     indications: [ALL, CLL]
     stages: [stage_2, stage_5]
@@ -416,7 +426,7 @@ sources:
   - id: acs
     name: American Cancer Society
     domain: cancer.org
-    tier: 3
+    tier: 2
     types: [advocacy, epidemiology]
     indications: [ALL, CLL]
     stages: [stage_1, stage_5]
@@ -426,7 +436,7 @@ sources:
   - id: lls
     name: Leukemia & Lymphoma Society
     domain: lls.org
-    tier: 3
+    tier: 2
     types: [advocacy]
     indications: [ALL, CLL]
     stages: [stage_1, stage_5]
@@ -436,7 +446,7 @@ sources:
   - id: cibmtr
     name: CIBMTR
     domain: cibmtr.org
-    tier: 3
+    tier: 2
     types: [registry, real_world]
     indications: [ALL, CLL]
     stages: [stage_5, stage_6]
@@ -492,7 +502,7 @@ sources:
   - id: open_web
     name: Open Web (Supplementary)
     domain: null
-    tier: 5
+    tier: 3
     types: [web]
     indications: [ALL, CLL]
     stages: [stage_1, stage_2, stage_3, stage_4, stage_5, stage_6]

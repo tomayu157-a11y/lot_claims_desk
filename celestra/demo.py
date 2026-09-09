@@ -134,12 +134,28 @@ BLOCKED = {
 }
 
 
+def _registry_tier(source_id: str, fallback: int) -> int:
+    """The tier the registry assigns, not the one written into the fixture.
+
+    Hardcoding tiers here let the demo drift from sources.yaml: a source the
+    registry had promoted still behaved as its old tier, which changed
+    confidence and manufactured conflicts.
+    """
+    from .settings import get_source_registry
+
+    for src in get_source_registry()["sources"]:
+        if src["id"] == source_id:
+            return int(src["tier"])
+    return fallback
+
+
 class _StubSource:
     origin = EvidenceOrigin.APPROVED_API
 
     def __init__(self, source_id: str, spec: tuple[int, str, str, str, str]) -> None:
         self.source_id = source_id
-        self.tier, self.name, self.url, self.title, self.body = spec
+        tier, self.name, self.url, self.title, self.body = spec
+        self.tier = _registry_tier(source_id, tier)
 
     async def discover(self, ctx: RetrievalContext, limit: int) -> ConnectorResult:
         return ConnectorResult(

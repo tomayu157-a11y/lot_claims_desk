@@ -29,6 +29,7 @@ from .models import (
     utcnow,
 )
 from .services import orchestrator as orch
+from .services.scoring import confidence_for
 from .settings import (
     BASE_DIR,
     ensure_dirs,
@@ -556,7 +557,6 @@ async def insights_page(request: Request, run_id: str):
 
 @app.get("/runs/{run_id}/insights/{insight_id}/modify", response_class=HTMLResponse)
 @app.get("/runs/{run_id}/insights/{insight_id}/input", response_class=HTMLResponse)
-@app.get("/runs/{run_id}/insights/{insight_id}/proxy", response_class=HTMLResponse)
 async def insight_modal(request: Request, run_id: str, insight_id: str):
     get_run_or_404(run_id)
     insight = store.get_insight(run_id, insight_id)
@@ -603,9 +603,32 @@ async def insight_evidence(request: Request, run_id: str, insight_id: str):
     if insight is None:
         raise HTTPException(404, "Insight not found")
     evidence = [e for e in store.get_evidence(run_id) if e.id in set(insight.evidence_ids)]
+    # Approved-source evidence first, open-web underneath it, so the reader
+    # sees what a vetted source said before what the web added.
+    evidence.sort(key=lambda e: (e.is_supplementary, e.tier, -e.relevance))
+
+    # Pages the open-web fallback consulted for this insight's questions,
+    # including ones that produced nothing, so the trail is auditable.
+    wanted = set(insight.question_ids)
+    sites: list[dict] = []
+    seen: set[str] = set()
+    for q in store.get_questions(run_id):
+        if q.id not in wanted:
+            continue
+        for site in q.web_sites or []:
+            url = str(site.get("url", ""))
+            if url and url not in seen:
+                seen.add(url)
+                sites.append(site)
+
     return templates.TemplateResponse(
         request, "partials/evidence_panel.html",
-        {**base_ctx(request), "insight": insight, "evidence": evidence},
+        {**base_ctx(request), "insight": insight, "evidence": evidence,
+         "web_sites": sites,
+         "counts": {
+             "approved": sum(1 for e in evidence if not e.is_supplementary),
+             "web": sum(1 for e in evidence if e.is_supplementary),
+         }},
     )
 
 
@@ -624,37 +647,106 @@ async def _body(request: Request) -> dict[str, Any]:
         return {}
 
 
-def _apply_insight_action(run_id: str, insight_id: str, action: str, user_input: str) -> Insight:
+async def _apply_insight_action(
+    run_id: str, insight_id: str, action: str, user_input: str
+) -> Insight:
     insight = store.get_insight(run_id, insight_id)
     if insight is None:
         raise HTTPException(404, "Insight not found")
 
     if action == "approve":
         insight.review_action = ReviewAction.APPROVED
-    elif action in ("modify", "input", "proxy"):
-        insight.review_action = ReviewAction.MODIFIED
-        insight.user_input = user_input.strip()[:500]
-        others = [i for i in store.get_insights(run_id) if i.id != insight_id]
-        impacted = {x["title"] for x in _impacts(insight, others)}
-        insight.impacted_insight_ids = [o.id for o in others if o.title in impacted]
-        if insight.user_input and insight.confidence is Confidence.REQUIRES_INPUT:
-            # Human input resolves a blocked finding but consults no new source,
-            # so it can lift confidence to medium and never to high.
-            insight.confidence = Confidence.MEDIUM
-    else:
+        store.save_insights(run_id, [insight])
+        return insight
+
+    if action not in ("modify", "input"):
         raise HTTPException(400, f"Unknown action '{action}'")
+
+    insight.review_action = ReviewAction.MODIFIED
+    insight.user_input = user_input.strip()[:500]
+    others = [i for i in store.get_insights(run_id) if i.id != insight_id]
+    impacted = {x["title"] for x in _impacts(insight, others)}
+    insight.impacted_insight_ids = [o.id for o in others if o.title in impacted]
+
+    if insight.user_input:
+        await _revise_insight(run_id, insight)
 
     store.save_insights(run_id, [insight])
     return insight
 
 
+async def _revise_insight(run_id: str, insight: Insight) -> None:
+    """Send the reviewer's instruction to the model and apply the result.
+
+    The instruction is not filed as a note. The model decides whether the held
+    evidence can satisfy it and searches the open web when it cannot, then
+    rewrites the answer against everything found. The revision carries into
+    the stage report so the final document reflects it.
+    """
+    from .services.revision import revise
+
+    run = store.get_run(run_id)
+    question = next(
+        (q for q in store.get_questions(run_id) if q.id in set(insight.question_ids)), None
+    )
+    if run is None or question is None:
+        return
+
+    evidence = [e for e in store.get_evidence(run_id) if e.question_id == question.id]
+    synonyms = list(
+        get_questions()["indications"].get(run.config.indication_key, {}).get("synonyms") or []
+    )
+    try:
+        result = await revise(insight, question, evidence, insight.user_input,
+                              run.config, registry(), synonyms)
+    except Exception:
+        log.exception("revision failed for %s", insight.id)
+        return
+
+    if result.evidence and len(result.evidence) > len(evidence):
+        store.save_evidence(run_id, [e for e in result.evidence if e not in evidence])
+    if result.sites:
+        question.web_sites = (question.web_sites or []) + result.sites
+
+    if result.text:
+        insight.summary = result.text[:400]
+        question.answer_text = result.text
+        question.answer_status = result.status
+        if result.citations:
+            question.answer_citations = result.citations
+            insight.source_ids = list(dict.fromkeys(
+                [e.source_id for e in result.evidence]
+            ))
+        # A revision that consulted the open web is no longer purely
+        # approved-source evidence, and the confidence must say so.
+        insight.confidence = confidence_for(
+            question, result.evidence, store.get_contradictions(run_id)
+        )
+    if result.note:
+        insight.detail = (f"Reviewer instruction: {insight.user_input} — {result.note}")
+
+    store.save_questions(run_id, [question])
+
+    # Carry the revision into the stage document.
+    for report in store.get_stage_reports(run_id):
+        if report.stage != question.stage:
+            continue
+        for row in report.answers:
+            if row.get("question") == question.text or row.get("seed") == question.seed_text:
+                row["answer"] = question.answer_text
+                row["status"] = question.answer_status.value
+                row["citations"] = question.answer_citations
+                row["revised"] = True
+        store.save_stage_reports(run_id, [report])
+
+
 @app.post("/runs/{run_id}/insights/{insight_id}/{action}", response_class=HTMLResponse)
 async def insight_action(request: Request, run_id: str, insight_id: str, action: str):
     get_run_or_404(run_id)
-    if action not in ("approve", "modify", "input", "proxy"):
+    if action not in ("approve", "modify", "input"):
         raise HTTPException(404, "Unknown insight action")
     body = await _body(request)
-    insight = _apply_insight_action(
+    insight = await _apply_insight_action(
         run_id, insight_id, action, str(body.get("user_input", ""))
     )
     return templates.TemplateResponse(

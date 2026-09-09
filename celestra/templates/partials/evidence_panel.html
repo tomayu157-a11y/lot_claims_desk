@@ -67,4 +67,27 @@
       {% endfor %}
     </div>
   </aside>
+
+{% if web_sites %}
+<div class="subblock">
+  <h3>Open-web pages consulted</h3>
+  <p class="sub mb-2">
+    Searched only because the registered sources did not answer this question. A page listed
+    here without a quote contributed nothing.
+  </p>
+  <ul class="site-list">
+    {% for site in web_sites %}
+    <li>
+      <span class="vtag {{ 'vtag-general-knowledge' if site.get('used') else 'vtag-not-verified' }}">
+        {{ 'QUOTED' if site.get('used') else ('READ' if site.get('scraped') else 'NOT READ') }}
+      </span>
+      <a href="{{ site.get('url') }}" target="_blank" rel="noopener noreferrer">
+        {{ site.get('title') or site.get('url') }}
+      </a>
+      {% if site.get('site') %}<span class="text-faint">{{ site.get('site') }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
 </div>

@@ -222,6 +222,9 @@ class ResearchQuestion(BaseModel):
     answer_text: str = ""
     answer_status: AnswerStatus = AnswerStatus.NOT_FOUND
     answer_citations: list[str] = Field(default_factory=list)
+    # Open-web pages consulted during fallback: {url, title, used}. Recorded
+    # even when a page contributed nothing, so the trail is auditable.
+    web_sites: list[dict[str, Any]] = Field(default_factory=list)
 
     @property
     def is_answered(self) -> bool:

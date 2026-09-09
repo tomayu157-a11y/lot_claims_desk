@@ -16,6 +16,7 @@ from ..models import (
     Evidence,
     QuestionStatus,
     ResearchQuestion,
+    ReviewAction,
 )
 from ..settings import get_source_registry, get_thresholds
 
@@ -138,33 +139,41 @@ def confidence_for(
     evidence: list[Evidence],
     contradictions: list[Contradiction],
 ) -> Confidence:
-    """Confidence is a property of the evidence, not of the writing."""
+    """Confidence is a property of the evidence, not of the writing.
+
+    Requires Input is deliberately narrow. It means a person must act, and it
+    fires for exactly two reasons: nothing but the open web answered the
+    question, or two sources disagree and nobody has adjudicated. A finding
+    that is thin but carries a vetted source behind it is Medium, because
+    thinness is a quality signal, not something a reviewer can resolve.
+    """
     conf = get_thresholds()["confidence"]
+    ceiling = get_thresholds()["sufficiency"]["primary_tier_ceiling"]
     if not evidence:
         return Confidence.REJECTED
 
-    s = assess(question, evidence)
-    open_escalated = sum(
-        1 for c in contradictions
-        if c.severity is ContradictionSeverity.ESCALATED
-        and c.review_action.value == "pending"
-    )
-    approved = [e for e in evidence if not e.is_supplementary]
-    if not approved:
-        # Answered only from open-web fallback. Never presented as high confidence.
+    primary = [e for e in evidence if e.tier <= ceiling and not e.is_supplementary]
+    if not primary:
+        # Only open-web evidence. A vetted source has to confirm this before it
+        # can be used, which is a human decision.
         return Confidence.REQUIRES_INPUT
 
-    primary = sum(1 for e in evidence if e.tier <= 2)
-    for level, enum_value in (("high", Confidence.HIGH), ("medium", Confidence.MEDIUM)):
-        spec = conf[level]
-        if (
-            s.coverage >= spec["min_coverage_score"]
-            and s.evidence_items >= spec["min_evidence_items"]
-            and primary >= spec["min_primary_tier_items"]
-            and open_escalated <= spec["max_open_contradictions"]
-        ):
-            return enum_value
-    return Confidence.REQUIRES_INPUT
+    if any(
+        c.severity is ContradictionSeverity.ESCALATED
+        and c.review_action is ReviewAction.PENDING
+        for c in contradictions
+    ):
+        return Confidence.REQUIRES_INPUT
+
+    s = assess(question, evidence)
+    spec = conf["high"]
+    if (
+        s.coverage >= spec["min_coverage_score"]
+        and s.evidence_items >= spec["min_evidence_items"]
+        and len(primary) >= spec["min_primary_tier_items"]
+    ):
+        return Confidence.HIGH
+    return Confidence.MEDIUM
 
 
 def status_after_retrieval(question: ResearchQuestion, suff: Sufficiency) -> QuestionStatus:

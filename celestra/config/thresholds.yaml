@@ -4,29 +4,38 @@
 # explicitly rather than silently.
 
 sufficiency:
-  min_evidence_items: 3          # distinct evidence items supporting the question
-  min_distinct_sources: 2        # from different source ids
-  min_primary_tier_items: 1      # at least one item at tier <= primary_tier_ceiling
+  # Every registered source is a vetted authority: SEER, NCI, FDA, iwCLL and
+  # the rest. When one of them answers the question, that IS the answer, and
+  # demanding corroboration from a second one only manufactures gaps. So a
+  # single verified quote from a primary-tier source is sufficient.
+  min_evidence_items: 1
+  min_distinct_sources: 1
+  min_primary_tier_items: 1      # tier 1 or 2; the open web cannot satisfy this
   primary_tier_ceiling: 2
-  min_coverage_score: 0.60       # weighted tier coverage, 0..1
-  min_quote_length: 40           # chars; shorter quotes do not count as support
+  # Coverage no longer gates sufficiency. It remains a quality signal and is
+  # what separates High from Medium confidence below.
+  min_coverage_score: 0.0
+  min_quote_length: 40
 
 confidence:
   # Evaluated top-down; first match wins.
   high:
-    min_coverage_score: 0.80
-    min_evidence_items: 4
-    min_primary_tier_items: 2
+    min_coverage_score: 0.70
+    min_evidence_items: 2
+    min_primary_tier_items: 1
     max_open_contradictions: 0
   medium:
-    min_coverage_score: 0.60
-    min_evidence_items: 3
+    # A single primary-tier source that answers the question lands here.
+    min_coverage_score: 0.0
+    min_evidence_items: 1
     min_primary_tier_items: 1
     max_open_contradictions: 2
   requires_input:
-    # Anything that reaches evidence but fails medium, or carries an escalated
-    # contradiction, or was answered only from supplementary web evidence.
-    description: "Reached evidence but not sufficiency, or carries an unresolved conflict"
+    # Deliberately narrow. Exactly two situations reach a person:
+    #   1. the only evidence is open-web, so no vetted source answered it
+    #   2. an escalated source disagreement is still unresolved
+    # Thin-but-sourced findings are Medium, not Requires Input.
+    description: "Answered only from the open web, or carrying an unresolved conflict"
   rejected:
     description: "No usable evidence after every retrieval strategy was exhausted"
 

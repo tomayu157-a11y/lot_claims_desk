@@ -88,10 +88,6 @@
       <button type="button" class="btn btn-sm btn-secondary"
               data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/input">Add Input</button>
 
-      {% if conf == 'requires_input' %}
-      <button type="button" class="btn btn-sm btn-danger"
-              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/proxy">Define Proxy</button>
-      {% endif %}
 
       {% if insight.table_titles %}
       <button type="button" class="btn btn-sm btn-secondary"

@@ -461,6 +461,12 @@ def context() -> dict:
         "llm": {"configured": False, "provider": "anthropic", "explicit": False,
                 "model": "claude-opus-5", "gaps": ["ANTHROPIC_API_KEY"]},
         "app_name": "Celestra",
+        "web_sites": [
+            {"url": "https://example.org/cll", "title": "CLL overview",
+             "site": "example.org", "scraped": True, "used": True},
+            {"url": "https://example.org/other", "title": "Unused page",
+             "site": "example.org", "scraped": True, "used": False},
+        ],
         # review gate page
         "completed_agents": [{"name": "Clinical Landscape Agent", "icon": "leaf",
                               "tagline": "Disease context"}],

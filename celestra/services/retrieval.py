@@ -42,6 +42,7 @@ class RetrievalOutcome:
     evidence: list[Evidence] = field(default_factory=list)
     answers: list[Answer] = field(default_factory=list)
     eliminated: int = 0
+    web_sites: list[dict] = field(default_factory=list)
     sufficiency: Sufficiency | None = None
     attempted: list[str] = field(default_factory=list)
     answered: list[str] = field(default_factory=list)
@@ -138,6 +139,15 @@ async def _gather(
             return ConnectorResult.failure(sid, f"connector error: {type(exc).__name__}")
 
     return list(await asyncio.gather(*(one(s) for s in source_ids)))
+
+
+def _domain(url: str) -> str:
+    from urllib.parse import urlparse
+
+    try:
+        return (urlparse(url).netloc or "").replace("www.", "")
+    except ValueError:
+        return ""
 
 
 def _merge_evidence(
@@ -318,9 +328,18 @@ async def retrieve(
         plain = re.sub(r"\s*\([^)]*\)", "", question.text).strip(" ?")
         web_query = f"{cfg.indication} {plain}"
         web_refs = await fire.search(web_query, esc["open_web_max_results"])
+        # Record every page the search returned, whether or not it was read,
+        # so the evidence trail shows where the fallback actually looked.
+        outcome.web_sites = [
+            {"url": r.url, "title": r.title or r.url, "site": _domain(r.url),
+             "scraped": False, "used": False}
+            for r in web_refs
+        ]
         scraped: list[SourceRef] = []
-        for ref in web_refs[: esc["open_web_max_scrapes"]]:
+        for i, ref in enumerate(web_refs[: esc["open_web_max_scrapes"]]):
             page = await fire.scrape(ref.url)
+            if i < len(outcome.web_sites):
+                outcome.web_sites[i]["scraped"] = True
             scraped.append(page or ref)
         for batch_no, start in enumerate(range(0, len(scraped), batch_size)):
             answer, extra = await answer_batch(
@@ -335,6 +354,10 @@ async def retrieve(
             if assess(question, outcome.evidence).ok and outcome.answers:
                 break
         extra = [e for e in outcome.evidence if e.is_supplementary]
+        # Mark which pages actually produced a quote.
+        used_urls = {e.url for e in extra}
+        for site in outcome.web_sites:
+            site["used"] = site["url"] in used_urls
         if on_source:
             await on_source("open_web", "Open Web (Supplementary)", bool(extra),
                             len(extra), "" if extra else "no usable page text")
@@ -362,6 +385,7 @@ def apply_outcome(question: ResearchQuestion, outcome: RetrievalOutcome) -> None
     question.answer_text = text
     question.answer_status = status
     question.answer_citations = citations
+    question.web_sites = outcome.web_sites
 
     if suff and suff.ok:
         question.status = QuestionStatus.SUFFICIENT
