@@ -50,7 +50,9 @@ FIXTURES = {
         "months. Immunophenotyping demonstrates coexpression of CD5, CD19, CD20 and CD23. "
         "Prognostic biomarkers including IGHV mutational status, TP53 mutation and "
         "deletion 17p determine treatment selection. Estimated new cases of chronic "
-        "lymphocytic leukemia in the United States in 2025 are 20,700 cases.",
+        "lymphocytic leukemia in the United States in 2025 are 20,700 cases. The "
+        "age-adjusted incidence rate of chronic lymphocytic leukemia is 5.6 per "
+        "100,000 persons per year.",
     ),
     "acs": (
         3, "American Cancer Society",
@@ -219,7 +221,10 @@ async def main() -> int:
                                              for i in insights))
 
     print("\n== contradictions ==")
-    check("conflict surfaced between NCI and ACS", len(contras) >= 1, f"{len(contras)} found")
+    check("numeric conflict surfaced between two tier 1 sources",
+          len(contras) >= 1, f"{len(contras)} found")
+    check("conflict names both sides and a reason",
+          all(c.source_a_claim and c.source_b_claim and c.reason for c in contras))
     check("no conflict auto-resolved",
           all(c.review_action.value == "pending" for c in contras))
 

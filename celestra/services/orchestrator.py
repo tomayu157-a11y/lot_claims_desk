@@ -259,8 +259,10 @@ class Orchestrator:
                 # on question four should not discard the first three answers.
                 store.save_questions(self.run.id, [question])
                 store.save_evidence(self.run.id, outcome.evidence)
-                if found:
-                    store.save_contradictions(self.run.id, found)
+                # Conflicts are deliberately not persisted per question: the same
+                # claim pair surfaces on every question both sources answered, and
+                # deduplication runs once the agent has seen them all. Saving here
+                # made the duplicates permanent regardless of that pass.
 
                 insight = self._insight_for(question, outcome.evidence, found, bucket)
                 if insight:

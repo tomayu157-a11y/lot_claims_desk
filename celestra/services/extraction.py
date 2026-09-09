@@ -213,10 +213,15 @@ async def extract(
     collected: list[Evidence] = []
     seen: set[str] = set()
     for ref in refs:
+        # Offer at least as many candidates as the per-source cap can accept,
+        # otherwise the cap is never the binding constraint and a source
+        # contributes fewer quotes than the diversity rule allows.
         items = (
-            await extract_with_llm(ref, question, question_id, terms)
+            await extract_with_llm(ref, question, question_id, terms,
+                                   max_quotes=per_source_cap)
             if llm.available
-            else extract_deterministic(ref, question_id, terms)
+            else extract_deterministic(ref, question_id, terms,
+                                       max_quotes=per_source_cap)
         )
         for ev in items:
             fingerprint = ev.quote[:120].lower()
