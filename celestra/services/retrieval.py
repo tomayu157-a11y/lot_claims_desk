@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from ..connectors.base import ConnectorResult, RetrievalContext
 from ..models import Evidence, QuestionStatus, ResearchQuestion, RunConfig, SourceRef
 from ..settings import get_source_registry, get_thresholds
-from .extraction import extract, question_terms
+from .extraction import build_terms, extract
 from .llm import LLMUnavailable, llm
 from .scoring import Sufficiency, assess
 
@@ -166,7 +166,7 @@ async def retrieve(
     for value in (context or {}).values():
         if isinstance(value, list):
             upstream_terms += [str(v) for v in value[:20]]
-    terms = question_terms(question.text, question.aspects, synonyms + upstream_terms)
+    terms = build_terms(question.text, question.aspects, synonyms, upstream_terms)
     query = question.text
 
     candidates: dict[str, SourceRef] = {}       # by ref.key, across rounds

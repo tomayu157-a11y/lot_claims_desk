@@ -87,35 +87,124 @@ _OFF_TOPIC = re.compile(
 )
 
 
-def _score_sentence(sentence: str, terms: set[str]) -> float:
+# Words that signal a question is asking for a quantity. Only then do numbers
+# in a sentence earn credit; otherwise an incidence figure outranks a
+# diagnostic definition for a question about diagnosis.
+_QUANTITATIVE = {
+    "incidence", "prevalence", "rate", "rates", "survival", "mortality", "cases",
+    "deaths", "percent", "percentage", "proportion", "share", "median", "mean",
+    "risk", "frequency", "dose", "dosing", "dosage", "duration", "cost", "costs",
+    "estimate", "estimated", "number", "count", "statistics", "epidemiology",
+}
+
+_STOP = {
+    "what", "which", "how", "are", "the", "and", "for", "with", "from", "that",
+    "this", "does", "have", "has", "into", "used", "use", "including", "their",
+    "there", "where", "when", "who", "why", "was", "were", "been", "being",
+    "united", "states", "adult", "adults", "patients", "population", "research",
+    "claims", "real", "world", "standard", "current", "relevant", "principal",
+}
+
+
+_FOCUS_SYNONYMS: dict[str, set[str]] = {
+    "incidence": {"rate", "rates", "cases", "diagnosed"},
+    "prevalence": {"living", "prevalent"},
+    "mortality": {"death", "deaths", "died", "dying"},
+    "survival": {"surviving", "survive", "survived"},
+    "diagnosed": {"diagnosis", "diagnostic"},
+    "diagnosis": {"diagnosed", "diagnostic"},
+    "treatment": {"treated", "therapy", "regimen", "regimens"},
+    "therapies": {"therapy", "treatment", "regimen", "regimens", "agents"},
+    "approved": {"approval", "indicated", "indication"},
+    "codes": {"code"},
+}
+
+
+class TermSet:
+    """Two tiers of query terms.
+
+    `focus` is what distinguishes this question from every other question about
+    the same disease: "diagnosis", "workup", "immunophenotype". `context` is the
+    disease name and upstream entities, which every relevant sentence shares and
+    which therefore cannot rank one sentence above another. Mixing the two into
+    one set was the defect that put an incidence figure at the top of every
+    card in a stage.
+    """
+
+    __slots__ = ("focus", "context", "quantitative")
+
+    def __init__(self, focus: set[str], context: set[str]) -> None:
+        self.focus = focus
+        self.context = context
+        self.quantitative = bool(focus & _QUANTITATIVE)
+
+    # Backwards compatibility for callers that treat the term set as a flat set.
+    def __iter__(self):
+        return iter(self.focus | self.context)
+
+    def __len__(self) -> int:
+        return len(self.focus | self.context)
+
+    def __contains__(self, item: object) -> bool:
+        return item in self.focus or item in self.context
+
+    def __and__(self, other: set) -> set:
+        return (self.focus | self.context) & other
+
+    def __rand__(self, other: set) -> set:
+        return self.__and__(other)
+
+
+def _words(text: str) -> set[str]:
+    return {w for w in _WORD.findall((text or "").lower()) if len(w) > 3 and w not in _STOP}
+
+
+def build_terms(
+    question: str, aspects: list[str], synonyms: list[str], upstream: list[str] | None = None,
+) -> TermSet:
+    context = _words(" ".join([*synonyms, *(upstream or [])]))
+    # A disease word inside the question text is context, not focus.
+    focus = _words(" ".join([question, *aspects])) - context
+    # Sources state quantities in their own words: "rate of new cases" for
+    # incidence, "living with" for prevalence. Widen the focus accordingly.
+    for word in list(focus):
+        focus |= _FOCUS_SYNONYMS.get(word, set())
+    return TermSet(focus - context, context)
+
+
+def question_terms(question: str, aspects: list[str], synonyms: list[str]) -> TermSet:
+    """Kept for callers of the old name; builds the two-tier set."""
+    return build_terms(question, aspects, synonyms)
+
+
+def _as_termset(terms) -> TermSet:
+    if isinstance(terms, TermSet):
+        return terms
+    return TermSet(set(terms or ()), set())
+
+
+def _score_sentence(sentence: str, terms) -> float:
+    ts = _as_termset(terms)
     words = set(_WORD.findall(sentence.lower()))
-    if not words or not terms:
+    if not words:
         return 0.0
-    overlap = len(words & terms)
-    if not overlap:
-        # No topical connection to the question. Numbers alone are not evidence.
-        return 0.0
-    base = overlap / (len(terms) ** 0.5)
-    # Quantities matter in this domain, but only as a tiebreaker between
-    # sentences that are already on topic.
-    numeric = len(re.findall(r"\d[\d,.]*\s*(?:%|per\s+100,?000)?", sentence))
-    score = base + 0.15 * min(numeric, 3)
+    focus_hits = len(words & ts.focus)
+    context_hits = len(words & ts.context)
+    if ts.focus and not focus_hits:
+        # On the disease but not on what was asked. Keep it as weak evidence
+        # so recall survives when a source answers in different words, but cap
+        # it below any sentence with a focus hit so it can never headline.
+        return min(0.20, 0.07 * context_hits) if context_hits else 0.0
+    base = focus_hits / (len(ts.focus) ** 0.5) if ts.focus else context_hits / max(len(ts.context), 1) ** 0.5
+    score = max(base, 0.21) + 0.03 * min(context_hits, 3)
+    if ts.quantitative:
+        numeric = len(re.findall(r"\d[\d,.]*\s*(?:%|per\s+100,?000)?", sentence))
+        score += 0.15 * min(numeric, 3)
     if _OFF_TOPIC.search(sentence):
         # Preclinical and subpopulation boilerplate is rarely the answer to a
         # clinical desk-research question.
         score *= 0.25
     return score
-
-
-def question_terms(question: str, aspects: list[str], synonyms: list[str]) -> set[str]:
-    blob = " ".join([question, *aspects, *synonyms]).lower()
-    stop = {
-        "what", "which", "how", "are", "the", "and", "for", "with", "from", "that",
-        "this", "does", "have", "has", "into", "used", "use", "including", "their",
-        "there", "where", "when", "who", "why", "was", "were", "been", "being",
-        "united", "states", "adult", "patients", "population",
-    }
-    return {w for w in _WORD.findall(blob) if len(w) > 3 and w not in stop}
 
 
 def _tag_for(ref: SourceRef) -> VerificationTag:

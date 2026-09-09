@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 
 from .connectors.base import ConnectorResult, RetrievalContext
-from .models import EvidenceOrigin, Run, RunConfig, RunMode, SourceRef
+from .models import EvidenceOrigin, Run, RunConfig, RunMode, RunStatus, SourceRef
 from .services import orchestrator as orch
 from .store import store
 
@@ -205,7 +205,15 @@ async def seed(indication_key: str = "CLL") -> Run:
     run = Run(config=cfg, reference=orch.new_reference())
     run.agents = orch.build_agent_states(orch.all_buckets())
     store.save_run(run)
-    await orch.Orchestrator(run, build_registry()).execute()
+    registry = build_registry()
+    await orch.Orchestrator(run, registry).execute()
+
+    # A full run pauses at the human review gate after the first wave. The
+    # demo exists to populate every screen, so it plays the reviewer and
+    # continues; a live run stops there and waits for a person.
+    paused = store.get_run(run.id)
+    if paused is not None and paused.status is RunStatus.AWAITING_REVIEW:
+        await orch.Orchestrator(paused, registry).resume()
     return store.get_run(run.id) or run
 
 

@@ -23,14 +23,27 @@ _SYSTEM = (
 _WORD = re.compile(r"[a-z0-9]+")
 
 
-def _overlap_score(ref: SourceRef, terms: set[str]) -> float:
+def _overlap_score(ref: SourceRef, terms) -> float:
+    """Term overlap between a candidate's metadata and the question.
+
+    Focus terms (what the question is about) decide the order; context terms
+    (the disease name) only break ties, since every candidate mentions them.
+    """
     blob = f"{ref.title} {ref.snippet}".lower()
     words = set(_WORD.findall(blob))
-    if not words or not terms:
+    if not words:
         return 0.0
-    hit = len(words & terms) / (len(terms) ** 0.5)
+    focus = getattr(terms, "focus", None)
+    context = getattr(terms, "context", None)
+    if focus is None:
+        focus, context = set(terms or ()), set()
+    focus_hits = len(words & focus)
+    context_hits = len(words & (context or set()))
+    if focus and not focus_hits:
+        return round(0.02 * min(context_hits, 3), 3)
+    base = focus_hits / (len(focus) ** 0.5) if focus else context_hits / max(len(context or ()), 1) ** 0.5
     # A primary-tier source with any overlap outranks a weak one with more.
-    return round(hit + (0.3 if ref.tier <= 2 else 0.0), 3)
+    return round(base + 0.03 * min(context_hits, 3) + (0.3 if ref.tier <= 2 else 0.0), 3)
 
 
 def rank_deterministic(refs: list[SourceRef], terms: set[str]) -> list[tuple[SourceRef, float]]:
