@@ -207,11 +207,12 @@ async def extract(
     refs: list[SourceRef], question: str, question_id: str, terms: set[str]
 ) -> list[Evidence]:
     limits = get_thresholds()["limits"]
-    out: list[Evidence] = []
+    per_source_cap = limits.get("max_evidence_items_per_source", 3)
+    total_cap = limits["max_evidence_items_per_question"]
+
+    collected: list[Evidence] = []
     seen: set[str] = set()
     for ref in refs:
-        if len(out) >= limits["max_evidence_items_per_question"]:
-            break
         items = (
             await extract_with_llm(ref, question, question_id, terms)
             if llm.available
@@ -222,6 +223,22 @@ async def extract(
             if fingerprint in seen:
                 continue
             seen.add(fingerprint)
-            out.append(ev)
+            collected.append(ev)
+
+    # Round-robin across sources rather than taking the globally top-scoring
+    # quotes. Taking the top N alone let one very long document win every slot,
+    # which produced findings that cited five sources but quoted one.
+    by_source: dict[str, list[Evidence]] = {}
+    for ev in sorted(collected, key=lambda e: (e.tier, -e.relevance)):
+        by_source.setdefault(ev.source_id, []).append(ev)
+
+    out: list[Evidence] = []
+    for depth in range(per_source_cap):
+        for source_id in sorted(by_source, key=lambda s: by_source[s][0].tier):
+            bucket = by_source[source_id]
+            if depth < len(bucket) and len(out) < total_cap:
+                out.append(bucket[depth])
+        if len(out) >= total_cap:
+            break
     out.sort(key=lambda e: (e.tier, -e.relevance))
-    return out[: limits["max_evidence_items_per_question"]]
+    return out[:total_cap]

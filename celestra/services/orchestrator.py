@@ -372,13 +372,31 @@ class Orchestrator:
             category=CATEGORY_BY_BUCKET.get(bucket, "Clinical"),
             title=self._insight_title(question),
             summary=summary,
-            detail=" ".join(re.sub(r"\s+", " ", e.quote) for e in best[1:4]),
+            detail=" ".join(self._fresh_detail(best[1:6])),
             confidence=conf,
             evidence_ids=[e.id for e in evidence],
             source_ids=source_ids,
             question_ids=[question.id],
             used_web_fallback=question.used_web_fallback,
         )
+
+    def _fresh_detail(self, candidates: list[Evidence], limit: int = 3) -> list[str]:
+        """Supporting quotes not already shown on another card.
+
+        Without this the same passages repeated under every finding in a
+        stage, which reads as padding and hides how much distinct evidence
+        there actually is."""
+        out: list[str] = []
+        for ev in candidates:
+            text = re.sub(r"\s+", " ", ev.quote).strip()
+            fingerprint = text[:120].lower()
+            if fingerprint in self._used_summaries:
+                continue
+            self._used_summaries.add(fingerprint)
+            out.append(text)
+            if len(out) >= limit:
+                break
+        return out
 
     # -- finalisation ----------------------------------------------------
     async def _finalise(self) -> None:
