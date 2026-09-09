@@ -204,6 +204,11 @@ hr { border: 0; border-top: 1px solid var(--border); margin: 26px 0; }
 /* --------------------------------------------------------------------------
    4. Banners + flashes
    -------------------------------------------------------------------------- */
+/* The user-agent [hidden] rule is display:none at author-origin weight zero,
+   so any of our own `display:` declarations silently defeats it. This keeps
+   `el.hidden = true` working everywhere. */
+[hidden] { display: none !important; }
+
 .banner {
   display: flex; align-items: flex-start; gap: 10px;
   padding: 11px 14px;

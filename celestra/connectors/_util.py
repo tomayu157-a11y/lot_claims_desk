@@ -61,7 +61,10 @@ def html_text(html: str, selector: str | None = None, separator: str = " ") -> s
         tree = HTMLParser(html)
     except Exception:  # selectolax refuses only truly malformed input
         return strip_tags(html)
-    tree.strip_tags(["script", "style", "noscript", "svg", "iframe", "form"])
+    # Site chrome is not evidence: navigation and cookie banners would
+    # otherwise become the "verbatim quote" for a scraped page.
+    tree.strip_tags(["script", "style", "noscript", "svg", "iframe", "form",
+                     "nav", "header", "footer", "aside", "button", "select"])
     node = tree.css_first(selector) if selector else (tree.body or tree.root)
     if node is None:
         node = tree.body or tree.root
@@ -110,8 +113,15 @@ def join_sections(sections: dict[str, str], limit: int = 6000) -> str:
     parts = [f"{k}: {clean(v)}" for k, v in sections.items() if clean(v)]
     parts.sort(key=len, reverse=True)
     out = ""
-    for p in parts:
-        if len(out) + len(p) > limit:
+    for part in parts:
+        remaining = limit - len(out)
+        if remaining <= 0:
             break
-        out = f"{out}\n\n{p}" if out else p
+        if len(part) > remaining:
+            # A single oversized section must still contribute text; dropping it
+            # whole is how `raw["text"]` ends up empty for label-sized payloads.
+            if not out:
+                out = clip(part, limit)
+            break
+        out = f"{out}\n\n{part}" if out else part
     return out.strip()

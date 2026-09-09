@@ -32,6 +32,9 @@ from .icd11 import Icd11Connector
 from .local_files import LocalFilesConnector, available_datasets
 from .loinc import LoincConnector
 from .nci_pdq import NciPdqConnector
+from .nlm_clinical_tables import (NlmHcpcsConnector, NlmIcd9CmConnector,
+                                  NlmIcd10CmConnector, NlmLoincConnector,
+                                  NlmRxTermsConnector)
 from .openfda import (FaersConnector, OpenFdaDrugsFdaConnector, OpenFdaLabelConnector,
                       OpenFdaNdcConnector)
 from .orphanet import OrphanetConnector
@@ -100,6 +103,18 @@ def _build_from_key(key: str, source: dict[str, Any]) -> Connector | None:
     }
     if key in simple:
         return simple[key]()
+
+    # NLM Clinical Tables share one base class and differ only by table, so
+    # they take the source id, name and tier from the YAML like the others.
+    nlm: dict[str, type] = {
+        "nlm_icd10cm": NlmIcd10CmConnector,
+        "nlm_icd9cm": NlmIcd9CmConnector,
+        "nlm_hcpcs": NlmHcpcsConnector,
+        "nlm_loinc": NlmLoincConnector,
+        "nlm_rxterms": NlmRxTermsConnector,
+    }
+    if key in nlm:
+        return nlm[key](source_id=sid, name=name, tier=tier)
     if key == "europepmc":
         return EuropePmcConnector(source_id=sid, source_name=name, tier=tier)
     if key == "crossref":

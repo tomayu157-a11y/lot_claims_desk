@@ -48,18 +48,50 @@ def indication_config(indication_key: str) -> dict:
 
 
 def _fallback_aspects(seed: str) -> list[str]:
-    """Split a seed question into aspects without a model. Uses the question's
-    own enumerations, which the seed list conveniently already contains."""
+    """Split a seed question into coverage aspects without a model.
+
+    The seed list already enumerates what a complete answer needs, either in
+    parentheses or as a comma-and list in the question itself. Both are used.
+    Falling back to the whole question as a single aspect makes the aspect
+    unmatchable, which caps every coverage score.
+    """
     import re
 
-    inner = re.findall(r"\(([^)]+)\)", seed)
     parts: list[str] = []
-    for group in inner:
+
+    # "(Rai, Binet, CLL-IPI)" and "(IGHV, TP53, del(17p))"
+    for group in re.findall(r"\(([^()]*(?:\([^()]*\)[^()]*)*)\)", seed):
         parts += [p.strip() for p in re.split(r",| or | and ", group) if len(p.strip()) > 2]
-    if parts:
-        return parts[:6]
-    stripped = re.sub(r"^(what|which|how|where)\b\s*", "", seed.strip(" ?"), flags=re.I)
-    return [stripped[:120]]
+
+    # "the incidence, prevalence, survival and mortality of ..."
+    stripped = re.sub(r"\([^)]*\)", " ", seed)
+    for run in re.findall(r"((?:[a-z][a-z-]{3,},\s*){1,}[a-z][a-z-]{3,}(?:\s+(?:and|or)\s+[a-z][a-z-]{3,})?)",
+                          stripped, flags=re.I):
+        parts += [p.strip() for p in re.split(r",|\band\b|\bor\b", run) if len(p.strip()) > 3]
+
+    stop = {"are", "the", "and", "for", "with", "from", "that", "this", "does",
+            "have", "has", "used", "use", "their", "there", "was", "were",
+            "united", "states", "adult", "patients", "population", "including",
+            "such", "other", "both", "either", "relevant", "current"}
+
+    seen: set[str] = set()
+    out: list[str] = []
+    for p in parts:
+        key = p.lower().strip()
+        # A connective picked up by the list regex is not a research aspect.
+        if key in stop or key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    # One surviving aspect is not a decomposition; fall through to the nouns.
+    if len(out) >= 2:
+        return out[:6]
+
+    # No enumeration: use the question's own distinctive nouns as one aspect
+    # each, so coverage measures concepts rather than sentence structure.
+    text = re.sub(r"^(what|which|how|where|when)\b\s*", "", stripped.strip(" ?"), flags=re.I)
+    nouns = [w for w in re.findall(r"[A-Za-z][A-Za-z-]{4,}", text) if w.lower() not in stop]
+    return nouns[:5] or [text[:120]]
 
 
 def _scoped(seed: str, cfg: RunConfig) -> str:

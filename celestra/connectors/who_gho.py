@@ -25,6 +25,15 @@ PORTAL_URL = "https://www.who.int/data/gho/data/indicators"
 # Fallback vocabulary when no indicator names the disease itself.
 BROADER_TERMS = ("cancer", "neoplasm", "malignant", "oncolog")
 
+# Clinical modifiers that appear in the indication name but say nothing about
+# which disease it is: "chronic" alone would select the chronic respiratory
+# disease indicators.
+GENERIC_MODIFIERS = frozenset(
+    {"chronic", "acute", "adult", "adults", "child", "children", "cell", "cells",
+     "disease", "diseases", "disorder", "syndrome", "small", "phase", "stage",
+     "refractory", "relapsed", "primary", "secondary"}
+)
+
 # How many indicator series to pull values for.
 MAX_SERIES = 3
 MAX_ROWS = 400
@@ -57,7 +66,8 @@ class WhoGhoConnector:
         widened away from the indication itself."""
         specific = set()
         for term in ctx.or_terms():
-            specific |= {t for t in tokens(term) if len(t) > 4}
+            specific |= {t for t in tokens(term)
+                         if len(t) > 4 and t not in GENERIC_MODIFIERS}
         # British and American spellings both appear in GHO indicator names.
         specific |= {t.replace("leukemia", "leukaem") for t in specific}
         hits = [i for i in catalogue

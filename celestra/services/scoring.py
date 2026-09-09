@@ -39,23 +39,39 @@ class Sufficiency:
 
 
 def _aspect_hits(question: ResearchQuestion, evidence: list[Evidence]) -> tuple[int, int]:
-    """How many of the question's aspects appear in at least one quote.
+    """How many of the question's aspects the evidence actually covers.
 
-    Word-level matching, not substring: matching 'age' inside 'percentage'
-    would silently inflate coverage.
+    Word-level matching, not substring: 'age' inside 'percentage' would
+    silently inflate coverage. Aspects that contain no matchable word are
+    dropped from the denominator as well as the numerator, because counting an
+    unmatchable aspect as a miss put a hard ceiling on every question's score.
     """
     if not question.aspects:
         return (1, 1) if evidence else (0, 1)
+
     blob = " ".join(f"{e.title} {e.quote} {e.context}" for e in evidence).lower()
     tokens = set(re.findall(r"[a-z0-9]+", blob))
-    hits = 0
+
+    usable: list[list[str]] = []
     for aspect in question.aspects:
-        words = [w for w in re.findall(r"[a-z0-9]+", aspect.lower()) if len(w) > 3]
-        if not words:
-            continue
-        if sum(1 for w in words if w in tokens) / len(words) >= 0.5:
+        # Three characters, not four: Rai, IGHV, TP53 and CLL are exactly the
+        # discriminating terms these questions turn on.
+        words = [w for w in re.findall(r"[a-z0-9]+", aspect.lower()) if len(w) >= 3]
+        if words:
+            usable.append(words)
+    if not usable:
+        return (1, 1) if evidence else (0, 1)
+
+    hits = 0
+    for words in usable:
+        matched = sum(1 for w in words if w in tokens)
+        # A one or two word aspect names a single concept and must be present.
+        # A longer phrase is satisfied by its distinctive words; demanding all
+        # of them measures phrasing rather than coverage.
+        need = 1 if len(words) <= 2 else max(2, round(len(words) * 0.4))
+        if matched >= need:
             hits += 1
-    return hits, len(question.aspects)
+    return hits, len(usable)
 
 
 def assess(question: ResearchQuestion, evidence: list[Evidence]) -> Sufficiency:

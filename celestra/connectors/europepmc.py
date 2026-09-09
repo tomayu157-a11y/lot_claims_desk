@@ -20,10 +20,37 @@ FULLTEXT_URL = "https://www.ebi.ac.uk/europepmc/webservices/rest/{pmcid}/fullTex
 ARTICLE_URL = "https://europepmc.org/article/{source}/{ident}"
 
 
+# Below this length a synonym is an acronym (CLL, ALL, SLL) that collides with
+# unrelated vocabulary once it is matched against abstracts.
+MIN_ABSTRACT_TERM_CHARS = 8
+
+
 def phrase_clause(terms: list[str], fields: tuple[str, ...] = ("TITLE", "ABSTRACT")) -> str:
-    """OR-join every synonym across the given field scopes."""
-    parts = [f'{field}:"{t}"' for t in terms for field in fields if t]
+    """OR-join every synonym across the given field scopes.
+
+    Acronyms are restricted to TITLE. `ABSTRACT:"SLL"` matches an ultrasound
+    beamforming paper as readily as a lymphoma one, and sorting by date then
+    puts the noise on top.
+    """
+    parts = []
+    for term in terms:
+        if not term:
+            continue
+        for field in fields:
+            if field == "ABSTRACT" and len(term) < MIN_ABSTRACT_TERM_CHARS:
+                continue
+            parts.append(f'{field}:"{term}"')
     return "(" + " OR ".join(parts) + ")" if parts else ""
+
+
+def on_topic(record: dict, terms: list[str]) -> bool:
+    """Keep a record only when a full disease phrase appears in its title or
+    abstract. Guards against acronym collisions the query grammar lets through."""
+    long_terms = [t for t in terms if len(t) >= MIN_ABSTRACT_TERM_CHARS]
+    if not long_terms:
+        return True
+    haystack = f"{record.get('title') or ''} {record.get('abstractText') or ''}".lower()
+    return any(t.lower() in haystack for t in long_terms)
 
 
 def article_url(rec: dict) -> str:
@@ -135,9 +162,11 @@ class EuropePmcConnector:
                 query = " OR ".join(f'"{t}"' for t in ctx.or_terms())
                 records = await self.search(query, limit)
                 calls += 1
+            terms = ctx.or_terms()
+            on_target = [r for r in records if on_topic(r, terms)] or records
             refs = [
                 ref_from_record(r, self.source_id, self.source_name, self.tier, self.origin)
-                for r in records
+                for r in on_target
             ]
         except Exception as exc:  # noqa: BLE001 - a connector never raises
             return ConnectorResult.failure(self.source_id, describe_http_error(exc))

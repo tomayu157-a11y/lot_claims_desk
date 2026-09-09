@@ -12,11 +12,20 @@ it). With no codes the connector fails fast with "no ICD-10 code family
 supplied" rather than pulling all-cause mortality and implying it is the
 indication's.
 
-Two operational facts observed on 2026-09-09: WONDER enforces a minimum of 15
-seconds between API requests (HTTP 200 with a "Request rate exceeded" message),
-and it validates the by-variable / measure-button combination server-side, so a
-rejected template is reported verbatim in the failure reason instead of being
-retried blindly.
+Operational facts observed on 2026-09-09, all of them by probing:
+
+* WONDER enforces a minimum of 15 seconds between API requests; a faster
+  request comes back with a "Request rate exceeded" message rather than data.
+* It validates a "button" selection per variable group server-side. D158
+  requires O_age, O_race, O_location and O_urban to be set or it rejects the
+  request; the values below satisfy that check.
+* The request template here still trips one final server-side rule
+  ("Age Adjusted Rates are not available when county level locations ... are
+  selected"), and the D158 request form itself is not readable from here
+  (GET on wonder.cdc.gov returns 403), so the remaining measure-checkbox
+  parameter could not be resolved by probing. The connector therefore reports
+  WONDER's own message as the failure reason instead of retrying blindly or
+  pretending the source returned nothing.
 """
 from __future__ import annotations
 
@@ -57,7 +66,13 @@ def build_request_xml(icd10_codes: list[str], title: str = "celestra") -> str:
         parameter("F_D158.V2", *codes),   # UCD - ICD-10 codes
         parameter("I_D158.V2", *codes),
         parameter("O_ucd", "D158.V2"),
-        parameter("O_age", "D158.V51"),
+        # WONDER validates a "button" selection for each of these groups and
+        # rejects the whole request when one is missing. Probed 2026-09-09.
+        parameter("O_age", "D158.V51"),        # five-year age groups
+        parameter("O_race", "D158.V27"),       # single race 6
+        parameter("O_location", "D158.V9"),    # state / county
+        parameter("O_urban", "D158.V9"),
+        parameter("O_aar", "aar_none"),        # age-adjusted rates off
         parameter("O_javascript", "on"),
         parameter("O_precision", "1"),
         parameter("O_rate_per", "100000"),

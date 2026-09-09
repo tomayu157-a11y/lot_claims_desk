@@ -53,6 +53,12 @@ BROWSER_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like G
 MAX_SCRAPES = 4
 MIN_PAGE_CHARS = 200
 
+# Domains the open-web fallback harvests when no search front-end is reachable.
+# Public, high-credibility health publishers whose sitemaps carry topical URLs.
+# This is a last resort for the unrestricted `open_web` source only; results are
+# still tier 5 and still labelled SUPPLEMENTARY WEB EVIDENCE.
+OPEN_WEB_DOMAIN_PANEL = ("cancer.org", "cancer.gov", "medlineplus.gov", "cms.gov")
+
 
 def _domain_of(url: str) -> str:
     try:
@@ -95,16 +101,19 @@ def _unwrap_redirect(href: str) -> str:
 
 
 def is_relevant(query: str, *texts: str) -> bool:
-    """At least one distinctive query token must appear in the result.
+    """Does the result actually answer the query, or just echo one word of it?
 
-    Cheap, but it is what stops a degraded search front-end from injecting
-    dictionary pages for the first word of a clinical query.
+    A search front-end under bot pressure answers a multi-word clinical query
+    with results for its first word alone — "chronic lymphocytic leukemia
+    incidence" comes back as dictionary entries for "chronic". Requiring a
+    single token match lets all of that through, so a multi-token query must
+    match at least two distinct tokens.
     """
     wanted = {t for t in tokens(query) if len(t) > 3}
     if not wanted:
         return True
-    haystack = tokens(" ".join(t for t in texts if t))
-    return bool(wanted & haystack)
+    matched = wanted & tokens(" ".join(t for t in texts if t))
+    return len(matched) >= (2 if len(wanted) >= 2 else 1)
 
 
 class _SearchBreaker:
@@ -264,22 +273,30 @@ class FirecrawlConnector:
         """Harvest the restricted domain's own sitemap and rank its URLs by
         token overlap with the query.
 
-        Last resort, and only for a domain-restricted search: when every search
-        front-end is unreachable or bot-blocked, a site's own sitemap still
-        yields real, on-domain, on-topic URLs. Sitemap locations come from
-        robots.txt where the site publishes them, so nothing is hardcoded per
-        domain.
+        Last resort: when every search front-end is unreachable or bot-blocked,
+        a site's own sitemap still yields real, on-topic URLs. A domain-scoped
+        instance harvests its own domain; the unrestricted open-web instance
+        harvests OPEN_WEB_DOMAIN_PANEL. Sitemap locations come from robots.txt
+        where the site publishes them, so no per-domain path is hardcoded.
         """
-        if not self.domain:
-            return []
         wanted = {t for t in tokens(query) if len(t) > 3}
         if not wanted:
             return []
-        queue = [f"https://www.{self.domain}/sitemap.xml",
-                 f"https://{self.domain}/sitemap.xml",
-                 f"https://www.{self.domain}/sitemap_index.xml"]
-        for robots in (f"https://www.{self.domain}/robots.txt",
-                       f"https://{self.domain}/robots.txt"):
+        domains = [self.domain] if self.domain else list(OPEN_WEB_DOMAIN_PANEL)
+        results: list[dict] = []
+        for domain in domains:
+            results.extend(await self._sitemap_urls(domain, wanted, limit))
+            if len(results) >= limit * 2:
+                break
+        return results[:limit * 2]
+
+    async def _sitemap_urls(self, domain: str, wanted: set[str],
+                            limit: int) -> list[dict]:
+        queue = [f"https://www.{domain}/sitemap.xml",
+                 f"https://{domain}/sitemap.xml",
+                 f"https://www.{domain}/sitemap_index.xml"]
+        for robots in (f"https://www.{domain}/robots.txt",
+                       f"https://{domain}/robots.txt"):
             try:
                 text = await http.get_text(robots, headers={"User-Agent": BROWSER_UA})
             except Exception:  # noqa: BLE001 - robots.txt is optional

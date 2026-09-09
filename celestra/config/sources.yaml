@@ -199,6 +199,70 @@ sources:
     connector: clinicaltrials
     enabled: true
 
+  # ---- NLM Clinical Tables (no authentication) --------------------------
+  # Free keyless search over code sets that otherwise need a licence, an
+  # account or a downloaded release file. Secondary to the official CMS files:
+  # when a local dataset is installed that connector answers first.
+  - id: nlm_icd10cm
+    name: NLM Clinical Tables (ICD-10-CM)
+    domain: clinicaltables.nlm.nih.gov
+    tier: 1
+    types: [coding]
+    indications: [ALL, CLL]
+    stages: [stage_3]
+    access_method: api
+    connector: nlm_icd10cm
+    notes: "Answers the ICD-10-CM code universe without the CMS release files."
+    enabled: true
+
+  - id: nlm_icd9cm
+    name: NLM Clinical Tables (ICD-9-CM)
+    domain: clinicaltables.nlm.nih.gov
+    tier: 1
+    types: [coding]
+    indications: [ALL, CLL]
+    stages: [stage_3]
+    access_method: api
+    connector: nlm_icd9cm
+    notes: "Supplies the legacy leg of the three-system crosswalk in place of the GEMs files."
+    enabled: true
+
+  - id: nlm_hcpcs
+    name: NLM Clinical Tables (HCPCS)
+    domain: clinicaltables.nlm.nih.gov
+    tier: 1
+    types: [coding]
+    indications: [ALL, CLL]
+    stages: [stage_3, stage_4]
+    access_method: api
+    connector: nlm_hcpcs
+    notes: "Searched with the drug and test names handed down by upstream agents, never the disease name."
+    enabled: true
+
+  - id: nlm_loinc
+    name: NLM Clinical Tables (LOINC)
+    domain: clinicaltables.nlm.nih.gov
+    tier: 1
+    types: [coding]
+    indications: [ALL, CLL]
+    stages: [stage_3, stage_5]
+    access_method: api
+    connector: nlm_loinc
+    notes: "Keyless LOINC search; the Regenstrief API remains the credentialed path."
+    enabled: true
+
+  - id: nlm_rxterms
+    name: NLM Clinical Tables (RxTerms)
+    domain: clinicaltables.nlm.nih.gov
+    tier: 2
+    types: [coding, label]
+    indications: [ALL, CLL]
+    stages: [stage_4]
+    access_method: api
+    connector: nlm_rxterms
+    notes: "Normalises drug names and dose forms for regimen component mapping."
+    enabled: true
+
   # ---- Coding authorities ----------------------------------------------
   - id: cms_icd10
     name: CMS ICD-10-CM Release Files
