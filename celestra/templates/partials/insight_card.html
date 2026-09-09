@@ -1,0 +1,102 @@
+{# ---------------------------------------------------------------------------
+   One insight card. Rendered inside insights.html and re-rendered on its own
+   after an action, then swapped in place by data-insight-id.
+   Context: insight, run (optional), source_names (optional), agent_by_stage (optional)
+   --------------------------------------------------------------------------- #}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import confidence_chip, source_name_chips, review_chip, tinted_tile, enum_value %}
+
+{%- set rid = (run.id if run is defined and run else insight.run_id) -%}
+{%- set conf = enum_value(insight.confidence) -%}
+{%- set names = source_names | default({}) -%}
+{%- set cat_style = {
+  'clinical':   ('leaf', 'green'),
+  'treatment':  ('pill', 'blue'),
+  'diagnostic': ('microscope', 'purple'),
+  'logic':      ('flow', 'indigo'),
+  'journey':    ('route', 'teal'),
+  'synthesis':  ('sparkle', 'teal')
+} -%}
+{%- set style = cat_style.get((insight.category | default('') | lower), ('sparkle', 'blue')) -%}
+{%- set agent = (agent_by_stage | default({})).get(insight.stage) -%}
+
+<article class="card card-hover insight-card {{ 'is-reviewed' if enum_value(insight.review_action) not in ['pending', ''] }}"
+         data-insight-id="{{ insight.id }}"
+         data-category="{{ insight.category | lower }}"
+         data-confidence="{{ conf }}"
+         data-stage="{{ insight.stage }}"
+         data-sources="{{ insight.source_ids | length }}"
+         data-search="{{ insight.title }} {{ insight.summary }} {{ insight.category }} {% for sid in insight.source_ids %}{{ names.get(sid, sid) }} {% endfor %}"
+         data-action-scope>
+  <div class="insight-card-top">
+    {{ tinted_tile(agent.icon if agent and agent.icon else style[0], style[1]) }}
+
+    <div class="insight-main">
+      <h3 class="insight-title">{{ insight.title }}</h3>
+      <p class="insight-summary">{{ insight.summary }}</p>
+      {% if insight.detail %}<p class="insight-detail">{{ insight.detail | tagify }}</p>{% endif %}
+
+      <div class="insight-sources">
+        <div class="lead">
+          Supported by {{ insight.source_ids | length }}
+          source{{ '' if insight.source_ids | length == 1 else 's' }}{{ ':' if insight.source_ids }}
+        </div>
+        {% if insight.source_ids %}
+          {{ source_name_chips(insight.source_ids, names) }}
+        {% else %}
+          <span class="meta">No source returned usable evidence for this finding.</span>
+        {% endif %}
+      </div>
+
+      {% if insight.used_web_fallback %}
+      <div class="mt-1">
+        <span class="supp-flag">{{ icon('alert', 12) }} Includes supplementary web evidence</span>
+      </div>
+      {% endif %}
+
+      {% if insight.user_input %}
+      <div class="review-note">
+        <strong>Your input:</strong> {{ insight.user_input }}
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="insight-aside">
+      {{ confidence_chip(insight.confidence) }}
+      {{ review_chip(insight.review_action) }}
+      {% if agent %}<span class="meta text-sm">{{ agent.name }}</span>{% endif %}
+    </div>
+  </div>
+
+  <div class="insight-foot">
+    <div class="meta meta-row">
+      <span>{{ insight.category }}</span>
+      {% if insight.tag %}
+        <span class="dot-sep">·</span>
+        <span class="vtag vtag-{{ enum_value(insight.tag) | lower | replace(' ', '-') }}">[{{ enum_value(insight.tag) }}]</span>
+      {% endif %}
+    </div>
+
+    <div class="btn-row">
+      <button type="button" class="btn btn-sm btn-soft"
+              data-action-url="/runs/{{ rid }}/insights/{{ insight.id }}/approve"
+              data-swap="[data-insight-id='{{ insight.id }}']">Approve</button>
+
+      <button type="button" class="btn btn-sm btn-secondary"
+              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/modify">Modify</button>
+
+      <button type="button" class="btn btn-sm btn-secondary"
+              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/input">Add Input</button>
+
+      {% if conf == 'requires_input' %}
+      <button type="button" class="btn btn-sm btn-danger"
+              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/proxy">Define Proxy</button>
+      {% endif %}
+
+      <button type="button" class="btn btn-sm btn-ghost"
+              data-evidence-url="/runs/{{ rid }}/insights/{{ insight.id }}/evidence">
+        {{ icon('eye', 14) }} View Evidence
+      </button>
+    </div>
+  </div>
+</article>

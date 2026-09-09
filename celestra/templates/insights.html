@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% block title %}Discovery insights — Celestra{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Discovery Insights</h1>
+  <p class="sub">
+    Review, validate and refine Celestra's findings. Your input will update related insights.
+  </p>
+</div>
+
+<div class="toolbar">
+  <div class="pills">
+    <button type="button" class="pill" data-filter-category="all" aria-pressed="true">
+      All (<span data-insight-count>{{ insights | default([]) | length }}</span>)
+    </button>
+    {% for cat in categories | default([]) %}
+    <button type="button" class="pill" data-filter-category="{{ cat.key | lower }}" aria-pressed="false">
+      {{ cat.label }} ({{ cat.count }})
+    </button>
+    {% endfor %}
+  </div>
+
+  <div class="spacer"></div>
+
+  <div class="search-wrap">
+    <label class="visually-hidden" for="insight-search">Search insights</label>
+    {{ icon('search', 15) }}
+    <input type="search" id="insight-search" data-insight-search placeholder="Search insights…"
+           autocomplete="off">
+  </div>
+
+  <div class="sort-wrap">
+    <label for="insight-sort">Sort by</label>
+    <select id="insight-sort" data-insight-sort>
+      <option value="confidence">Confidence</option>
+      <option value="stage">Stage</option>
+      <option value="sources">Sources</option>
+    </select>
+  </div>
+</div>
+
+<div class="stack" data-insight-list>
+  {% for insight in insights | default([]) %}
+    {% include "partials/insight_card.html" %}
+  {% endfor %}
+</div>
+
+<div class="empty mt-2" data-insight-empty {% if insights %}hidden{% endif %}>
+  <h3>No insights match those filters</h3>
+  <p class="mb-0">Clear the search box or pick a different category.</p>
+</div>
+
+<div class="btn-row mt-3">
+  <a class="btn btn-secondary" href="/runs/{{ run.id }}/overview">Back to overview</a>
+  <a class="btn btn-secondary" href="/runs/{{ run.id }}/contradictions">Source conflicts</a>
+  <a class="btn btn-primary" href="/runs/{{ run.id }}/approval">
+    Continue to approval {{ icon('arrow-right', 15) }}
+  </a>
+</div>
+{% endblock %}
