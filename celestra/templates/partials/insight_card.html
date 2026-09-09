@@ -93,6 +93,12 @@
               data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/proxy">Define Proxy</button>
       {% endif %}
 
+      {% if insight.table_titles %}
+      <button type="button" class="btn btn-sm btn-secondary"
+              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/table"
+              title="{{ insight.table_titles | join(' · ') }}">View Table</button>
+      {% endif %}
+
       <button type="button" class="btn btn-sm btn-ghost"
               data-evidence-url="/runs/{{ rid }}/insights/{{ insight.id }}/evidence">
         {{ icon('eye', 14) }} View Evidence

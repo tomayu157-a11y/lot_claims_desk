@@ -439,6 +439,8 @@ async def discovery(request: Request, run_id: str):
     run = get_run_or_404(run_id)
     if run.status is RunStatus.COMPLETED:
         return RedirectResponse(f"/runs/{run_id}/overview", status_code=303)
+    if run.status is RunStatus.AWAITING_REVIEW:
+        return RedirectResponse(f"/runs/{run_id}/review", status_code=303)
     agents = sorted(run.agents.values(), key=lambda a: (a.wave, a.name))
     return templates.TemplateResponse(
         request, "discovery.html",
@@ -659,6 +661,95 @@ async def insight_action(request: Request, run_id: str, insight_id: str, action:
         request, "partials/insight_card.html",
         {**base_ctx(request), "insight": insight, "run_id": run_id, "run": store.get_run(run_id),
          "agent_by_stage": _agent_by_stage()},
+    )
+
+
+
+# --------------------------------------------------------------------------
+# Human review gate
+# --------------------------------------------------------------------------
+@app.get("/runs/{run_id}/review", response_class=HTMLResponse)
+async def review_page(request: Request, run_id: str):
+    """Findings and conflicts from the agents that have finished so far, with
+    the decision to continue. Downstream agents build on these, so a wrong
+    finding approved here propagates; that is why the gate sits here."""
+    run = get_run_or_404(run_id)
+    insights = store.get_insights(run_id)
+    contradictions = store.get_contradictions(run_id)
+    contradictions.sort(key=lambda c: (c.severity is not ContradictionSeverity.ESCALATED, c.topic))
+    fw = get_framework()["buckets"]
+    done = [a for a in run.agents.values() if a.status is AgentStatus.COMPLETE]
+    remaining = [
+        a for a in sorted(run.agents.values(), key=lambda x: x.wave)
+        if a.status is not AgentStatus.COMPLETE
+    ]
+    counts = {
+        "insights": len(insights),
+        "pending": sum(1 for i in insights if i.review_action is ReviewAction.PENDING),
+        "approved": sum(1 for i in insights if i.review_action is ReviewAction.APPROVED),
+        "modified": sum(1 for i in insights if i.review_action is ReviewAction.MODIFIED),
+        "conflicts": len(contradictions),
+        "conflicts_open": sum(1 for c in contradictions
+                              if c.review_action is ReviewAction.PENDING),
+    }
+    return templates.TemplateResponse(
+        request, "review.html",
+        {
+            **base_ctx(request, "projects"), "run": run, "insights": insights,
+            "contradictions": contradictions, "counts": counts,
+            "categories": _categories(insights), "agents": agent_catalogue(),
+            "agent_by_stage": _agent_by_stage(),
+            "completed_agents": [
+                {"name": fw[a.bucket]["agent_name"], "icon": fw[a.bucket].get("agent_icon", "dot"),
+                 "tagline": fw[a.bucket]["agent_tagline"]} for a in done
+            ],
+            "remaining_agents": [
+                {"name": fw[a.bucket]["agent_name"], "icon": fw[a.bucket].get("agent_icon", "dot"),
+                 "tagline": fw[a.bucket]["agent_tagline"], "wave": a.wave} for a in remaining
+            ],
+            "can_continue": run.status is RunStatus.AWAITING_REVIEW,
+        },
+    )
+
+
+@app.post("/runs/{run_id}/continue")
+async def continue_run(run_id: str):
+    run = get_run_or_404(run_id)
+    if run.status is not RunStatus.AWAITING_REVIEW:
+        return RedirectResponse(f"/runs/{run_id}", status_code=303)
+    if run_id in _RUNNING:
+        return RedirectResponse(f"/runs/{run_id}/discovery", status_code=303)
+
+    async def _resume() -> None:
+        current = store.get_run(run_id)
+        if current is not None:
+            await orch.Orchestrator(current, registry()).resume()
+
+    task = asyncio.create_task(_resume())
+    _RUNNING[run_id] = task
+    task.add_done_callback(lambda t, rid=run_id: _RUNNING.pop(rid, None))
+    return RedirectResponse(f"/runs/{run_id}/discovery", status_code=303)
+
+
+@app.get("/runs/{run_id}/insights/{insight_id}/table", response_class=HTMLResponse)
+async def insight_table(request: Request, run_id: str, insight_id: str):
+    """The stage-report table(s) this insight was built from, exactly as they
+    appear in the final document."""
+    get_run_or_404(run_id)
+    insight = store.get_insight(run_id, insight_id)
+    if insight is None:
+        raise HTTPException(404, "Insight not found")
+    report = next((s for s in store.get_stage_reports(run_id) if s.stage == insight.stage), None)
+    tables = []
+    if report is not None:
+        wanted = set(insight.table_titles)
+        tables = [t for t in report.tables if t.title in wanted] or (
+            [t for t in report.tables if set(t.question_ids) & set(insight.question_ids)]
+        )
+    return templates.TemplateResponse(
+        request, "partials/insight_table.html",
+        {**base_ctx(request), "insight": insight, "tables": tables,
+         "report": report, "run_id": run_id},
     )
 
 

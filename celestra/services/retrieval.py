@@ -138,8 +138,21 @@ async def retrieve(
     on_source=None,
     context: dict | None = None,
 ) -> RetrievalOutcome:
-    """`on_source` is an async callback (source_id, source_name, ok, count, reason)
-    used to stream live progress to the UI."""
+    """Answer one question. `on_source` is an async callback
+    (source_id, source_name, ok, count, reason) that streams live progress.
+
+    Flow, in order:
+      1. discover   every approved source returns cheap metadata (title, abstract)
+      2. rank       one model call scores all candidates for this question
+      3. hydrate    full text is fetched only for the top few
+      4. extract    documents go to the model in batches, not one per call
+      5. assess     against the sufficiency threshold
+      6. widen      a further round keeps more candidates and rewrites the query
+      7. fallback   open web, only after the approved sources are exhausted
+    """
+    from .hydration import hydrate
+    from .ranking import rank
+
     th = get_thresholds()
     limits, esc = th["limits"], th["escalation"]
     outcome = RetrievalOutcome()
@@ -155,7 +168,11 @@ async def retrieve(
             upstream_terms += [str(v) for v in value[:20]]
     terms = question_terms(question.text, question.aspects, synonyms + upstream_terms)
     query = question.text
-    refs: list[SourceRef] = []
+
+    candidates: dict[str, SourceRef] = {}       # by ref.key, across rounds
+    hydrated: dict[str, SourceRef] = {}         # cache so a doc is fetched once
+    top_k = int(limits.get("rank_top_k", 8))
+    hydrate_k = int(limits.get("hydrate_top_k", 5))
 
     for round_no in range(esc["max_refinement_rounds"] + 1):
         outcome.rounds = round_no
@@ -166,6 +183,8 @@ async def retrieve(
             question=query, aspects=question.aspects, cutoff=cfg.research_cutoff,
             extra=dict(context or {}),
         )
+
+        # 1. discover
         results = await _gather(registry, source_ids, ctx, per_source)
         for r in results:
             if r.source_id not in outcome.attempted:
@@ -173,25 +192,49 @@ async def retrieve(
             if r.ok and r.count:
                 if r.source_id not in outcome.answered:
                     outcome.answered.append(r.source_id)
-                refs.extend(r.refs)
+                for ref in r.refs:
+                    candidates.setdefault(ref.key, ref)
             elif not r.ok:
                 outcome.failures[r.source_id] = r.reason
             if on_source:
                 await on_source(r.source_id, names.get(r.source_id, r.source_id),
                                 r.ok, r.count, r.reason)
 
-        outcome.evidence = await extract(refs, question.text, question.id, terms)
-        outcome.sufficiency = assess(question, outcome.evidence)
+        if not candidates:
+            outcome.sufficiency = assess(question, [])
+        else:
+            # 2. rank, then keep the top slice for this round
+            ranked = await rank(list(candidates.values()), question.text, terms)
+            keep = [ref for ref, _ in ranked[:top_k]]
+
+            # 3. hydrate the best few; the rest are read from their abstracts
+            docs: list[SourceRef] = []
+            for i, ref in enumerate(keep):
+                if i < hydrate_k:
+                    if ref.key not in hydrated:
+                        hydrated[ref.key] = await hydrate(ref, registry)
+                    docs.append(hydrated[ref.key])
+                else:
+                    docs.append(ref)
+
+            # 4. extract in batches, 5. assess
+            outcome.evidence = await extract(docs, question.text, question.id, terms)
+            outcome.sufficiency = assess(question, outcome.evidence)
+
         if outcome.sufficiency.ok:
             return outcome
+
+        # 6. widen: keep more candidates next round and rewrite the query
         if round_no < esc["max_refinement_rounds"]:
+            top_k += int(limits.get("rank_top_k_step", 4))
             query = await refine_query(question, cfg, synonyms, outcome.sufficiency, round_no + 1)
-            log.info("refining q=%s round=%s -> %s", question.id, round_no + 1, query)
+            log.info("refining q=%s round=%s top_k=%s -> %s",
+                     question.id, round_no + 1, top_k, query)
 
     if not esc["enable_open_web_fallback"]:
         return outcome
 
-    # ---- Open-web fallback ------------------------------------------------
+    # 7. open-web fallback, only once the approved sources are exhausted
     fire = registry.get("open_web")
     if fire is None:
         return outcome

@@ -52,6 +52,12 @@ limits:
   # words, so without a cap one document supplies every quote and the finding
   # looks well-sourced while resting on one document.
   max_evidence_items_per_source: 3
+  # Literature flow: discover cheap metadata, rank it in one model call, fetch
+  # full text only for the top candidates, then extract in small batches.
+  rank_top_k: 8                 # candidates kept after ranking, first round
+  rank_top_k_step: 4            # widened by this much on each further round
+  hydrate_top_k: 5              # of those, how many get full-text hydration
+  extract_batch_size: 3         # documents per extraction call
   max_concurrent_connectors: 6
   connector_timeout_seconds: 30
   connector_retries: 2

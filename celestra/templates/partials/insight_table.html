@@ -1,0 +1,51 @@
+{# ---------------------------------------------------------------------------
+   Table snapshot dialog: the stage-report table(s) an insight was built from,
+   rendered exactly as they appear in the final document.
+   Context: insight, tables (list[InsightTable]), report (StageReport|None), run_id
+   --------------------------------------------------------------------------- #}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import data_table, confidence_chip, enum_value %}
+{%- set rid = run_id if run_id is defined else insight.run_id -%}
+
+<div class="modal-backdrop" data-modal-backdrop>
+  <div class="modal modal-wide" role="dialog" aria-modal="true"
+       aria-labelledby="modal-title-{{ insight.id }}" data-action-scope>
+    <div class="modal-head">
+      <h2 id="modal-title-{{ insight.id }}">Table snapshot</h2>
+      <button type="button" class="icon-btn" data-modal-close aria-label="Close dialog">
+        {{ icon('x', 16) }}
+      </button>
+    </div>
+
+    <div class="modal-body">
+      <div class="insight-card-top mb-2">
+        <div class="insight-main">
+          <p class="eyebrow">As it appears in the final document</p>
+          <h3 class="insight-title">{{ insight.title }}</h3>
+          <p class="insight-summary mb-0">{{ insight.summary }}</p>
+        </div>
+        {{ confidence_chip(enum_value(insight.confidence)) }}
+      </div>
+
+      {% if tables %}
+        {% for table in tables %}
+          {{ data_table(table) }}
+          {% if table.footnote %}<p class="table-footnote">{{ table.footnote }}</p>{% endif %}
+        {% endfor %}
+      {% else %}
+        <p><strong>No table has been built for this finding yet.</strong></p>
+        <p class="sub">
+          {% if report %}The {{ report.name }} report has no table drawn from this question.
+          {% else %}This finding's stage report has not been synthesised yet.{% endif %}
+        </p>
+      {% endif %}
+    </div>
+
+    <div class="modal-foot">
+      {% if report %}
+      <a class="btn btn-secondary" href="/runs/{{ rid }}/stages/{{ report.stage }}">Open full stage report</a>
+      {% endif %}
+      <button type="button" class="btn btn-primary" data-modal-close>Close</button>
+    </div>
+  </div>
+</div>

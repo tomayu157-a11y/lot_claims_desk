@@ -30,6 +30,8 @@ class RunMode(str, enum.Enum):
 class RunStatus(str, enum.Enum):
     PENDING = "pending"
     RUNNING = "running"
+    # Paused at the human review gate; a Continue action resumes it.
+    AWAITING_REVIEW = "awaiting_review"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -198,6 +200,9 @@ class InsightTable(BaseModel):
     columns: list[str]
     rows: list[list[str]]
     footnote: str = ""
+    # Which research questions this table answers. Links a table to the
+    # insight cards derived from the same questions.
+    question_ids: list[str] = Field(default_factory=list)
 
 
 class Insight(BaseModel):
@@ -219,6 +224,8 @@ class Insight(BaseModel):
     review_action: ReviewAction = ReviewAction.PENDING
     user_input: str = ""
     impacted_insight_ids: list[str] = Field(default_factory=list)
+    # Titles of the stage-report tables built from this insight's questions.
+    table_titles: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utcnow)
 
     @property
@@ -346,6 +353,11 @@ class Run(BaseModel):
     approved_at: datetime | None = None
     # Entities discovered by completed agents, handed to downstream agents.
     context: dict[str, Any] = Field(default_factory=dict)
+    # Human review gate. The run pauses after `review_after_wave` and resumes
+    # from `resume_from_wave` once a reviewer continues it. 0 disables the gate.
+    review_after_wave: int = 1
+    resume_from_wave: int = 0
+    reviewed_at: datetime | None = None
 
     @property
     def duration_seconds(self) -> float:

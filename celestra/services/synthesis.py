@@ -78,13 +78,19 @@ def _sentence_case(text: str, limit: int = 260) -> str:
 # --------------------------------------------------------------------------
 # Deterministic construction
 # --------------------------------------------------------------------------
-def _metric_rows(evidence: list[Evidence], columns: list[str]) -> list[list[str]]:
+def _metric_rows(
+    evidence: list[Evidence], columns: list[str], used_question_ids: set[str] | None = None,
+) -> list[list[str]]:
     """Fill an N-column table from evidence. The last column is always the
-    citation; the first carries the subject; the middle carries the claim."""
+    citation; the first carries the subject; the middle carries the claim.
+    `used_question_ids`, when given, collects which questions fed the rows so
+    the table can be linked back to the insights built from them."""
     rows: list[list[str]] = []
     for ev in evidence:
         if len(rows) >= 12:
             break
+        if used_question_ids is not None:
+            used_question_ids.add(ev.question_id)
         subject = ev.title or ev.citation
         row = [_sentence_case(subject, 70)]
         while len(row) < len(columns) - 1:
@@ -200,8 +206,10 @@ async def _llm_stage(
             '  "what_happens": one paragraph describing what this stage establishes.\n'
             '  "synthesis": 4-8 sentence prose synthesis, every claim traceable to a quote.\n'
             '  "tables": [{"title": str, "columns": [str], "rows": [[str]], '
-            '"footnote": str}] — one entry per expected_output item that names columns '
-            "in parentheses, using exactly those column names. Prefix each factual cell "
+            '"footnote": str, "question_indices": [int]}] — one entry per expected_output '
+            "item that names columns in parentheses, using exactly those column names. "
+            "question_indices lists the 0-based positions in `questions` that the table "
+            "answers. Prefix each factual cell "
             "with [VERIFIED] and end each row's evidence with [Source: name]. Use "
             "[NOT VERIFIED] for any value you cannot locate in a quote.\n"
             '  "narratives": [{"heading": str, "body": str}] — one per expected_output '
@@ -260,12 +268,19 @@ async def build_stage_report(
             cols = [str(c) for c in (t.get("columns") or [])]
             rows = [[str(c) for c in r] for r in (t.get("rows") or []) if r]
             if cols and rows:
+                qids: list[str] = []
+                for idx in t.get("question_indices") or []:
+                    try:
+                        qids.append(questions[int(idx)].id)
+                    except (TypeError, ValueError, IndexError):
+                        continue
                 report.tables.append(
                     InsightTable(
                         title=str(t.get("title") or "Table"),
                         columns=cols,
                         rows=[r[: len(cols)] + [""] * (len(cols) - len(r)) for r in rows],
                         footnote=str(t.get("footnote") or ""),
+                        question_ids=qids,
                     )
                 )
         report.narratives = [
@@ -290,12 +305,14 @@ async def build_stage_report(
     if not report.tables:
         ordered = sorted(evidence, key=lambda e: (e.tier, -e.relevance))
         for title, cols in parse_expected_tables(meta["expected_output"]):
-            rows = _metric_rows(ordered, cols)
+            used: set[str] = set()
+            rows = _metric_rows(ordered, cols, used)
             if rows:
                 report.tables.append(
                     InsightTable(title=title, columns=cols, rows=rows,
                                  footnote="Rows are verbatim source statements; "
-                                          "cell grouping is analytical.")
+                                          "cell grouping is analytical.",
+                                 question_ids=sorted(used))
                 )
     if not report.narratives:
         for heading in prose_sections(meta["expected_output"])[:6]:

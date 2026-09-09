@@ -459,6 +459,23 @@ def context() -> dict:
                         {"value": "Europe", "enabled": False}],
         "llm": {"configured": False, "provider": "anthropic", "explicit": False,
                 "model": "claude-opus-5", "gaps": ["ANTHROPIC_API_KEY"]},
+        "app_name": "Celestra",
+        # review gate page
+        "counts": {"insights": 3, "pending": 2, "approved": 1, "modified": 0,
+                   "conflicts": 1, "conflicts_open": 1,
+                   "high": 1, "medium": 1, "requires_input": 1, "rejected": 0,
+                   "sources": 4, "user_inputs": 0, "assumptions": 1, "total": 3},
+        "completed_agents": [{"name": "Clinical Landscape Agent", "icon": "leaf",
+                              "tagline": "Disease context"}],
+        "remaining_agents": [{"name": "Diagnostic Footprint Agent", "icon": "microscope",
+                              "tagline": "Claims signals", "wave": 2}],
+        "can_continue": True,
+        # table snapshot fragment
+        "tables": [InsightTable(title="Epidemiology snapshot", columns=["Metric", "Value", "Source"],
+                                rows=[["Incidence", "[VERIFIED] 4.7 per 100,000", "[Source: SEER]"]],
+                                footnote="Rows are verbatim.", question_ids=["q1"])],
+        "report": None,
+        "run_id": "run_test",
         "thresholds": {"sufficiency": {"min_evidence_items": 3, "min_distinct_sources": 2},
                        "confidence": {"high": {"min_coverage_score": 0.8}}},
         "datasets": [
@@ -614,6 +631,13 @@ def sparse_context(context) -> dict:
         "geographies": [], "therapy_areas": [], "populations": [],
         "llm": {"configured": True, "provider": "azure_openai", "explicit": True,
                 "model": "my-deployment", "gaps": []},
+        "app_name": "Celestra",
+        "counts": {"insights": 0, "pending": 0, "approved": 0, "modified": 0,
+                   "conflicts": 0, "conflicts_open": 0, "high": 0, "medium": 0,
+                   "requires_input": 0, "rejected": 0, "sources": 0,
+                   "user_inputs": 0, "assumptions": 0, "total": 0},
+        "completed_agents": [], "remaining_agents": [], "can_continue": False,
+        "tables": [], "report": None, "run_id": "run_test",
         "thresholds": {}, "datasets": [], "last_seq": 0,
     })
     return sparse

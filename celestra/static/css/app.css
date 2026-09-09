@@ -1072,3 +1072,6 @@ ul.checks .ic { flex: 0 0 auto; margin-top: 2px; color: var(--ok); }
   .card, .stage { box-shadow: none; break-inside: avoid; }
   .table-wrap { max-height: none; overflow: visible; }
 }
+
+/* Wide dialog for table snapshots: report tables need the room. */
+.modal.modal-wide { width: min(1100px, 96vw); max-width: none; }

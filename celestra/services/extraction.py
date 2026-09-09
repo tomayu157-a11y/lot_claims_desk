@@ -203,6 +203,79 @@ async def extract_with_llm(
     return out or extract_deterministic(ref, question_id, terms, max_quotes)
 
 
+async def extract_batch(
+    refs: list[SourceRef], question: str, question_id: str, terms: set[str],
+    max_quotes: int = 3,
+) -> list[Evidence]:
+    """Extract from several documents in ONE model call.
+
+    One call per document was the dominant cost of a run. Batching three
+    documents per call cuts that by two thirds with no loss of the integrity
+    gate: each returned quote is still verified character-for-character against
+    the document it claims to come from, and an unverifiable quote is dropped.
+    """
+    docs = [(ref, document_text(ref)) for ref in refs]
+    docs = [(ref, text) for ref, text in docs if text]
+    if not docs:
+        return []
+    if not llm.available:
+        out: list[Evidence] = []
+        for ref, _ in docs:
+            out += extract_deterministic(ref, question_id, terms, max_quotes)
+        return out
+
+    per_doc_budget = max(3000, 12000 // len(docs))
+    listing = "\n\n".join(
+        f"=== DOCUMENT {i} ===\nTitle: {ref.title}\nSource: {ref.source_name}\n"
+        f"{text[:per_doc_budget]}"
+        for i, (ref, text) in enumerate(docs)
+    )
+    try:
+        result = await llm.complete_json(
+            _SYSTEM,
+            f"Question: {question}\n\n{listing}\n\n"
+            'Return JSON: [{"document": int, "quote": str, "relevance": 0..1}]. '
+            f"At most {max_quotes} quotes per document, each copied character-for-character "
+            "from that document's text above, each a complete sentence, each directly "
+            "relevant to the question. Omit a document entirely if it does not address "
+            "the question.",
+            max_tokens=600 + 500 * len(docs),
+        )
+    except LLMUnavailable:
+        out = []
+        for ref, _ in docs:
+            out += extract_deterministic(ref, question_id, terms, max_quotes)
+        return out
+
+    min_len = get_thresholds()["sufficiency"]["min_quote_length"]
+    haystacks = {i: _normalise(text).lower() for i, (_, text) in enumerate(docs)}
+    counts: dict[int, int] = {}
+    out = []
+    for item in result or []:
+        try:
+            idx = int(item.get("document"))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if idx not in haystacks or counts.get(idx, 0) >= max_quotes:
+            continue
+        quote = _normalise(str(item.get("quote", "")))
+        if len(quote) < min_len or quote.lower() not in haystacks[idx]:
+            continue
+        try:
+            rel = float(item.get("relevance", 0.6))
+        except (TypeError, ValueError):
+            rel = 0.6
+        counts[idx] = counts.get(idx, 0) + 1
+        out.append(_build(docs[idx][0], question_id, quote, rel))
+
+    # A document the model returned nothing for still gets the deterministic
+    # pass, so a terse model answer cannot silently discard a source.
+    for i, (ref, _) in enumerate(docs):
+        if i not in counts:
+            out += extract_deterministic(ref, question_id, terms, max_quotes)
+    return out
+
+
 async def extract(
     refs: list[SourceRef], question: str, question_id: str, terms: set[str]
 ) -> list[Evidence]:
@@ -210,18 +283,16 @@ async def extract(
     per_source_cap = limits.get("max_evidence_items_per_source", 3)
     total_cap = limits["max_evidence_items_per_question"]
 
+    batch_size = max(1, int(limits.get("extract_batch_size", 3)))
     collected: list[Evidence] = []
     seen: set[str] = set()
-    for ref in refs:
+    for start in range(0, len(refs), batch_size):
         # Offer at least as many candidates as the per-source cap can accept,
         # otherwise the cap is never the binding constraint and a source
         # contributes fewer quotes than the diversity rule allows.
-        items = (
-            await extract_with_llm(ref, question, question_id, terms,
-                                   max_quotes=per_source_cap)
-            if llm.available
-            else extract_deterministic(ref, question_id, terms,
-                                       max_quotes=per_source_cap)
+        items = await extract_batch(
+            refs[start:start + batch_size], question, question_id, terms,
+            max_quotes=per_source_cap,
         )
         for ev in items:
             fingerprint = ev.quote[:120].lower()

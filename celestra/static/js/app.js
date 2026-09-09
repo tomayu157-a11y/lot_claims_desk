@@ -223,6 +223,17 @@
           window.setTimeout(function () { window.location.assign(next); }, 500);
           break;
 
+        case 'review_required':
+          announce(live, 'First agents finished. Opening findings for your review…');
+          teardown();
+          var reviewUrl = data.redirect || ('/runs/' + encodeURIComponent(runId) + '/review');
+          window.setTimeout(function () { window.location.assign(reviewUrl); }, 500);
+          break;
+
+        case 'run_resumed':
+          announce(live, 'Resuming with the remaining agents.');
+          break;
+
         case 'run_failed':
           announce(live, 'Run failed: ' + (data.error || data.message || 'unknown error'));
           var banner = $('[data-run-error]');
@@ -246,6 +257,7 @@
 
     var TYPES = ['run_started', 'agent_status', 'agent_progress', 'source_used',
       'question_status', 'insight_added', 'contradiction_added', 'stage_complete',
+      'review_required', 'run_resumed',
       'run_complete', 'run_failed', 'stream_end', 'heartbeat'];
 
     function connect() {

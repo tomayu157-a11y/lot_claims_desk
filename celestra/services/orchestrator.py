@@ -173,15 +173,9 @@ class Orchestrator:
         )
 
         try:
-            for index, wave in enumerate(waves, start=1):
-                await self._emit("wave_started", wave=index,
-                                 agents=[agent_key(b) for b in wave])
-                await asyncio.gather(*(self._run_agent(b) for b in wave))
-                await self._emit(
-                    "wave_complete", wave=index,
-                    gate=get_framework()["buckets"][wave[0]].get("gate", ""),
-                )
-            await self._finalise()
+            paused = await self._run_waves(waves, start_index=1)
+            if not paused:
+                await self._finalise()
         except asyncio.CancelledError:
             self.run.status = RunStatus.CANCELLED
             store.save_run(self.run)
@@ -189,6 +183,84 @@ class Orchestrator:
             raise
         except Exception as exc:
             log.exception("run %s failed", self.run.id)
+            self.run.status = RunStatus.FAILED
+            self.run.error = f"{type(exc).__name__}: {exc}"
+            self.run.finished_at = utcnow()
+            store.save_run(self.run)
+            await self._emit("run_failed", error=self.run.error)
+        finally:
+            await bus.close(self.run.id)
+
+    async def _run_waves(self, waves: list[list[str]], start_index: int) -> bool:
+        """Run waves from `start_index` (1-based). Returns True when the run
+        paused at the human review gate rather than finishing."""
+        gate = self.run.review_after_wave if self.cfg.mode is RunMode.FULL else 0
+        for index, wave in enumerate(waves, start=1):
+            if index < start_index:
+                continue
+            await self._emit("wave_started", wave=index,
+                             agents=[agent_key(b) for b in wave])
+            await asyncio.gather(*(self._run_agent(b) for b in wave))
+            await self._emit(
+                "wave_complete", wave=index,
+                gate=get_framework()["buckets"][wave[0]].get("gate", ""),
+            )
+            if gate and index == gate and index < len(waves):
+                await self._pause_for_review(index, waves)
+                return True
+        return False
+
+    async def _pause_for_review(self, wave_index: int, waves: list[list[str]]) -> None:
+        """Stop after a wave and hand the findings so far to a reviewer.
+
+        Downstream agents build on these findings, so a wrong one propagates.
+        Reviewing here is cheaper than reviewing everything at the end."""
+        self.run.status = RunStatus.AWAITING_REVIEW
+        self.run.resume_from_wave = wave_index + 1
+        store.save_run(self.run)
+        pending = [i for i in self.insights if i.review_action.value == "pending"]
+        await self._emit(
+            "review_required",
+            redirect=f"/runs/{self.run.id}/review",
+            wave=wave_index,
+            insights=len(self.insights),
+            pending=len(pending),
+            conflicts=len(self.contradictions),
+            remaining_agents=[agent_key(b) for w in waves[wave_index:] for b in w],
+        )
+
+    async def resume(self) -> None:
+        """Continue a run paused at the review gate. State is reloaded from the
+        store, because the process that paused it may not be the one resuming."""
+        if self.run.status is not RunStatus.AWAITING_REVIEW:
+            return
+        self.questions = store.get_questions(self.run.id)
+        self.evidence = store.get_evidence(self.run.id)
+        self.insights = store.get_insights(self.run.id)
+        self.contradictions = store.get_contradictions(self.run.id)
+        self.stages = store.get_stage_reports(self.run.id)
+        self._used_summaries = {
+            re.sub(r"\s+", " ", i.summary).strip()[:120].lower() for i in self.insights
+        }
+        self.run.status = RunStatus.RUNNING
+        self.run.reviewed_at = utcnow()
+        store.save_run(self.run)
+
+        selected = [a.bucket for a in self.run.agents.values()]
+        waves = compute_waves(selected)
+        await self._emit("run_resumed", from_wave=self.run.resume_from_wave,
+                         waves=[[agent_key(b) for b in w] for w in waves])
+        try:
+            paused = await self._run_waves(waves, start_index=self.run.resume_from_wave)
+            if not paused:
+                await self._finalise()
+        except asyncio.CancelledError:
+            self.run.status = RunStatus.CANCELLED
+            store.save_run(self.run)
+            await self._emit("run_failed", error="cancelled")
+            raise
+        except Exception as exc:
+            log.exception("run %s failed on resume", self.run.id)
             self.run.status = RunStatus.FAILED
             self.run.error = f"{type(exc).__name__}: {exc}"
             self.run.finished_at = utcnow()
@@ -306,6 +378,26 @@ class Orchestrator:
                                  name=report.name, evidence_count=report.evidence_count,
                                  source_count=report.source_count,
                                  tables=len(report.tables))
+
+                # An insight is derived from one question; a table records which
+                # questions fed it. Join the two so a card can open its table.
+                linked: list[Insight] = []
+                for insight in self.insights:
+                    if insight.stage != stage:
+                        continue
+                    titles = [
+                        t.title for t in report.tables
+                        if set(t.question_ids) & set(insight.question_ids)
+                    ]
+                    if not titles and report.tables:
+                        # Every table in the stage draws on the same evidence
+                        # pool; better to offer the stage's tables than none.
+                        titles = [t.title for t in report.tables]
+                    if titles != insight.table_titles:
+                        insight.table_titles = titles
+                        linked.append(insight)
+                if linked:
+                    store.save_insights(self.run.id, linked)
 
             produced = await handoff.build(bucket, self.cfg, agent_evidence)
             if produced:

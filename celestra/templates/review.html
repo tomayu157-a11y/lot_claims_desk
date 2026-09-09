@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import stat_tile, tinted_tile, agent_tile %}
+{% block title %}Review findings — {{ app_name }}{% endblock %}
+
+{% block content %}
+{%- set rid = run.id -%}
+<div class="page-head">
+  <div>
+    <h1>Review before continuing</h1>
+    <p class="sub">
+      The first agents have finished. The remaining agents build on these findings, so a wrong
+      one approved here propagates downstream. Approve, modify or add input, decide each source
+      conflict, then continue.
+    </p>
+    <p class="meta">
+      {{ run.config.indication }} · {{ run.config.geography }} · {{ run.config.population }} ·
+      <code>{{ run.reference }}</code>
+    </p>
+  </div>
+  <div class="page-actions">
+    {% if can_continue %}
+    <form method="post" action="/runs/{{ rid }}/continue">
+      <button type="submit" class="btn btn-primary btn-lg">
+        Continue with remaining agents {{ icon('arrow-right', 16) }}
+      </button>
+    </form>
+    {% else %}
+    <a class="btn btn-secondary" href="/runs/{{ rid }}">Back to run</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="tiles">
+  {{ stat_tile(counts.insights, 'Findings so far', 'blue') }}
+  {{ stat_tile(counts.pending, 'Awaiting your decision', 'amber') }}
+  {{ stat_tile(counts.approved + counts.modified, 'Approved or modified', 'green') }}
+  {{ stat_tile(counts.conflicts_open, 'Open source conflicts', 'rose') }}
+</div>
+
+<div class="two-col">
+  <section class="card">
+    <div class="card-body">
+      <h2>Finished</h2>
+      <ul class="agent-list">
+        {% for a in completed_agents %}
+        <li>{{ agent_tile(a.icon) }}<div><strong>{{ a.name }}</strong><div class="sub">{{ a.tagline }}</div></div></li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
+  <section class="card">
+    <div class="card-body">
+      <h2>Waiting on your review</h2>
+      <ul class="agent-list">
+        {% for a in remaining_agents %}
+        <li>{{ agent_tile(a.icon) }}<div><strong>{{ a.name }}</strong><div class="sub">{{ a.tagline }}</div></div></li>
+        {% else %}
+        <li class="sub">No agents remain; continuing will finalise the run.</li>
+        {% endfor %}
+      </ul>
+    </div>
+  </section>
+</div>
+
+<h2 class="section-head">Findings ({{ counts.insights }})</h2>
+<div class="chips mb-2" data-filter-group>
+  <button type="button" class="chip is-active" data-filter="all">All ({{ counts.insights }})</button>
+  {% for c in categories %}
+  <button type="button" class="chip" data-filter="{{ c.key }}">{{ c.label }} ({{ c.count }})</button>
+  {% endfor %}
+</div>
+<div class="stack" data-insight-list>
+  {% for insight in insights | default([]) %}
+    {% include "partials/insight_card.html" %}
+  {% else %}
+  <p class="sub">No findings were produced by the finished agents.</p>
+  {% endfor %}
+</div>
+
+<h2 class="section-head">Source conflicts ({{ counts.conflicts }})</h2>
+{% if contradictions %}
+<div class="banner is-danger" role="status">
+  {{ icon('alert', 16) }}
+  <div class="banner-body">Nothing here has been auto-resolved. Each conflict waits on your decision.</div>
+</div>
+<div class="stack">
+  {% for contradiction in contradictions %}
+    {% include "partials/contradiction_card.html" %}
+  {% endfor %}
+</div>
+{% else %}
+<p class="sub">The finished agents surfaced no disagreements between sources.</p>
+{% endif %}
+
+{% if can_continue %}
+<div class="card mt-3">
+  <div class="card-body page-actions">
+    <div>
+      <strong>Ready?</strong>
+      <div class="sub">
+        {% if counts.pending %}{{ counts.pending }} finding(s) are still undecided. You can continue anyway;
+        undecided findings carry forward as pending.{% else %}Every finding has a decision.{% endif %}
+      </div>
+    </div>
+    <form method="post" action="/runs/{{ rid }}/continue">
+      <button type="submit" class="btn btn-primary btn-lg">Continue with remaining agents {{ icon('arrow-right', 16) }}</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+{% endblock %}
