@@ -362,6 +362,7 @@ class Orchestrator:
         metrics = qa.build_metrics(
             self.cfg, self.questions, self.evidence, self.contradictions, self.stages
         )
+        metrics = qa.build_narrative(self.cfg, metrics, self.stages, self.questions)
         metrics = await qa.polish_readiness(metrics, self.cfg)
         store.save_qa(self.run.id, metrics)
 

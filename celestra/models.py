@@ -310,6 +310,9 @@ class QAMetrics(BaseModel):
     checklist: list[dict[str, str]] = Field(default_factory=list)
     readiness: str = ""
     sme_checklist: list[str] = Field(default_factory=list)
+    executive_summary: str = ""
+    research_method: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
 
 
 class RunConfig(BaseModel):

@@ -217,3 +217,99 @@ async def polish_readiness(qa: QAMetrics, cfg: RunConfig) -> QAMetrics:
     except LLMUnavailable:
         pass
     return qa
+
+
+def build_narrative(
+    cfg: RunConfig,
+    metrics: QAMetrics,
+    stages: list[StageReport],
+    questions: list[ResearchQuestion],
+) -> QAMetrics:
+    """Executive summary, method and limitations for the report header.
+
+    Written from the run's own numbers so it can never overstate what was
+    retrieved. A model pass may rewrite the summary; it cannot change the
+    counts it is describing.
+    """
+    stage_names = [s.name for s in stages]
+    web_note = (
+        f" {metrics.evidence_supplementary} item(s) came from open-web fallback and are "
+        f"labelled SUPPLEMENTARY WEB EVIDENCE."
+        if metrics.evidence_supplementary
+        else " Open-web fallback was not required; approved sources answered every question "
+        "that reached sufficiency."
+    )
+    gap_note = (
+        f" {metrics.questions_below_threshold} question(s) did not reach the sufficiency "
+        f"threshold and are listed with the reason and the sources attempted."
+        if metrics.questions_below_threshold
+        else ""
+    )
+    metrics.executive_summary = (
+        f"This clinical desk-research deliverable establishes "
+        f"{', '.join(n.lower() for n in stage_names) or 'the requested foundation'} for "
+        f"{cfg.indication}"
+        f"{' (' + cfg.target_population + ')' if cfg.target_population else ''} in "
+        f"{cfg.geography}. Research ran source-first against the approved registry, "
+        f"drawing {metrics.evidence_total} evidence items from "
+        f"{metrics.distinct_sources} distinct sources, of which "
+        f"{metrics.evidence_approved} came from approved sources."
+        + web_note
+        + f" {metrics.questions_sufficient} of {metrics.questions_planned} planned "
+        f"questions reached the sufficiency threshold at a mean coverage of "
+        f"{metrics.mean_coverage:.0f}%."
+        + gap_note
+        + (
+            f" {metrics.conflicts_surfaced} source disagreement(s) are surfaced for SME "
+            f"adjudication rather than resolved."
+            if metrics.conflicts_surfaced
+            else ""
+        )
+    )
+
+    th = get_thresholds()
+    metrics.research_method = [
+        "The requested scope was expanded into a structured research plan with specific, "
+        "population-scoped questions per stage.",
+        "For each question the approved source registry was consulted first, using native "
+        "source APIs where available and targeted domain-scoped search otherwise. Whole-site "
+        "crawling was not performed.",
+        "Only relevant documents were retrieved; each was converted into structured evidence "
+        "with a verbatim supporting quote checked back against the source text.",
+        f"Evidence was assessed for coverage, source tier distribution and contradictions. A "
+        f"question below the threshold triggered query refinement up to "
+        f"{th['escalation']['max_refinement_rounds']} time(s), then open-web fallback.",
+        (
+            "Open-web fallback was required for "
+            f"{metrics.questions_web_only} question(s) and is labelled as supplementary."
+            if metrics.questions_web_only
+            else "Open-web fallback was not required: approved sources answered every "
+            "question that reached sufficiency."
+        ),
+        f"Findings were synthesised per stage and QA-validated against the run's evidence "
+        f"base ({metrics.questions_sufficient} of {metrics.questions_planned} questions "
+        f"reached the sufficiency threshold).",
+    ]
+
+    metrics.limitations = [
+        "This document is a research artefact produced by an automated desk-research "
+        "workflow and requires subject-matter-expert review before analytical use.",
+        "Claims codes, regimen definitions and line-of-therapy rules marked ORIGINAL are "
+        "analytical constructs of this workflow, not source facts.",
+        "Any value marked NOT VERIFIED could not be located in the cited source text and "
+        "must be confirmed against the coding authority before use.",
+        "Evidence marked SUPPLEMENTARY WEB EVIDENCE came from open-web fallback and carries "
+        "lower evidentiary weight than approved-source evidence.",
+        f"Coverage is bounded by the research cutoff of {cfg.research_cutoff}; developments "
+        f"after that date are out of scope.",
+    ]
+    blocked = sorted({
+        sid for q in questions for sid in q.sources_attempted
+        if sid not in q.sources_answered
+    })
+    if blocked:
+        metrics.limitations.append(
+            "The following registered sources returned nothing during this run and their "
+            "contribution is therefore absent: " + ", ".join(blocked[:10]) + "."
+        )
+    return metrics

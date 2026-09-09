@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import pairs_block %}
+{% block title %}Settings — Celestra{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Settings</h1>
+  <p class="sub">
+    Read-only. Credentials, thresholds and reference datasets are configured in the environment and
+    the YAML config files, not in the browser.
+  </p>
+</div>
+
+<section class="section">
+  <h2 class="section-title">Credentials</h2>
+  <div class="card">
+    <table class="kv">
+      <tbody>
+        {% for key, ok in (credentials | default({})).items() %}
+        <tr>
+          <th scope="row">{{ key | replace('_', ' ') | title }}</th>
+          <td>
+            {% if ok %}
+            <span class="chip chip-sm chip-high">{{ icon('check', 12) }} Configured</span>
+            {% else %}
+            <span class="chip chip-sm chip-medium">{{ icon('alert', 12) }} Not configured</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td class="text-faint">No credential status was reported.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="hint">
+    A missing Anthropic key degrades synthesis to deterministic mode. A missing Firecrawl key moves
+    open-web fallback onto the keyless search path. Neither stops a run.
+  </p>
+</section>
+
+<section class="section">
+  <h2 class="section-title">Thresholds</h2>
+  {% if thresholds %}
+  <div class="grid grid-2">
+    {% for group, values in thresholds.items() %}
+    <div class="card card-pad">
+      <h3 class="mb-1">{{ group | replace('_', ' ') | title }}</h3>
+      {% if values is mapping %}
+      <table class="kv">
+        <tbody>
+          {% for k, v in values.items() %}
+          <tr>
+            <th scope="row">{{ k | replace('_', ' ') | title }}</th>
+            <td>
+              {% if v is mapping %}
+                {% for k2, v2 in v.items() %}
+                <div class="text-sm"><span class="text-faint">{{ k2 | replace('_', ' ') }}:</span> {{ v2 }}</div>
+                {% endfor %}
+              {% else %}<span class="mono">{{ v }}</span>{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="mono mb-0">{{ values }}</p>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="meta">No thresholds were loaded.</p>
+  {% endif %}
+</section>
+
+<section class="section">
+  <h2 class="section-title">Installed reference datasets</h2>
+  {% if datasets %}
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Dataset</th>
+          <th scope="col">Version</th>
+          <th scope="col">Rows</th>
+          <th scope="col">Installed</th>
+          <th scope="col">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for d in datasets %}
+        {% if d is mapping %}
+        <tr>
+          <td><strong>{{ d.get('name') or d.get('key') or '—' }}</strong>
+            {% if d.get('description') %}<div class="text-faint text-sm">{{ d.get('description') }}</div>{% endif %}
+          </td>
+          <td class="mono nowrap">{{ d.get('version') or '—' }}</td>
+          <td class="num">{{ d.get('rows', d.get('count', '—')) }}</td>
+          <td class="nowrap">{{ d.get('installed_at') or d.get('installed') or '—' }}</td>
+          <td class="nowrap">
+            {% if d.get('available', true) %}
+            <span class="chip chip-sm chip-high">Available</span>
+            {% else %}
+            <span class="chip chip-sm chip-rejected">Missing</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5">{{ d }}</td></tr>
+        {% endif %}
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="meta">No reference datasets are installed.</p>
+  {% endif %}
+</section>
+{% endblock %}

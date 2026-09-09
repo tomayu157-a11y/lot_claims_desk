@@ -1,0 +1,385 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import tier_badge, severity_chip, ext_link, dict_table, pick, dt %}
+{% block title %}Desk research report — Celestra{% endblock %}
+
+{%- set waves = (run.agents.values() | list) if (run is defined and run and run.agents) else [] -%}
+
+{% block content %}
+<div class="report">
+
+<div class="page-head page-head-row">
+  <div>
+    <div class="eyebrow">Phase 1 · Clinical foundation research</div>
+    <h1 class="doc-title">
+      {{ report_title | default('Applying the Phase 1 Clinical Foundation Research Framework to ' ~ run.config.indication, true) }}
+    </h1>
+    <p class="sub">
+      {{ run.config.target_population or 'All patients' }} · {{ run.config.geography }} ·
+      {{ run.config.objective }}
+    </p>
+  </div>
+  <div class="btn-row no-print">
+    <a class="btn btn-secondary" href="/runs/{{ run.id }}/overview">Overview</a>
+    <a class="btn btn-secondary" href="/runs/{{ run.id }}/sources">Sources</a>
+    <button type="button" class="btn btn-ghost" onclick="window.print()">{{ icon('download', 15) }} Print</button>
+  </div>
+</div>
+
+{# ---------------------------------------------------------------- params #}
+<section class="report-section">
+  <h2>Run parameters</h2>
+  <div class="card">
+    <table class="kv">
+      <tbody>
+      {% if params is mapping %}
+        {% for key, value in params.items() %}
+        <tr><th scope="row">{{ key | replace('_', ' ') | title }}</th><td>{{ value }}</td></tr>
+        {% endfor %}
+      {% else %}
+        {% for row in params | default([]) %}
+        <tr>
+          <th scope="row">{{ pick(row, ['label', 'parameter', 'name', 'key']) }}</th>
+          <td>{{ pick(row, ['value', 'val', 'detail']) }}</td>
+        </tr>
+        {% endfor %}
+      {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{# ------------------------------------------------------- tagging key #}
+<section class="report-section">
+  <h2>Source-tagging key</h2>
+  <div class="table-wrap">
+    <table class="data table-compact">
+      <thead><tr><th scope="col">Tag</th><th scope="col">Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><span class="vtag vtag-verified">[VERIFIED]</span></td>
+            <td>Directly supported by a source retrieved during this research run.</td></tr>
+        <tr><td><span class="vtag vtag-general-knowledge">[GENERAL KNOWLEDGE]</span></td>
+            <td>Standard clinical information not individually verified during this run.</td></tr>
+        <tr><td><span class="vtag vtag-original">[ORIGINAL]</span></td>
+            <td>Original analytical synthesis or claims-modelling rule created by this workflow.</td></tr>
+        <tr><td><span class="vtag vtag-inference">[INFERENCE]</span></td>
+            <td>Conclusion inferred from multiple pieces of evidence.</td></tr>
+        <tr><td><span class="vtag vtag-update">[UPDATE — DATE]</span></td>
+            <td>Recent or current development identified during this research run.</td></tr>
+        <tr><td><span class="vtag vtag-not-verified">[NOT VERIFIED]</span></td>
+            <td>Asserted value (e.g. a code) that could not be confirmed in the cited source.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Source tier hierarchy</h3>
+  <div class="table-wrap">
+    <table class="data table-compact">
+      <thead><tr><th scope="col">Tier</th><th scope="col">Definition</th></tr></thead>
+      <tbody>
+        {% set default_tiers = {
+          1: 'Government, regulators, official guidelines, coding authorities, product labels',
+          2: 'Peer-reviewed literature, trial registries, systematic reviews',
+          3: 'Professional / disease organizations, high-quality secondary evidence',
+          4: 'Industry / contextual sources',
+          5: 'General web (supplementary only)' } %}
+        {% for t, label in (tiers | default(default_tiers, true)).items() %}
+        <tr><td>{{ tier_badge(t) }}</td><td>{{ label }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="table-footnote">
+    A Tier 5 (general web) source never overrides Tier 1 evidence. Evidence obtained through
+    open-web fallback is labelled SUPPLEMENTARY WEB EVIDENCE wherever it appears.
+  </p>
+</section>
+
+{# ------------------------------------------------- executive summary #}
+{% if executive_summary | default('', true) %}
+<section class="report-section">
+  <h2>Executive summary</h2>
+  <div class="prose">{{ executive_summary | default('', true) | tagify }}</div>
+</section>
+{% endif %}
+
+{# ----------------------------------------------------- research method #}
+<section class="report-section">
+  <h2>Research method</h2>
+  <ol class="takeaways">
+    {% if research_method | default([], true) %}
+      {% for step in research_method | default([], true) %}<li>{{ step | tagify }}</li>{% endfor %}
+    {% else %}
+      <li>The requested scope was expanded into a structured research plan with specific,
+        population-scoped questions per stage.</li>
+      <li>For each question the approved source registry was consulted <strong>first</strong>, using
+        native source APIs where available and targeted domain-scoped search otherwise. Whole-site
+        crawling was not performed.</li>
+      <li>Only relevant documents were retrieved; each was converted into structured evidence with a
+        verbatim supporting quote.</li>
+      <li>Evidence was assessed for coverage, source-tier distribution and contradictions.
+        Insufficient questions triggered query refinement, then open-web fallback.</li>
+      <li>Findings were synthesised per stage and QA-validated against the run's evidence base
+        ({{ qa.questions_sufficient if qa else 0 }} of {{ qa.questions_planned if qa else 0 }}
+        questions reached the sufficiency threshold).</li>
+    {% endif %}
+  </ol>
+  {% if run.config.research_cutoff %}
+  <p class="meta">All statements are constrained to the research cutoff of
+    <strong>{{ run.config.research_cutoff }}</strong>.</p>
+  {% endif %}
+
+  <h3>Execution plan</h3>
+  <p class="text-muted text-sm">
+    Agents execute by dependency, not in stage order. Agents in the same wave run concurrently and a
+    reconciliation gate closes each wave before the next begins.
+  </p>
+  <div class="table-wrap">
+    <table class="data table-compact">
+      <thead>
+        <tr>
+          <th scope="col">Wave</th>
+          <th scope="col">Mode</th>
+          <th scope="col">Agents</th>
+          <th scope="col">Stages reported</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if execution_plan is defined and execution_plan %}
+          {% for row in execution_plan %}
+          <tr>
+            <td>{{ pick(row, ['wave']) }}</td>
+            <td>{{ pick(row, ['mode']) }}</td>
+            <td>{{ pick(row, ['agents', 'agent_names', 'agent']) }}</td>
+            <td>{{ pick(row, ['stages', 'stages_reported']) }}</td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          {% set wave_numbers = waves | map(attribute='wave') | unique | sort | list %}
+          {% for w in wave_numbers %}
+            {% set members = waves | selectattr('wave', 'equalto', w) | list %}
+            <tr>
+              <td>{{ w }}</td>
+              <td>{{ 'Concurrent' if members | length > 1 else 'Sequential' }}</td>
+              <td>{{ members | map(attribute='name') | join(', ') }}</td>
+              <td>
+                {%- set ns = namespace(all=[]) -%}
+                {%- for m in members -%}{%- set ns.all = ns.all + (m.stages | list) -%}{%- endfor -%}
+                {{ ns.all | unique | sort | join(', ') | replace('_', ' ') }}
+              </td>
+            </tr>
+          {% else %}
+            <tr><td colspan="4" class="text-faint">No execution plan recorded.</td></tr>
+          {% endfor %}
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{# ----------------------------------------------------------- stages #}
+{% if stages %}
+<div class="stage-toc no-print">
+  {% for stage in stages %}
+  <a class="pill" href="#{{ stage.stage }}">{{ stage.stage | replace('_', ' ') | title }} — {{ stage.agent_name }}</a>
+  {% endfor %}
+</div>
+
+{% for stage in stages %}
+  {% include "partials/stage_body.html" %}
+{% endfor %}
+{% endif %}
+
+{# ------------------------------------------- consolidated one-page view #}
+<section class="report-section">
+  <h2>Consolidated one-page view</h2>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Stage</th>
+          <th scope="col">Core question</th>
+          <th scope="col">Key deliverable</th>
+          <th scope="col">Headline finding</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for stage in stages | default([]) %}
+        <tr>
+          <td class="nowrap">{{ stage.stage | replace('_', ' ') | title }}</td>
+          <td>{{ stage.core_question }}</td>
+          <td>{{ stage.output_name or (stage.expected_output | join('; ') if stage.expected_output else '—') }}</td>
+          <td>{{ (stage.takeaways[0] if stage.takeaways else '—') | tagify }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="text-faint">No stages were reported for this run.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{# ------------------------------------------------------------- QA #}
+<section class="report-section">
+  <h2>QA validation &amp; readiness</h2>
+
+  {% if qa %}
+  <h3>Run QA metrics</h3>
+  <div class="table-wrap">
+    <table class="data table-compact">
+      <thead><tr><th scope="col">Metric</th><th scope="col">Value</th></tr></thead>
+      <tbody>
+        <tr><td>Research questions planned</td><td class="num">{{ qa.questions_planned }}</td></tr>
+        <tr><td>Questions meeting sufficiency threshold</td><td class="num">{{ qa.questions_sufficient }}</td></tr>
+        <tr><td>— of which answered from supplementary web only</td><td class="num">{{ qa.questions_web_only }}</td></tr>
+        <tr><td>Questions below threshold</td><td class="num">{{ qa.questions_below_threshold }}</td></tr>
+        <tr><td>Mean evidence coverage</td><td class="num">{{ (qa.mean_coverage * 100) | round | int }}%</td></tr>
+        <tr><td>Total evidence items</td><td class="num">{{ qa.evidence_total }}</td></tr>
+        <tr><td>Approved-source evidence items</td><td class="num">{{ qa.evidence_approved }}</td></tr>
+        <tr><td>Supplementary web evidence items</td><td class="num">{{ qa.evidence_supplementary }}</td></tr>
+        <tr><td>Distinct sources retrieved</td><td class="num">{{ qa.distinct_sources }}</td></tr>
+        <tr><td>Source conflicts surfaced</td><td class="num">{{ qa.conflicts_surfaced }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>QA checklist</h3>
+  <div class="table-wrap">
+    <table class="data table-compact">
+      <thead>
+        <tr><th scope="col">Check</th><th scope="col">Status</th><th scope="col">Detail</th></tr>
+      </thead>
+      <tbody>
+        {% for row in qa.checklist | default([]) %}
+        {% set status = (row.get('status', '') if row.get is defined else '') | string %}
+        <tr>
+          <td>{{ pick(row, ['check', 'name', 'rule']) }}</td>
+          <td class="nowrap">
+            <span class="chip chip-sm {{ 'chip-high' if status | upper == 'PASS' else ('chip-requires_input' if status | upper == 'FAIL' else 'chip-medium') }}">
+              {{ status or 'n/a' }}
+            </span>
+          </td>
+          <td>{{ pick(row, ['detail', 'note', 'evidence']) }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3" class="text-faint">No QA checks were recorded.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="meta">No QA metrics were recorded for this run.</p>
+  {% endif %}
+
+  <h3>Contradiction register</h3>
+  {% if contradictions %}
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Topic</th>
+          <th scope="col">Source A</th>
+          <th scope="col">Source A claim</th>
+          <th scope="col">Source B</th>
+          <th scope="col">Source B claim</th>
+          <th scope="col">Possible reason</th>
+          <th scope="col">Severity</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for con in contradictions %}
+        <tr>
+          <td>{{ con.topic }}</td>
+          <td class="nowrap">{{ con.source_a_name }} {{ tier_badge(con.source_a_tier) }}</td>
+          <td>{{ con.source_a_claim }}</td>
+          <td class="nowrap">{{ con.source_b_name }} {{ tier_badge(con.source_b_tier) }}</td>
+          <td>{{ con.source_b_claim }}</td>
+          <td>{{ con.reason }}</td>
+          <td>{{ severity_chip(con.severity) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="table-footnote">
+    No conflict was auto-resolved. Both sides are reported as stated by their source.
+  </p>
+  {% else %}
+  <p class="meta">No source conflicts were surfaced in this run.</p>
+  {% endif %}
+
+  {% if qa and qa.readiness %}
+  <h3>Readiness assessment</h3>
+  <div class="callout">{{ qa.readiness | tagify }}</div>
+  {% endif %}
+
+  {% if qa and qa.sme_checklist %}
+  <h3>SME review checklist</h3>
+  <ol class="takeaways">
+    {% for item in qa.sme_checklist %}<li>{{ item | tagify }}</li>{% endfor %}
+  </ol>
+  {% endif %}
+</section>
+
+{# -------------------------------------------------- sources referenced #}
+<section class="report-section">
+  <h2>Sources referenced</h2>
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Organization</th>
+          <th scope="col">Title / version</th>
+          <th scope="col">Date</th>
+          <th scope="col">URL</th>
+          <th scope="col">Source tier</th>
+          <th scope="col">Evidence items</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in sources | default([]) %}
+        <tr>
+          <td>{{ s.get('organization') or s.get('name') or '—' }}</td>
+          <td>{{ s.get('title') or '—' }}</td>
+          <td class="nowrap">{{ s.get('published') or 'Not stated' }}</td>
+          <td class="break">{{ ext_link(s.get('url'), s.get('url')) }}</td>
+          <td class="nowrap">{{ tier_badge(s.get('tier', 5)) }}</td>
+          <td class="num">{{ s.get('evidence_items', 0) }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6" class="text-faint">No sources were recorded for this run.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+{# ------------------------------------------------ document limitations #}
+<section class="report-section">
+  <h2>Document limitations</h2>
+  <ul>
+    {% if document_limitations | default([], true) %}
+      {% for item in document_limitations | default([], true) %}<li>{{ item | tagify }}</li>{% endfor %}
+    {% else %}
+      <li>This document is a research artefact produced by an automated desk-research workflow and
+        requires subject-matter-expert review before analytical use.</li>
+      <li>Claims codes, regimen definitions and line-of-therapy rules marked
+        <span class="vtag vtag-original">[ORIGINAL]</span> are analytical constructs of this
+        workflow, not source facts.</li>
+      <li>Any value marked <span class="vtag vtag-not-verified">[NOT VERIFIED]</span> could not be
+        located in the cited source text and must be confirmed against the coding authority before use.</li>
+      <li>Evidence marked SUPPLEMENTARY WEB EVIDENCE came from open-web fallback and carries lower
+        evidentiary weight than approved-source evidence.</li>
+      {% if run.config.research_cutoff %}
+      <li>Coverage is bounded by the research cutoff of {{ run.config.research_cutoff }};
+        developments after that date are out of scope.</li>
+      {% endif %}
+    {% endif %}
+  </ul>
+  <p class="meta mt-2">
+    Generated {{ dt(run.finished_at or run.created_at) }}{% if run.reference %} · <span class="mono">{{ run.reference }}</span>{% endif %}
+  </p>
+</section>
+
+</div>
+{% endblock %}

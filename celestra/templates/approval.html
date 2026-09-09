@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import stat_tile, agent_tile %}
+{% block title %}Approval — Celestra{% endblock %}
+
+{% set c = counts | default({}) %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Discovery Context Ready for Approval</h1>
+  <p class="sub">
+    You have reviewed and provided input on the agent findings. Once approved, this context is
+    saved and can be used across downstream workflows.
+  </p>
+</div>
+
+<div class="stats mb-3">
+  {{ stat_tile(c.get('approved', 0), 'Approved', 'green', check=true) }}
+  {{ stat_tile(c.get('modified', 0), 'Modified', 'amber') }}
+  {{ stat_tile(c.get('user_inputs', 0), 'User Inputs', 'blue') }}
+  {{ stat_tile(c.get('assumptions', 0), 'Assumptions', 'slate') }}
+</div>
+
+<section class="section">
+  <h2 class="section-title">What's Included</h2>
+  <div class="card card-pad">
+    {% for item in included | default([]) %}
+    <div class="included-item">
+      {{ agent_tile(item.icon | default('sparkle', true), 'tile-sm') }}
+      <div>
+        <div class="included-name">{{ item.name }}</div>
+        <div class="included-desc">{{ item.description }}</div>
+      </div>
+    </div>
+    {% else %}
+    <p class="meta mb-0">Nothing has been produced for this run yet.</p>
+    {% endfor %}
+  </div>
+</section>
+
+{% if run.approved_at %}
+<div class="banner is-ok mb-2" role="status">
+  {{ icon('check-circle', 16) }}
+  <div class="banner-body">
+    <strong>Approved.</strong> This discovery context was approved and is available downstream.
+  </div>
+</div>
+{% endif %}
+
+<form method="post" action="/runs/{{ run.id }}/approve">
+  <div class="btn-row btn-row-end mt-3">
+    <a class="btn btn-secondary btn-lg" href="/runs/{{ run.id }}/insights">Review Insights</a>
+    <button type="submit" class="btn btn-primary btn-lg">
+      {{ icon('check', 16) }} Approve Discovery Context
+    </button>
+  </div>
+</form>
+{% endblock %}

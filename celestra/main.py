@@ -106,12 +106,11 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 # Template filters
 # --------------------------------------------------------------------------
 _TAG_CLASS = {
-    "VERIFIED": "tag-verified",
-    "ORIGINAL": "tag-original",
-    "INFERENCE": "tag-inference",
-    "NOT VERIFIED": "tag-unverified",
-    "GENERAL KNOWLEDGE": "tag-general",
-    "SUPPLEMENTARY WEB EVIDENCE": "tag-web",
+    "VERIFIED": "vtag-verified",
+    "ORIGINAL": "vtag-original",
+    "INFERENCE": "vtag-inference",
+    "NOT VERIFIED": "vtag-not-verified",
+    "GENERAL KNOWLEDGE": "vtag-general-knowledge",
 }
 _TAG_RE = re.compile(
     r"\[(VERIFIED|ORIGINAL|INFERENCE|NOT VERIFIED|GENERAL KNOWLEDGE|UPDATE[^\]]*)\]"
@@ -125,12 +124,14 @@ def tagify(value: Any) -> Markup:
 
     def tag_sub(m: re.Match) -> str:
         raw = m.group(1)
-        cls = _TAG_CLASS.get(raw, "tag-update" if raw.startswith("UPDATE") else "tag-general")
+        cls = _TAG_CLASS.get(
+            raw, "vtag-update" if raw.startswith("UPDATE") else "vtag-general-knowledge"
+        )
         return f'<span class="vtag {cls}">{raw}</span>'
 
     text = _TAG_RE.sub(tag_sub, text)
     text = _SOURCE_RE.sub(
-        lambda m: f'<span class="src-pill">{m.group(1).strip()}</span>', text
+        lambda m: f'<span class="vtag vtag-source">{m.group(1).strip()}</span>', text
     )
     return Markup(text)
 
@@ -153,7 +154,25 @@ def base_ctx(request: Request, active: str = "") -> dict[str, Any]:
         "active": active,
         "credentials": s.credential_status(),
         "app_name": s.app_name,
+        "messages": [],
+        "source_names": _source_names(),
+        "tiers": {
+            int(k): v["label"] for k, v in get_source_registry()["tiers"].items()
+        },
     }
+
+
+def _agent_by_stage() -> dict[str, dict[str, str]]:
+    fw = get_framework()["buckets"]
+    return {
+        stage: {"name": spec["agent_name"], "icon": spec.get("agent_icon", "dot")}
+        for spec in fw.values()
+        for stage in (spec.get("stages") or [])
+    }
+
+
+def _source_names() -> dict[str, str]:
+    return {s["id"]: s["name"] for s in get_source_registry()["sources"]}
 
 
 def get_run_or_404(run_id: str) -> Run:
@@ -199,14 +218,14 @@ def source_chip_names() -> list[str]:
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     return templates.TemplateResponse(
-        "home.html", {**base_ctx(request, "home"), "runs": store.list_runs(10)}
+        request, "home.html", {**base_ctx(request, "home"), "runs": store.list_runs(10)}
     )
 
 
 @app.get("/projects", response_class=HTMLResponse)
 async def projects(request: Request):
     return templates.TemplateResponse(
-        "projects.html", {**base_ctx(request, "projects"), "runs": store.list_runs(50)}
+        request, "projects.html", {**base_ctx(request, "projects"), "runs": store.list_runs(50)}
     )
 
 
@@ -217,7 +236,7 @@ async def new_project(request: Request):
         for k, v in get_questions()["indications"].items()
     ]
     return templates.TemplateResponse(
-        "new_project.html",
+        request, "new_project.html",
         {
             **base_ctx(request, "new"),
             "indications": inds,
@@ -248,7 +267,7 @@ async def create_project(
     key = _resolve_indication_key(indication)
     if key is None:
         return templates.TemplateResponse(
-            "error.html",
+            request, "error.html",
             {
                 **base_ctx(request),
                 "message": "Unsupported indication",
@@ -327,16 +346,36 @@ async def _execute(run_id: str) -> None:
     await orch.Orchestrator(run, registry()).execute()
 
 
+@app.get("/runs/{run_id}", response_class=HTMLResponse)
 @app.get("/runs/{run_id}/discovery", response_class=HTMLResponse)
 async def discovery(request: Request, run_id: str):
+    """Live progress. A finished run has nothing left to watch, so it goes
+    straight to the results."""
     run = get_run_or_404(run_id)
     if run.status is RunStatus.COMPLETED:
         return RedirectResponse(f"/runs/{run_id}/overview", status_code=303)
     agents = sorted(run.agents.values(), key=lambda a: (a.wave, a.name))
     return templates.TemplateResponse(
-        "discovery.html",
+        request, "discovery.html",
         {**base_ctx(request, "projects"), "run": run, "agents": agents,
-         "source_chips": source_chip_names()},
+         "source_chips": source_chip_names(), "last_seq": 0},
+    )
+
+
+@app.get("/runs/{run_id}/stages/{stage}", response_class=HTMLResponse)
+async def stage_page(request: Request, run_id: str, stage: str):
+    run = get_run_or_404(run_id)
+    report = next((s for s in store.get_stage_reports(run_id) if s.stage == stage), None)
+    if report is None:
+        raise HTTPException(404, f"No report for {stage} in this run")
+    return templates.TemplateResponse(
+        request, "stage_report.html",
+        {**base_ctx(request, "projects"), "run": run, "stage_report": report,
+         "report": report, "stage": report,
+         "stage_contradictions": [
+             c for c in store.get_contradictions(run_id) if c.stage == stage
+         ],
+         "agent_by_stage": _agent_by_stage()},
     )
 
 
@@ -404,7 +443,7 @@ async def overview(request: Request, run_id: str):
     )
     takeaways = ranked[:2] + [i for i in insights if i.confidence is Confidence.REQUIRES_INPUT][:1]
     return templates.TemplateResponse(
-        "overview.html",
+        request, "overview.html",
         {
             **base_ctx(request, "projects"), "run": run,
             "counts": _counts(insights), "categories": _categories(insights),
@@ -419,7 +458,7 @@ async def insights_page(request: Request, run_id: str):
     run = get_run_or_404(run_id)
     insights = store.get_insights(run_id)
     return templates.TemplateResponse(
-        "insights.html",
+        request, "insights.html",
         {
             **base_ctx(request, "projects"), "run": run, "insights": insights,
             "categories": _categories(insights), "agents": agent_catalogue(),
@@ -428,11 +467,9 @@ async def insights_page(request: Request, run_id: str):
     )
 
 
-def _source_names() -> dict[str, str]:
-    return {s["id"]: s["name"] for s in get_source_registry()["sources"]}
-
-
-@app.get("/runs/{run_id}/insights/{insight_id}/modal", response_class=HTMLResponse)
+@app.get("/runs/{run_id}/insights/{insight_id}/modify", response_class=HTMLResponse)
+@app.get("/runs/{run_id}/insights/{insight_id}/input", response_class=HTMLResponse)
+@app.get("/runs/{run_id}/insights/{insight_id}/proxy", response_class=HTMLResponse)
 async def insight_modal(request: Request, run_id: str, insight_id: str):
     get_run_or_404(run_id)
     insight = store.get_insight(run_id, insight_id)
@@ -442,9 +479,10 @@ async def insight_modal(request: Request, run_id: str, insight_id: str):
     impacts = _impacts(insight, others)
     evidence = [e for e in store.get_evidence(run_id) if e.id in set(insight.evidence_ids)]
     return templates.TemplateResponse(
-        "partials/insight_modal.html",
+        request, "partials/insight_modal.html",
         {**base_ctx(request), "insight": insight, "impacts": impacts,
-         "evidence": evidence, "run_id": run_id, "source_names": _source_names()},
+         "evidence": evidence, "run_id": run_id, "run": store.get_run(run_id),
+         "agent_by_stage": _agent_by_stage()},
     )
 
 
@@ -479,17 +517,27 @@ async def insight_evidence(request: Request, run_id: str, insight_id: str):
         raise HTTPException(404, "Insight not found")
     evidence = [e for e in store.get_evidence(run_id) if e.id in set(insight.evidence_ids)]
     return templates.TemplateResponse(
-        "partials/evidence_panel.html",
+        request, "partials/evidence_panel.html",
         {**base_ctx(request), "insight": insight, "evidence": evidence},
     )
 
 
-@app.post("/runs/{run_id}/insights/{insight_id}/action", response_class=HTMLResponse)
-async def insight_action(
-    request: Request, run_id: str, insight_id: str,
-    action: str = Form(...), user_input: str = Form(""),
-):
-    get_run_or_404(run_id)
+async def _body(request: Request) -> dict[str, Any]:
+    """Accept either a JSON body or a form post, so the same handler serves the
+    fetch-based UI and a no-JavaScript fallback."""
+    ctype = request.headers.get("content-type", "")
+    if ctype.startswith("application/json"):
+        try:
+            return dict(await request.json())
+        except Exception:
+            return {}
+    try:
+        return dict(await request.form())
+    except Exception:
+        return {}
+
+
+def _apply_insight_action(run_id: str, insight_id: str, action: str, user_input: str) -> Insight:
     insight = store.get_insight(run_id, insight_id)
     if insight is None:
         raise HTTPException(404, "Insight not found")
@@ -500,22 +548,32 @@ async def insight_action(
         insight.review_action = ReviewAction.MODIFIED
         insight.user_input = user_input.strip()[:500]
         others = [i for i in store.get_insights(run_id) if i.id != insight_id]
-        impacted = _impacts(insight, others)
-        insight.impacted_insight_ids = [
-            o.id for o in others if o.title in {x["title"] for x in impacted}
-        ]
+        impacted = {x["title"] for x in _impacts(insight, others)}
+        insight.impacted_insight_ids = [o.id for o in others if o.title in impacted]
         if insight.user_input and insight.confidence is Confidence.REQUIRES_INPUT:
-            # Human input is evidence of a kind: it lifts a blocked finding to
-            # medium, never to high, because no new source was consulted.
+            # Human input resolves a blocked finding but consults no new source,
+            # so it can lift confidence to medium and never to high.
             insight.confidence = Confidence.MEDIUM
     else:
         raise HTTPException(400, f"Unknown action '{action}'")
 
     store.save_insights(run_id, [insight])
+    return insight
+
+
+@app.post("/runs/{run_id}/insights/{insight_id}/{action}", response_class=HTMLResponse)
+async def insight_action(request: Request, run_id: str, insight_id: str, action: str):
+    get_run_or_404(run_id)
+    if action not in ("approve", "modify", "input", "proxy"):
+        raise HTTPException(404, "Unknown insight action")
+    body = await _body(request)
+    insight = _apply_insight_action(
+        run_id, insight_id, action, str(body.get("user_input", ""))
+    )
     return templates.TemplateResponse(
-        "partials/insight_card.html",
-        {**base_ctx(request), "insight": insight, "run_id": run_id,
-         "source_names": _source_names()},
+        request, "partials/insight_card.html",
+        {**base_ctx(request), "insight": insight, "run_id": run_id, "run": store.get_run(run_id),
+         "agent_by_stage": _agent_by_stage()},
     )
 
 
@@ -525,34 +583,37 @@ async def contradictions_page(request: Request, run_id: str):
     items = store.get_contradictions(run_id)
     items.sort(key=lambda c: (c.severity is not ContradictionSeverity.ESCALATED, c.topic))
     return templates.TemplateResponse(
-        "contradictions.html",
+        request, "contradictions.html",
         {**base_ctx(request, "projects"), "run": run, "contradictions": items},
     )
 
 
-@app.post("/runs/{run_id}/contradictions/{cid}/action")
-async def contradiction_action(
-    run_id: str, cid: str, action: str = Form(...), note: str = Form(""),
-):
+@app.post("/runs/{run_id}/contradictions/{cid}/review", response_class=HTMLResponse)
+async def contradiction_review(request: Request, run_id: str, cid: str):
     get_run_or_404(run_id)
     item = store.get_contradiction(run_id, cid)
     if item is None:
         raise HTTPException(404, "Contradiction not found")
+    body = await _body(request)
     mapping = {
         "prefer_a": ReviewAction.PREFER_A,
         "prefer_b": ReviewAction.PREFER_B,
+        "acknowledged": ReviewAction.ACKNOWLEDGED,
         "acknowledge": ReviewAction.ACKNOWLEDGED,
     }
+    action = str(body.get("action", ""))
     if action not in mapping:
         raise HTTPException(400, f"Unknown action '{action}'")
+    # The decision is recorded against the disagreement. Neither claim is
+    # rewritten or removed: the register keeps both sides as stated.
     item.review_action = mapping[action]
-    item.reviewer_note = note.strip()[:500]
+    item.reviewer_note = str(body.get("note", "")).strip()[:500]
     store.save_contradictions(run_id, [item])
-    return JSONResponse({
-        "id": item.id,
-        "review_action": item.review_action.value,
-        "note": item.reviewer_note,
-    })
+    return templates.TemplateResponse(
+        request, "partials/contradiction_card.html",
+        {**base_ctx(request), "contradiction": item, "run_id": run_id,
+         "run": store.get_run(run_id)},
+    )
 
 
 @app.get("/runs/{run_id}/report", response_class=HTMLResponse)
@@ -578,27 +639,57 @@ async def report(request: Request, run_id: str):
     sources = sorted(by_source.values(), key=lambda r: (r["tier"], -r["evidence_items"]))
 
     fw = get_framework()["buckets"]
-    plan = [
+    execution_plan = [
         {
             "wave": i,
+            "mode": "Concurrent" if len(wave) > 1 else "Sequential",
             "agents": [fw[b]["agent_name"] for b in wave],
             "stages": [
-                get_questions()["stage_meta"][s]["name"]
-                for b in wave for s in (fw[b].get("stages") or [])
+                get_questions()["stage_meta"][st]["name"]
+                for b in wave for st in (fw[b].get("stages") or [])
             ],
             "outputs": [fw[b]["output"] for b in wave],
+            "gate": fw[wave[0]].get("gate", ""),
         }
         for i, wave in enumerate(
             orch.compute_waves([a.bucket for a in run.agents.values()]), start=1
         )
     ]
+    qa_metrics = store.get_qa(run_id)
+    cfg = run.config
+    params = [
+        {"label": "Indication", "value": cfg.indication},
+        {"label": "Population", "value": cfg.target_population or "Not specified"},
+        {"label": "Geography", "value": cfg.geography},
+        {"label": "Objective", "value": cfg.objective},
+        {"label": "Research cutoff", "value": cfg.research_cutoff},
+        {"label": "Research mode",
+         "value": "All agents" if cfg.mode is RunMode.FULL else "Single agent"},
+        {"label": "Run reference", "value": run.reference},
+        {"label": "Document generated",
+         "value": (run.finished_at or utcnow()).strftime("%Y-%m-%d %H:%M UTC")},
+        {"label": "Stages completed", "value": ", ".join(s.name for s in stages) or "None"},
+        {"label": "Evidence items", "value": str(len(evidence))},
+        {"label": "Distinct sources", "value": str(len({e.source_id for e in evidence}))},
+        {"label": "Synthesis engine",
+         "value": get_settings().llm_model if get_settings().llm_enabled
+         else "Deterministic (no model configured)"},
+    ]
+    if cfg.drug_brand:
+        params.insert(1, {"label": "Drug / brand", "value": cfg.drug_brand})
+
     return templates.TemplateResponse(
-        "report.html",
+        request, "report.html",
         {
             **base_ctx(request, "projects"), "run": run, "stages": stages,
-            "qa": store.get_qa(run_id), "contradictions": store.get_contradictions(run_id),
-            "sources": sources, "plan": plan,
+            "qa": qa_metrics, "contradictions": store.get_contradictions(run_id),
+            "sources": sources, "execution_plan": execution_plan, "params": params,
             "questions": store.get_questions(run_id),
+            "report_title": f"{cfg.indication} — Clinical Foundation Research",
+            "executive_summary": qa_metrics.executive_summary if qa_metrics else "",
+            "research_method": qa_metrics.research_method if qa_metrics else [],
+            "document_limitations": qa_metrics.limitations if qa_metrics else [],
+            "agent_by_stage": _agent_by_stage(),
         },
     )
 
@@ -631,7 +722,7 @@ async def sources_panel(request: Request, run_id: str):
         for sid in sorted(attempted - set(used))
     ]
     return templates.TemplateResponse(
-        "sources_panel.html",
+        request, "sources_panel.html",
         {**base_ctx(request, "projects"), "run": run,
          "used": sorted(used.values(), key=lambda r: (r["tier"], -r["items"])),
          "unavailable": unavailable, "health": connector_health()},
@@ -663,7 +754,7 @@ async def approval(request: Request, run_id: str):
         if a.status is AgentStatus.COMPLETE
     ]
     return templates.TemplateResponse(
-        "approval.html",
+        request, "approval.html",
         {**base_ctx(request, "projects"), "run": run, "counts": counts,
          "included": included, "contradictions": store.get_contradictions(run_id)},
     )
@@ -680,7 +771,7 @@ async def approve(run_id: str):
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     return templates.TemplateResponse(
-        "settings.html",
+        request, "settings.html",
         {
             **base_ctx(request, "settings"),
             "thresholds": get_thresholds(),
@@ -691,11 +782,11 @@ async def settings_page(request: Request):
     )
 
 
-@app.get("/knowledge", response_class=HTMLResponse)
+@app.get("/library", response_class=HTMLResponse)
 async def knowledge(request: Request):
     return templates.TemplateResponse(
-        "projects.html",
-        {**base_ctx(request, "knowledge"), "runs": store.list_runs(50),
+        request, "projects.html",
+        {**base_ctx(request, "library"), "runs": store.list_runs(50),
          "heading": "Knowledge Library"},
     )
 
@@ -717,7 +808,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     ):
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
     return templates.TemplateResponse(
-        "error.html",
+        request, "error.html",
         {**base_ctx(request), "message": exc.detail, "detail": f"HTTP {exc.status_code}"},
         status_code=exc.status_code,
     )

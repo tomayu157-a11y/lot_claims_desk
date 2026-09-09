@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import tier_badge, ext_link, pick, pairs_block %}
+{% block title %}Sources — Celestra{% endblock %}
+
+{%- set access_labels = {
+  'api': 'Approved source API',
+  'approved_api': 'Approved source API',
+  'targeted_search': 'Targeted domain search',
+  'search': 'Targeted domain search',
+  'local_file': 'Local reference file',
+  'licensed': 'Licensed source',
+  'firecrawl_search': 'Supplementary web',
+  'open_web': 'Supplementary web'
+} -%}
+
+{% block content %}
+<div class="page-head page-head-row">
+  <div>
+    <h1>View Sources</h1>
+    <p class="sub">
+      Every source this run actually queried, what it returned, and what it could not reach.
+    </p>
+  </div>
+  {% if run is defined and run %}
+  <a class="btn btn-secondary" href="/runs/{{ run.id }}/overview">Back to overview</a>
+  {% endif %}
+</div>
+
+<section class="section">
+  <h2 class="section-title">Sources used <span class="count">({{ used | default([]) | length }})</span></h2>
+  {% if used %}
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Source</th>
+          <th scope="col">Tier</th>
+          <th scope="col">Access method</th>
+          <th scope="col">Evidence items</th>
+          <th scope="col">Link</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in used %}
+        {% set method = (s.get('access_method') or s.get('origin') or '') | string %}
+        <tr>
+          <td>
+            <strong>{{ s.get('name') or s.get('organization') or s.get('source_name') or '—' }}</strong>
+            {% if s.get('organization') and s.get('name') and s.get('organization') != s.get('name') %}
+            <div class="text-faint text-sm">{{ s.get('organization') }}</div>
+            {% endif %}
+          </td>
+          <td class="nowrap">{{ tier_badge(s.get('tier', 5)) }}</td>
+          <td class="nowrap">
+            {% if method in ['firecrawl_search', 'open_web'] %}
+            <span class="supp-flag">{{ icon('alert', 12) }} Supplementary web</span>
+            {% else %}
+            <span class="chip chip-sm">{{ access_labels.get(method, method | replace('_', ' ') | title or 'Not stated') }}</span>
+            {% endif %}
+          </td>
+          <td class="num">{{ s.get('evidence_items', s.get('count', 0)) }}</td>
+          <td class="break">{{ ext_link(s.get('url'), s.get('domain') or s.get('url')) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty"><h3>No sources recorded</h3><p class="mb-0">Nothing has returned evidence for this run yet.</p></div>
+  {% endif %}
+</section>
+
+{%- set blocked = (unavailable | default([])) | selectattr('blocked_by', 'defined') | selectattr('blocked_by') | list -%}
+{%- set empty_handed = [] -%}
+{%- for s in unavailable | default([]) -%}
+  {%- if not s.get('blocked_by') -%}{%- set _ = empty_handed.append(s) -%}{%- endif -%}
+{%- endfor -%}
+
+<section class="section">
+  <h2 class="section-title">Attempted but returned nothing <span class="count">({{ empty_handed | length }})</span></h2>
+  {% if empty_handed %}
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th scope="col">Source</th><th scope="col">Tier</th><th scope="col">Access method</th><th scope="col">Reason</th></tr>
+      </thead>
+      <tbody>
+        {% for s in empty_handed %}
+        <tr>
+          <td><strong>{{ s.get('name') or s.get('source_name') or '—' }}</strong></td>
+          <td class="nowrap">{{ tier_badge(s.get('tier', 5)) }}</td>
+          <td class="nowrap">
+            <span class="chip chip-sm">{{ access_labels.get((s.get('access_method') or '') | string, (s.get('access_method') or 'Not stated') | replace('_', ' ') | title) }}</span>
+          </td>
+          <td>{{ s.get('reason') or 'No matching documents were returned.' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="meta">Every source that was queried returned at least one document.</p>
+  {% endif %}
+</section>
+
+<section class="section">
+  <h2 class="section-title">Blocked on credentials or a licence <span class="count">({{ blocked | length }})</span></h2>
+  {% if blocked %}
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr><th scope="col">Source</th><th scope="col">Tier</th><th scope="col">Blocked by</th><th scope="col">What this means</th></tr>
+      </thead>
+      <tbody>
+        {% for s in blocked %}
+        <tr>
+          <td><strong>{{ s.get('name') or s.get('source_name') or '—' }}</strong></td>
+          <td class="nowrap">{{ tier_badge(s.get('tier', 5)) }}</td>
+          <td class="nowrap"><span class="chip chip-sm chip-medium">{{ s.get('blocked_by') }}</span></td>
+          <td>{{ s.get('reason') or 'This source was skipped and contributed no evidence to the run.' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="meta">No source was skipped for a missing credential or licence.</p>
+  {% endif %}
+</section>
+
+{% if health %}
+<section class="section">
+  <h2 class="section-title">Connector health</h2>
+  {% if health is mapping %}
+  <div class="card">
+    <table class="kv">
+      <tbody>
+        {% for key, value in health.items() %}
+        <tr>
+          <th scope="row">{{ key | replace('_', ' ') | title }}</th>
+          <td>
+            {% if value is mapping %}
+              {% for k2, v2 in value.items() %}
+              <div><span class="text-faint text-sm">{{ k2 | replace('_', ' ') | title }}:</span> {{ v2 }}</div>
+              {% endfor %}
+            {% elif value is sameas true %}
+              <span class="chip chip-sm chip-high">{{ icon('check', 12) }} OK</span>
+            {% elif value is sameas false %}
+              <span class="chip chip-sm chip-requires_input">Unavailable</span>
+            {% else %}{{ value }}{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    {% for item in health %}
+      {% if item is mapping %}{{ pairs_block(item) }}{% else %}<p>{{ item }}</p>{% endif %}
+    {% endfor %}
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}
