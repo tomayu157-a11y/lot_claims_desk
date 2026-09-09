@@ -27,8 +27,26 @@ _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z(\[])")
 _WORD = re.compile(r"[a-z0-9]+")
 
 
+_TAGS = re.compile(r"<[^>]{1,200}>")
+_ENTITIES = {
+    "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&#39;": "'",
+    "&apos;": "'", "&nbsp;": " ", "&ndash;": "-", "&mdash;": "-",
+}
+
+
 def _normalise(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "")).strip()
+    """Collapse whitespace and strip inline markup.
+
+    Europe PMC abstracts and some SPL sections embed HTML. Left in place it
+    ends up inside a quote presented to the reader as verbatim source text.
+    """
+    text = text or ""
+    if "<" in text:
+        text = _TAGS.sub(" ", text)
+    if "&" in text:
+        for entity, char in _ENTITIES.items():
+            text = text.replace(entity, char)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def document_text(ref: SourceRef) -> str:
@@ -63,15 +81,30 @@ def _sentences(text: str, min_len: int) -> list[str]:
     return out
 
 
+_OFF_TOPIC = re.compile(
+    r"\b(in rats?|in mice|in dogs?|animal data|carcinogenes[ie]s|mutagenesis|"
+    r"impairment of fertility|pregnancy category|nursing mothers)\b", re.I
+)
+
+
 def _score_sentence(sentence: str, terms: set[str]) -> float:
     words = set(_WORD.findall(sentence.lower()))
     if not words or not terms:
         return 0.0
     overlap = len(words & terms)
-    # Numbers, percentages and code-like tokens carry disproportionate value in
-    # this domain, so a sentence containing them outranks a purely narrative one.
+    if not overlap:
+        # No topical connection to the question. Numbers alone are not evidence.
+        return 0.0
+    base = overlap / (len(terms) ** 0.5)
+    # Quantities matter in this domain, but only as a tiebreaker between
+    # sentences that are already on topic.
     numeric = len(re.findall(r"\d[\d,.]*\s*(?:%|per\s+100,?000)?", sentence))
-    return overlap / (len(terms) ** 0.5) + 0.35 * min(numeric, 4)
+    score = base + 0.15 * min(numeric, 3)
+    if _OFF_TOPIC.search(sentence):
+        # Preclinical and subpopulation boilerplate is rarely the answer to a
+        # clinical desk-research question.
+        score *= 0.25
+    return score
 
 
 def question_terms(question: str, aspects: list[str], synonyms: list[str]) -> set[str]:

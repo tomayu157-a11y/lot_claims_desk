@@ -118,6 +118,13 @@ class CdcWonderConnector:
         try:
             xml_text = await self.request(codes, title=f"celestra {ctx.indication_key}")
         except Exception as exc:  # noqa: BLE001 - a connector never raises
+            # WONDER answers a rejected request with HTTP 500 and an XML body
+            # that explains why. Reporting "HTTP 500" would throw that away.
+            body = getattr(getattr(exc, "response", None), "text", "") or ""
+            messages = parse_messages(body)
+            if messages:
+                return ConnectorResult.failure(
+                    self.source_id, clip(f"WONDER rejected the request: {messages[0]}", 200))
             return ConnectorResult.failure(self.source_id, describe_http_error(exc))
 
         messages = parse_messages(xml_text)
