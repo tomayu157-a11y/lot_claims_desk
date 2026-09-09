@@ -253,6 +253,13 @@ class Orchestrator:
                     state.questions_answered += 1
                 state.evidence_count = len(agent_evidence)
 
+                # Persist per question, not per agent. A long agent that fails
+                # on question four should not discard the first three answers.
+                store.save_questions(self.run.id, [question])
+                store.save_evidence(self.run.id, outcome.evidence)
+                if found:
+                    store.save_contradictions(self.run.id, found)
+
                 insight = self._insight_for(question, outcome.evidence, found, bucket)
                 if insight:
                     self.insights.append(insight)

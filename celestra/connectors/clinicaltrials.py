@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import time
 
+import httpx
+
 from ..models import EvidenceOrigin, SourceRef
 from ._util import clean, clip, join_sections, matches_any
 from .base import ConnectorResult, RetrievalContext, describe_http_error, http
@@ -18,6 +20,11 @@ from .base import ConnectorResult, RetrievalContext, describe_http_error, http
 STUDIES_URL = "https://clinicaltrials.gov/api/v2/studies"
 STUDY_URL = STUDIES_URL + "/{nct_id}"
 PUBLIC_URL = "https://clinicaltrials.gov/study/{nct_id}"
+
+# clinicaltrials.gov's edge rejects unrecognised User-Agent strings with a bare
+# 403 — the shared client's product token included. Sending the transport's own
+# default identifies us accurately and is accepted.
+CTG_HEADERS = {"User-Agent": f"python-httpx/{httpx.__version__}"}
 
 FIELDS = (
     "NCTId,BriefTitle,OfficialTitle,OverallStatus,Condition,InterventionName,"
@@ -75,7 +82,7 @@ class ClinicalTrialsConnector:
             "fields": FIELDS,
             "sort": "LastUpdatePostDate:desc",
         }
-        payload = await http.get_json(STUDIES_URL, params=params)
+        payload = await http.get_json(STUDIES_URL, params=params, headers=CTG_HEADERS)
         return payload.get("studies") or []
 
     async def hydrate(self, nct_id: str) -> dict:
@@ -84,7 +91,7 @@ class ClinicalTrialsConnector:
         if not nct_id:
             return {}
         try:
-            return await http.get_json(STUDY_URL.format(nct_id=nct_id))
+            return await http.get_json(STUDY_URL.format(nct_id=nct_id), headers=CTG_HEADERS)
         except Exception:  # noqa: BLE001 - hydration is an enrichment
             return {}
 

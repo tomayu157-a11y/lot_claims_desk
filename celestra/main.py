@@ -74,6 +74,25 @@ def connector_health() -> list[dict]:
         return []
 
 
+def web_search_status() -> dict[str, Any]:
+    """Why open-web fallback is or is not contributing, for the sources panel."""
+    settings = get_settings()
+    try:
+        from .connectors.firecrawl import breaker
+    except Exception:
+        return {"available": False, "reason": "web connector unavailable", "keyed": False}
+    if settings.firecrawl_enabled:
+        return {"available": True, "reason": "Firecrawl configured", "keyed": True}
+    if breaker.open:
+        return {"available": False, "reason": breaker.reason, "keyed": False}
+    return {
+        "available": True,
+        "reason": "using the keyless search path; configure FIRECRAWL_API_KEY for "
+                  "reliable fallback",
+        "keyed": False,
+    }
+
+
 def reference_datasets() -> dict[str, bool]:
     try:
         from .connectors.local_files import LocalFilesConnector
@@ -725,7 +744,8 @@ async def sources_panel(request: Request, run_id: str):
         request, "sources_panel.html",
         {**base_ctx(request, "projects"), "run": run,
          "used": sorted(used.values(), key=lambda r: (r["tier"], -r["items"])),
-         "unavailable": unavailable, "health": connector_health()},
+         "unavailable": unavailable, "health": connector_health(),
+         "web_search": web_search_status()},
     )
 
 
@@ -777,6 +797,7 @@ async def settings_page(request: Request):
             "thresholds": get_thresholds(),
             "datasets": reference_datasets(),
             "health": connector_health(),
+            "web_search": web_search_status(),
             "model": get_settings().llm_model,
         },
     )
@@ -797,6 +818,7 @@ async def healthz():
         "status": "ok",
         "connectors": len(registry()),
         "credentials": get_settings().credential_status(),
+        "web_search": web_search_status(),
         "active_runs": len(_RUNNING),
     }
 

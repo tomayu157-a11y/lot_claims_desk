@@ -12,10 +12,10 @@ With `FIRECRAWL_API_KEY` set, the Firecrawl v1 API does search and scrape.
 Without it the connector still works through a keyless chain, tried in order
 until one returns on-topic results:
 
-  1. DuckDuckGo HTML  (html.duckduckgo.com)
-  2. DuckDuckGo Lite  (lite.duckduckgo.com)
-  3. Bing HTML/RSS
-  4. Domain index — sitemap.xml harvest, only for a domain-restricted search
+  1. Bing HTML        (www.bing.com/search)
+  2. DuckDuckGo HTML  (html.duckduckgo.com)
+  3. DuckDuckGo Lite  (lite.duckduckgo.com)
+  4. Domain index     (the restricted domain's own sitemap; targeted search only)
 
 Every keyless result passes a relevance gate before it is kept: search
 front-ends under bot pressure happily return a plausible-looking page of
@@ -26,9 +26,11 @@ than a search-result teaser.
 """
 from __future__ import annotations
 
+import base64
+import logging
 import re
 import time
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from selectolax.parser import HTMLParser
 
@@ -42,6 +44,8 @@ FIRECRAWL_SCRAPE = "https://api.firecrawl.dev/v1/scrape"
 DDG_HTML = "https://html.duckduckgo.com/html/"
 DDG_LITE = "https://lite.duckduckgo.com/lite/"
 BING_HTML = "https://www.bing.com/search"
+
+log = logging.getLogger("celestra.connector.web")
 
 BROWSER_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
               "Chrome/124.0.0.0 Safari/537.36")
@@ -58,27 +62,35 @@ def _domain_of(url: str) -> str:
 
 
 def _unwrap_redirect(href: str) -> str:
-    """DuckDuckGo and Bing wrap result links; recover the destination."""
+    """Search engines wrap result links. Recover the real target.
+
+    Bing encodes it as `u=a1<urlsafe-base64>` on /ck/a; DuckDuckGo puts it in
+    `uddg=` on /l/. An unwrappable link is returned unchanged so the caller can
+    reject it on its own terms.
+    """
     if not href:
         return ""
-    if href.startswith("//"):
-        href = "https:" + href
+    href = href.replace("&amp;", "&")
     parsed = urlparse(href)
     host = parsed.netloc.lower()
-    if "duckduckgo.com" in host and parsed.path.startswith("/l/"):
-        target = parse_qs(parsed.query).get("uddg")
-        if target:
-            return unquote(target[0])
-    if "bing.com" in host and "/ck/a" in parsed.path:
-        import base64
+    query = parse_qs(parsed.query)
 
-        match = re.search(r"[?&]u=a1([^&]+)", href)
-        if match:
-            blob = match.group(1) + "=" * (-len(match.group(1)) % 4)
+    if "bing.com" in host and parsed.path.startswith("/ck/"):
+        raw = (query.get("u") or [""])[0]
+        if raw.startswith("a1"):
+            payload = raw[2:]
+            payload += "=" * (-len(payload) % 4)
             try:
-                return base64.urlsafe_b64decode(blob).decode("utf-8", "ignore")
+                decoded = base64.urlsafe_b64decode(payload).decode("utf-8", "replace")
             except (ValueError, UnicodeDecodeError):
-                return href
+                return ""
+            return decoded if decoded.startswith("http") else ""
+        return ""
+
+    if "duckduckgo.com" in host and parsed.path.startswith("/l/"):
+        target = (query.get("uddg") or [""])[0]
+        return unquote(target) if target else ""
+
     return href
 
 
@@ -93,6 +105,49 @@ def is_relevant(query: str, *texts: str) -> bool:
         return True
     haystack = tokens(" ".join(t for t in texts if t))
     return bool(wanted & haystack)
+
+
+class _SearchBreaker:
+    """Stops re-attempting web search once the network has proved it is blocked.
+
+    Keyless search backends are frequently unreachable: rate limits, bot
+    challenges, or an egress policy. Without a breaker every question pays the
+    full backend timeout chain for nothing, which is the difference between a
+    run taking one minute and twenty. After `threshold` consecutive total
+    failures the breaker opens and search returns immediately with a reason the
+    UI can show. Any single success closes it again.
+
+    A configured Firecrawl key is the supported path and never trips it.
+    """
+
+    threshold = 3
+
+    def __init__(self) -> None:
+        self.consecutive_failures = 0
+        self.open = False
+        self.reason = ""
+
+    def record_failure(self, reason: str) -> None:
+        self.consecutive_failures += 1
+        if self.consecutive_failures >= self.threshold and not self.open:
+            self.open = True
+            self.reason = (
+                "open-web search unavailable from this network "
+                f"({reason}); configure FIRECRAWL_API_KEY to enable fallback"
+            )
+            log.warning("web-search breaker opened: %s", self.reason)
+
+    def record_success(self) -> None:
+        self.consecutive_failures = 0
+        if self.open:
+            log.info("web-search breaker closed")
+        self.open = False
+        self.reason = ""
+
+
+# Shared by every domain-scoped instance, because they all use the same
+# backends and therefore all fail for the same reason.
+breaker = _SearchBreaker()
 
 
 class FirecrawlConnector:
@@ -170,32 +225,71 @@ class FirecrawlConnector:
             BING_HTML,
             params={"q": self._scoped(query), "count": max(10, limit * 2)},
             headers={"User-Agent": BROWSER_UA},
+            use_cache=False,
         )
         tree = HTMLParser(html)
-        out = []
-        for item in tree.css("li.b_algo")[:limit * 3]:
-            anchor = item.css_first("h2 a")
+        out: list[dict] = []
+        seen: set[str] = set()
+
+        # Prefer the structured result blocks, which carry a snippet.
+        for item in tree.css("li.b_algo"):
+            anchor = item.css_first("h2 a") or item.css_first("a[href]")
             if anchor is None:
                 continue
             href = _unwrap_redirect(anchor.attributes.get("href", ""))
-            if not href.startswith("http"):
+            if not href.startswith("http") or href in seen:
                 continue
+            seen.add(href)
             para = item.css_first("p")
             out.append({"url": href, "title": clean(anchor.text()),
                         "snippet": clean(para.text()) if para else "", "backend": "bing"})
+
+        # Bing rotates its result markup, so fall back to every wrapped link on
+        # the page rather than depending on one class name.
+        if len(out) < limit:
+            for anchor in tree.css('a[href*="/ck/a"]'):
+                href = _unwrap_redirect(anchor.attributes.get("href", ""))
+                if not href.startswith("http") or href in seen:
+                    continue
+                title = clean(anchor.text())
+                if len(title) < 8:
+                    continue
+                seen.add(href)
+                out.append({"url": href, "title": title, "snippet": "", "backend": "bing"})
+                if len(out) >= limit * 3:
+                    break
         return out
 
     async def _domain_index(self, query: str, limit: int) -> list[dict]:
-        """Harvest the restricted domain's own sitemap and rank URLs by token
-        overlap with the query. Used only when no search backend answers, and
-        only when a domain restriction makes the result set meaningful."""
+        """Harvest the restricted domain's own sitemap and rank its URLs by
+        token overlap with the query.
+
+        Last resort, and only for a domain-restricted search: when every search
+        front-end is unreachable or bot-blocked, a site's own sitemap still
+        yields real, on-domain, on-topic URLs. Sitemap locations come from
+        robots.txt where the site publishes them, so nothing is hardcoded per
+        domain.
+        """
         if not self.domain:
             return []
         wanted = {t for t in tokens(query) if len(t) > 3}
+        if not wanted:
+            return []
+        queue = [f"https://www.{self.domain}/sitemap.xml",
+                 f"https://{self.domain}/sitemap.xml",
+                 f"https://www.{self.domain}/sitemap_index.xml"]
+        for robots in (f"https://www.{self.domain}/robots.txt",
+                       f"https://{self.domain}/robots.txt"):
+            try:
+                text = await http.get_text(robots, headers={"User-Agent": BROWSER_UA})
+            except Exception:  # noqa: BLE001 - robots.txt is optional
+                continue
+            queue.extend(re.findall(r"(?im)^\s*sitemap:\s*(\S+)", text)[:8])
+            break
+
         locs: list[str] = []
         seen_maps: set[str] = set()
-        queue = [f"https://www.{self.domain}/sitemap.xml", f"https://{self.domain}/sitemap.xml"]
-        while queue and len(locs) < 5000 and len(seen_maps) < 6:
+        while queue and len(locs) < 20000 and len(seen_maps) < 12:
             candidate = queue.pop(0)
             if candidate in seen_maps:
                 continue
@@ -206,49 +300,66 @@ class FirecrawlConnector:
                 continue
             found = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", xml)
             if "<sitemapindex" in xml:
-                # Follow child sitemaps whose own URL looks topical first.
+                # Follow the child sitemaps whose own URL looks topical first.
                 children = sorted(found, key=lambda u: -len(wanted & tokens(u)))
-                queue.extend(children[:3])
+                queue.extend(children[:8])
                 continue
             locs.extend(found)
+
         scored = [(len(wanted & tokens(unquote(u))), u) for u in locs]
-        scored = [(s, u) for s, u in scored if s]
+        scored = [(score, u) for score, u in scored if score]
         scored.sort(key=lambda pair: (-pair[0], len(pair[1])))
         return [{"url": u, "title": "", "snippet": "", "backend": "domain-index"}
                 for _, u in scored[:limit * 2]]
 
-    # -- public API ------------------------------------------------------
     async def search(self, query: str, limit: int) -> list[dict]:
         """Ranked results as {url, title, snippet, backend}. Never raises."""
         query = clean(query)
         if not query:
             return []
+
+        keyed = get_settings().firecrawl_enabled
+        if not keyed and breaker.open:
+            return []
+
         backends = []
-        if get_settings().firecrawl_enabled:
-            backends.append(lambda: self._firecrawl_search(query, limit))
+        if keyed:
+            backends.append(("firecrawl", lambda: self._firecrawl_search(query, limit)))
         backends.extend([
-            lambda: self._ddg(query, limit),
-            lambda: self._ddg(query, limit, lite=True),
-            lambda: self._bing(query, limit),
-            lambda: self._domain_index(query, limit),
+            ("bing", lambda: self._bing(query, limit)),
+            ("duckduckgo", lambda: self._ddg(query, limit)),
+            ("duckduckgo-lite", lambda: self._ddg(query, limit, lite=True)),
+            ("domain-index", lambda: self._domain_index(query, limit)),
         ])
-        for backend in backends:
+
+        last_error = "no backend returned results"
+        for name, backend in backends:
             try:
                 results = await backend()
-            except Exception:  # noqa: BLE001 - fall through to the next backend
+            except Exception as exc:  # noqa: BLE001 - fall through to the next backend
+                last_error = f"{name}: {type(exc).__name__}"
                 continue
-            kept = []
+            kept: list[dict] = []
             for item in results:
-                if self.domain and _domain_of(item["url"]) != self.domain \
-                        and not _domain_of(item["url"]).endswith("." + self.domain):
+                url = item.get("url", "")
+                if self.domain:
+                    host = _domain_of(url)
+                    if host != self.domain and not host.endswith("." + self.domain):
+                        continue
+                # Sitemap URLs carry no title or snippet, so their relevance
+                # was already decided by the token match on the URL itself.
+                if item.get("backend") != "domain-index" and not is_relevant(
+                        query, item.get("title", ""), item.get("snippet", ""), url):
                     continue
-                if item["backend"] != "domain-index" and not is_relevant(
-                        query, item.get("title", ""), item.get("snippet", ""), item["url"]):
-                    continue
-                if item["url"] not in {k["url"] for k in kept}:
+                if url not in {k["url"] for k in kept}:
                     kept.append(item)
             if kept:
+                if not keyed:
+                    breaker.record_success()
                 return kept[:limit]
+
+        if not keyed:
+            breaker.record_failure(last_error)
         return []
 
     async def scrape(self, url: str) -> dict:

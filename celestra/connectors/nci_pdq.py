@@ -31,6 +31,9 @@ SKIP_HEADINGS = (
     "key references", "references", "current clinical trials",
 )
 
+# A section shorter than this is a heading stub, not quotable evidence.
+MIN_SECTION_CHARS = 250
+
 
 def _slug(url: str) -> str:
     return url.rstrip("/").rsplit("/", 1)[-1]
@@ -60,7 +63,18 @@ class NciPdqConnector:
         if root is None:
             return []
         out: list[tuple[str, list[str]]] = []
-        for node in root.css("h2, h3, h4, p, li"):
+        # traverse() preserves document order; a comma-separated css() call
+        # groups by selector instead, which would file every paragraph under
+        # the last heading on the page.
+        for node in root.traverse(include_text=False):
+            if node.tag not in ("h2", "h3", "h4", "p", "li"):
+                continue
+            if node.tag in ("p", "li"):
+                # traverse() yields the node itself first; a p/li below it means
+                # this is an outer container whose children are visited anyway.
+                descendants = list(node.traverse(include_text=False))[1:]
+                if any(d.tag in ("p", "li") for d in descendants):
+                    continue
             text = clean(node.text(separator=" ", strip=True))
             if not text:
                 continue
@@ -68,8 +82,11 @@ class NciPdqConnector:
                 out.append((text, []))
             elif out and len(text) > 40:
                 out[-1][1].append(text)
+        # Parent headings whose prose all sits under sub-headings end up with a
+        # stub body; MIN_SECTION_CHARS keeps those out of the evidence pool.
         return [(h, " ".join(body)) for h, body in out
-                if body and h.lower() not in SKIP_HEADINGS
+                if body and len(" ".join(body)) >= MIN_SECTION_CHARS
+                and h.lower() not in SKIP_HEADINGS
                 and not any(h.lower().startswith(s) for s in SKIP_HEADINGS)]
 
     async def discover(self, ctx: RetrievalContext, limit: int) -> ConnectorResult:
