@@ -1233,3 +1233,21 @@ ul.checks .ic { flex: 0 0 auto; margin-top: 2px; color: var(--ok); }
 textarea.is-invalid { border-color: var(--danger); }
 
 .callout.is-green { border-left-color: var(--green-border); background: var(--green-soft); color: var(--green-ink); }
+
+.phase-toggle {
+  width: 100%; text-align: left; cursor: pointer; font: inherit; color: inherit;
+  margin-bottom: 0; border-radius: var(--radius-md) var(--radius-md) 0 0;
+}
+.phase-toggle:hover { filter: brightness(.98); }
+.phase-toggle:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.phase-id { display: flex; flex-direction: column; min-width: 0; flex: 1 1 auto; }
+.phase-title { font-size: 15px; font-weight: 650; }
+.phase-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; margin-left: auto; }
+.phase-head .phase-state { margin-left: 0; }
+.phase-chevron { display: inline-flex; color: var(--text-3); transition: transform .16s ease; margin-left: 6px; }
+.phase-group.is-open .phase-chevron { transform: rotate(90deg); }
+.phase-progress { margin: 0; border-radius: 0; height: 8px; }
+.phase-progress .progress-bar { border-radius: 0; }
+.phase-hint { padding: 6px 16px 0; font-size: 12px; }
+.phase-body { margin-top: 12px; }
+.phase-body .agent-card + .agent-card { margin-top: 10px; }

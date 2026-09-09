@@ -38,6 +38,7 @@ from ..settings import get_framework, get_questions, get_thresholds
 from ..store import store
 from . import contradictions as contra
 from . import handoff
+from . import insights as insight_gen
 from . import planner, qa, retrieval, synthesis
 from .scoring import assess_confidence
 
@@ -388,14 +389,14 @@ class Orchestrator:
                 # deduplication runs once the agent has seen them all. Saving here
                 # made the duplicates permanent regardless of that pass.
 
-                insight = self._insight_for(question, outcome.evidence, found, bucket)
-                if insight:
-                    self.insights.append(insight)
-                    await self._emit(
-                        "insight_added", agent_key=state.key, insight_id=insight.id,
-                        title=insight.title, confidence=insight.confidence.value,
-                        category=insight.category, sources=insight.source_ids,
-                    )
+                # Cards are written from the finished stage document once the
+                # agent has synthesised it. Per-question cards are the fallback
+                # for a run without a model, so they are only built here then.
+                if not retrieval.llm_configured():
+                    insight = self._insight_for(question, outcome.evidence, found, bucket)
+                    if insight:
+                        self.insights.append(insight)
+                        await self._emit_insight(state.key, insight)
 
                 await self._agent(
                     state, progress=0.06 + 0.74 * (i / max(len(agent_questions), 1)),
@@ -410,8 +411,6 @@ class Orchestrator:
             store.save_answers(self.run.id, agent_answers)
             agent_contra = contra.dedupe(agent_contra)
             store.save_contradictions(self.run.id, agent_contra)
-            store.save_insights(self.run.id, [i for i in self.insights if i.bucket == bucket])
-
             self.questions += agent_questions
             self.evidence += agent_evidence
             self.answers += agent_answers
@@ -434,25 +433,42 @@ class Orchestrator:
                                  source_count=report.source_count,
                                  tables=len(report.tables))
 
-                # An insight is derived from one question; a table records which
-                # questions fed it. Join the two so a card can open its table.
-                linked: list[Insight] = []
-                for insight in self.insights:
-                    if insight.stage != stage:
-                        continue
-                    titles = [
-                        t.title for t in report.tables
-                        if set(t.question_ids) & set(insight.question_ids)
-                    ]
-                    if not titles and report.tables:
-                        # Every table in the stage draws on the same evidence
-                        # pool; better to offer the stage's tables than none.
-                        titles = [t.title for t in report.tables]
-                    if titles != insight.table_titles:
+                # Cards come from the document, not from the raw retrieval:
+                # the model reads the stage report against the outputs this
+                # agent owes and writes what a reviewer needs to decide on.
+                await self._agent(state, message=f"Writing review cards for {report.name}")
+                cards = await insight_gen.generate(
+                    self.run.id, self.cfg, stage, bucket, report, sq, se, sc,
+                    CATEGORY_BY_BUCKET.get(bucket, "Clinical"),
+                )
+                if not cards and retrieval.llm_configured():
+                    # The model call failed; fall back to one card per question
+                    # so the stage is still reviewable.
+                    for q in sq:
+                        card = self._insight_for(
+                            q, [e for e in se if e.question_id == q.id],
+                            [c for c in sc if c.stage == q.stage], bucket,
+                        )
+                        if card:
+                            cards.append(card)
+                for card in cards:
+                    self.insights.append(card)
+                    await self._emit_insight(state.key, card)
+
+                # A card names the tables it draws on; a table records which
+                # questions fed it. Join the two so every card can open a table.
+                stage_cards = [i for i in self.insights if i.stage == stage]
+                for insight in stage_cards:
+                    if not insight.table_titles:
+                        titles = [
+                            t.title for t in report.tables
+                            if set(t.question_ids) & set(insight.question_ids)
+                        ]
+                        if not titles and report.tables:
+                            titles = [t.title for t in report.tables]
                         insight.table_titles = titles
-                        linked.append(insight)
-                if linked:
-                    store.save_insights(self.run.id, linked)
+                if stage_cards:
+                    store.save_insights(self.run.id, stage_cards)
 
             produced = await handoff.build(bucket, self.cfg, agent_evidence)
             if produced:
@@ -475,6 +491,13 @@ class Orchestrator:
             await self._agent(state, AgentStatus.FAILED, message=state.error[:160])
 
     # -- insights --------------------------------------------------------
+    async def _emit_insight(self, agent_key_: str, insight: Insight) -> None:
+        await self._emit(
+            "insight_added", agent_key=agent_key_, insight_id=insight.id,
+            title=insight.title, confidence=insight.confidence.value,
+            category=insight.category, sources=insight.source_ids,
+        )
+
     def _insight_title(self, question: ResearchQuestion) -> str:
         meta = get_questions()["stage_meta"][question.stage]
         seeds = planner.seeds_for(self.cfg.indication_key, question.stage)

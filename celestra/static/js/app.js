@@ -162,7 +162,38 @@
     var busy = cards.some(function (c) { return BUSY[c.getAttribute('data-status')]; });
     if (done === cards.length) setPhaseState(key, 'complete');
     else if (failed && !busy) setPhaseState(key, 'failed');
-    else if (busy || done) setPhaseState(key, 'running', 'Running · ' + done + ' / ' + cards.length + ' agents done');
+    else if (busy || done) setPhaseState(key, 'running', 'Running');
+
+    // The phase bar is the mean of its agents; a finished agent counts as 100.
+    var total = 0;
+    cards.forEach(function (c) {
+      if (c.getAttribute('data-status') === 'complete') { total += 100; return; }
+      var wrap = $('[data-agent-progress]', c);
+      total += wrap ? (parseFloat(wrap.getAttribute('aria-valuenow')) || 0) : 0;
+    });
+    var pct = Math.round(total / cards.length);
+    var bar = $('[data-phase-progress]', group);
+    if (bar) {
+      bar.setAttribute('aria-valuenow', pct);
+      var fill = $('.progress-bar', bar);
+      if (fill) fill.style.width = pct + '%';
+      bar.classList.toggle('is-complete', done === cards.length);
+      bar.classList.toggle('is-failed', failed && !busy);
+    }
+    var pctEl = $('[data-phase-pct]', group);
+    if (pctEl) pctEl.textContent = pct;
+    var count = $('[data-phase-count]', group);
+    if (count) count.textContent = done + ' / ' + cards.length + ' agents done';
+  }
+
+  function togglePhase(group, open) {
+    var body = $('[data-phase-body]', group);
+    var btn = $('[data-phase-toggle]', group);
+    if (!body || !btn) return;
+    var expanded = open == null ? body.hidden : open;
+    body.hidden = !expanded;
+    btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    group.classList.toggle('is-open', expanded);
   }
 
   function phaseOfCard(card) {
@@ -759,6 +790,17 @@
         button.innerHTML = '<span class="spinner" aria-hidden="true"></span> Working…';
       }
     });
+
+    /* phase groups on the live page: collapsed by default, click to expand */
+    on(document, 'click', '[data-phase-toggle]', function (ev, btn) {
+      ev.preventDefault();
+      var group = btn.closest('[data-phase]');
+      if (group) togglePhase(group);
+    });
+    if (window.location.hash) {
+      var target = document.querySelector('[data-phase]' + window.location.hash.replace(/[^#\w-]/g, ''));
+      if (target) togglePhase(target, true);
+    }
 
     /* mode selector on the new-project form */
     $$('[data-mode-radio]').forEach(function (radio) {

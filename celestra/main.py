@@ -542,7 +542,10 @@ def _phase_groups(run: Run) -> list[dict]:
             state = "gated"
         else:
             state = "queued"
+        progress = (sum(1.0 if a.status is AgentStatus.COMPLETE else a.progress for a in agents)
+                    / len(agents)) if agents else 0.0
         groups.append({**spec, "agents": agents, "state": state,
+                       "progress": round(progress, 3),
                        "done": sum(1 for a in agents if a.status is AgentStatus.COMPLETE)})
     return groups
 

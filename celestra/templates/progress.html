@@ -61,22 +61,35 @@
 
 {% for ph in phases | default([]) %}
 <section class="phase-group is-{{ ph.state }}" id="{{ ph.key }}" data-phase="{{ ph.key }}" aria-label="{{ ph.name }}">
-  <div class="phase-head">
+  {% set pct = ((ph.get('progress', 0) or 0) * 100) | round | int %}
+  <button type="button" class="phase-head phase-toggle" data-phase-toggle
+          aria-expanded="false" aria-controls="phase-body-{{ ph.key }}">
     <span class="phase-num">{{ loop.index }}</span>
-    <div>
-      <h2>{{ ph.name }} phase</h2>
-      <p class="sub">{{ ph.description }}</p>
-    </div>
-    <span class="phase-state" data-phase-state>
-      {% if ph.state == 'complete' %}{{ icon('check', 15) }} Complete
-      {% elif ph.state == 'running' %}<span class="spinner" aria-hidden="true"></span> Running · {{ ph.done }} / {{ ph.agents | length }} agents done
-      {% elif ph.state == 'failed' %}{{ icon('alert', 15) }} An agent failed
-      {% elif ph.state == 'gated' %}{{ icon('lock', 15) }} Starts after your review
-      {% else %}<span class="chip-dot" aria-hidden="true"></span> Queued{% endif %}
+    <span class="phase-id">
+      <span class="phase-title">{{ ph.name }} phase</span>
+      <span class="sub">{{ ph.description }}</span>
     </span>
+    <span class="phase-meta">
+      <span class="phase-state" data-phase-state>
+        {% if ph.state == 'complete' %}{{ icon('check', 15) }} Complete
+        {% elif ph.state == 'running' %}<span class="spinner" aria-hidden="true"></span> Running
+        {% elif ph.state == 'failed' %}{{ icon('alert', 15) }} An agent failed
+        {% elif ph.state == 'gated' %}{{ icon('lock', 15) }} Starts after your review
+        {% else %}<span class="chip-dot" aria-hidden="true"></span> Queued{% endif %}
+      </span>
+      <span class="meta mono" data-phase-count>{{ ph.done }} / {{ ph.agents | length }} agents done</span>
+    </span>
+    <span class="phase-chevron" aria-hidden="true">{{ icon('chevron-right', 16) }}</span>
+  </button>
+  <div class="progress phase-progress {{ 'is-complete' if ph.state == 'complete' }}{{ ' is-failed' if ph.state == 'failed' }}"
+       data-phase-progress role="progressbar" aria-valuemin="0" aria-valuemax="100"
+       aria-valuenow="{{ pct }}" aria-label="{{ ph.name }} phase progress">
+    <div class="progress-bar" style="width: {{ pct }}%"></div>
   </div>
+  <p class="hint phase-hint mb-0"><span data-phase-pct>{{ pct }}</span>% of this phase ·
+    click the phase to see each agent</p>
 
-  <div aria-live="polite">
+  <div class="phase-body" id="phase-body-{{ ph.key }}" data-phase-body hidden aria-live="polite">
     {% for a in ph.agents %}
     {% set ast = enum_value(a.status) %}
     <article class="agent-card {{ 'is-complete' if ast == 'complete' }}{{ ' is-failed' if ast == 'failed' }}{{ ' is-blocked' if ast in ['blocked', 'skipped'] }}"
