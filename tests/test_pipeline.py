@@ -195,7 +195,10 @@ async def main() -> int:
     check("quotes are verbatim from fixtures",
           all(any(e.quote in spec[4] for spec in FIXTURES.values())
               for e in evidence if not e.is_supplementary))
-    check("insights created", len(insights) == len(questions), f"{len(insights)}")
+    from celestra.services.insights import catalogue_for
+    check("one card per catalogue slot for this agent",
+          len(insights) == len(catalogue_for(insights[0].bucket)) if insights else False,
+          f"{len(insights)}")
     check("stage report built", len(stages) == 1 and bool(stages[0].synthesis))
     check("stage tables built", len(stages[0].tables) >= 1, f"{len(stages[0].tables)} tables")
     check("takeaways present", len(stages[0].takeaways) >= 1)

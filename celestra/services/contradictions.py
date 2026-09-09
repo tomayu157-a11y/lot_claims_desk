@@ -159,6 +159,7 @@ def detect_deterministic(
             Contradiction(
                 run_id=question.run_id,
                 stage=question.stage,
+                question_id=question.id,
                 topic=question.seed_text.strip(" ?").lower() or question.text[:90],
                 source_a_name=f"{hi.citation} (tier {hi.tier})",
                 source_a_tier=hi.tier,

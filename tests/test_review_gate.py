@@ -73,8 +73,18 @@ async def main() -> int:
         check("later agents have not run",
               all(run.agents[b].status is AgentStatus.QUEUED for b in ("B", "D", "E", "F")))
         check("resume point recorded", run.resume_from_wave == 2, str(run.resume_from_wave))
-        insights = store.get_insights(run_id)
-        check("first-wave insights persisted", len(insights) == 10, f"{len(insights)} insights")
+        insights = sorted(store.get_insights(run_id), key=lambda i: i.number)
+        from celestra.services.insights import catalogue_for, phase_catalogue
+        expected_cards = len(catalogue_for("A")) + len(catalogue_for("C")) + len(phase_catalogue("discovery"))
+        check("one card per discovery slot, plus the phase card",
+              len(insights) == expected_cards, f"{len(insights)} cards, expected {expected_cards}")
+        check("cards are numbered in document order",
+              [i.number for i in insights] == sorted(i.number for i in insights) and insights[0].number == 1)
+        check("every card carries an evidence block or says it is not covered",
+              all(i.evidence or not i.covered for i in insights))
+        synth = [i for i in insights if i.category == "Synthesis"]
+        check("phase synthesis card written once both agents finished",
+              len(synth) == 1 and synth[0].evidence, str(len(synth)))
         check("no stage report for later stages yet",
               {s.stage for s in store.get_stage_reports(run_id)} == {"stage_1", "stage_2"})
 
@@ -96,8 +106,11 @@ async def main() -> int:
               and "Treatment Evidence Agent" in r.text)
         check("  lists the waiting agents", "Diagnostic Footprint Agent" in r.text)
         check("  no internal vocabulary", not re.search(r"\bbucket", r.text, re.I))
-        check("  every insight card has a table button",
-              r.text.count("View Table") == len(insights), f"{r.text.count('View Table')}")
+        check("  cards with a document table offer it",
+              r.text.count("Document table") == sum(1 for i in insights if i.table_titles),
+              f"{r.text.count('Document table')}")
+        check("  review needs are marked quietly, not as alarms",
+              "Needs your review" in r.text or not any(i.needs_decision for i in insights))
 
         print("\n== the live page never bounces ==")
         r = await c.get(f"/runs/{run_id}/progress")
@@ -151,11 +164,10 @@ async def main() -> int:
         check("  names the insight", insights[0].title in r.text)
         check("  is the document table", any(t in r.text for t in insights[0].table_titles),
               str(insights[0].table_titles))
-        epi = next((i for i in insights if "pidemiology" in i.title), None)
-        if epi:
-            r = await c.get(f"/runs/{run_id}/insights/{epi.id}/table")
-            check("epidemiology insight opens the epidemiology table",
-                  "Epidemiology snapshot" in r.text, str(epi.table_titles))
+        epi = next((i for i in insights if i.card_key == "epidemiology"), None)
+        check("epidemiology card exists and carries figures",
+              epi is not None and epi.evidence_type in ("table", "list", "metrics"),
+              epi.evidence_type if epi else "missing")
 
         print("\n== continue ==")
         r = await c.post(f"/runs/{run_id}/continue")

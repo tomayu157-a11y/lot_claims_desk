@@ -220,6 +220,16 @@ def make_insights() -> list[Insight]:
                     "in first-line treatment for metastatic disease [VERIFIED]."),
             confidence=conf, tag=tag, evidence_ids=["ev_1", "ev_2"], source_ids=sids,
             question_ids=["q_1"], used_web_fallback=(i == 3), review_action=action,
+            number=i + 1, card_key=f"card_{i}",
+            evidence_type=["metrics", "table", "steps", "list", ""][i % 5],
+            evidence=[
+                [{"label": "New US cases", "value": "6,250"}, {"label": "Deaths", "value": "1,600"}],
+                {"columns": ["Therapy", "Setting"], "rows": [["Blinatumomab", "R/R"]]},
+                ["Diagnosis", "Induction", "Consolidation"],
+                ["Age and lineage are core variables.", "Diagnosis needs several signals."],
+                None,
+            ][i % 5],
+            interpretation="Segment cohorts by age and lineage.", review_note="Check the SEER year.",
             user_input=user_input, impacted_insight_ids=["ins_1"], created_at=NOW,
         ))
     return out

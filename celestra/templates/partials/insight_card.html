@@ -1,140 +1,159 @@
 {# ---------------------------------------------------------------------------
-   One finding. Rendered in the review, approval and findings pages, and
-   re-rendered on its own after a decision, then swapped in place.
+   One review card, in five parts: what we found, the evidence, what it means,
+   the sources, and the reviewer's decision. Re-rendered on its own after a
+   decision and swapped in place by data-insight-id.
    Context: insight, run (optional), source_names (optional), agent_by_stage (optional)
    --------------------------------------------------------------------------- #}
 {% from "partials/icons.html" import icon %}
-{% from "partials/macros.html" import confidence_chip, source_name_chips, review_chip, tinted_tile, enum_value %}
+{% from "partials/macros.html" import source_name_chips, review_chip, enum_value %}
 
 {%- set rid = (run.id if run is defined and run else insight.run_id) -%}
 {%- set conf = enum_value(insight.confidence) -%}
 {%- set decision = enum_value(insight.review_action) -%}
 {%- set decided = decision not in ['pending', ''] -%}
 {%- set locked = (run.is_locked if run is defined and run and run.is_locked is defined else false) -%}
+{%- set needs_review = conf == 'requires_input' and not decided -%}
 {%- set names = source_names | default({}) -%}
-{%- set cat_style = {
-  'clinical':   ('leaf', 'green'),
-  'treatment':  ('pill', 'blue'),
-  'diagnostic': ('microscope', 'purple'),
-  'logic':      ('flow', 'indigo'),
-  'journey':    ('route', 'teal'),
-  'synthesis':  ('sparkle', 'teal')
-} -%}
-{%- set style = cat_style.get((insight.category | default('') | lower), ('sparkle', 'blue')) -%}
 {%- set agent = (agent_by_stage | default({})).get(insight.stage) -%}
+{%- set agent_label = 'Celestra Synthesis' if insight.category == 'Synthesis' else (agent.name if agent else insight.category) -%}
+{%- set etype = insight.evidence_type | default('') -%}
+{%- set ev = insight.evidence -%}
+{%- set nsrc = insight.source_ids | length -%}
 
-<article class="card card-hover insight-card {{ 'is-reviewed' if decided }}{{ ' is-requires-input' if conf == 'requires_input' }}{{ ' is-locked' if locked }}"
+<article class="icard {{ 'is-reviewed' if decided }}{{ ' needs-review' if needs_review }}{{ ' is-locked' if locked }}{{ ' not-covered' if insight.covered is defined and not insight.covered }}"
          id="insight-{{ insight.id }}"
          data-insight-id="{{ insight.id }}"
          data-category="{{ insight.category | lower }}"
          data-confidence="{{ conf }}"
          data-decision="{{ decision }}"
          data-stage="{{ insight.stage }}"
-         data-sources="{{ insight.source_ids | length }}"
+         data-sources="{{ nsrc }}"
+         data-number="{{ insight.number | default(0) }}"
          data-search="{{ insight.title }} {{ insight.summary }} {{ insight.category }} {% for sid in insight.source_ids %}{{ names.get(sid, sid) }} {% endfor %}"
          data-action-scope>
-  <div class="insight-card-top">
-    {{ tinted_tile(agent.icon if agent and agent.icon else style[0], style[1]) }}
 
-    <div class="insight-main">
-      <h3 class="insight-title">{{ insight.title }}</h3>
-      <p class="insight-summary">{{ insight.summary }}</p>
-      {% if insight.detail %}<p class="insight-detail">{{ insight.detail | tagify }}</p>{% endif %}
+  {# -- header -------------------------------------------------------- #}
+  <header class="icard-head">
+    {% if insight.number %}<span class="icard-num">{{ '%02d' % insight.number }}</span>{% endif %}
+    <h3 class="icard-title">{{ insight.title }}</h3>
+    <span class="icard-agent">{{ agent_label | replace(' Agent', '') }}</span>
+  </header>
 
-      <div class="insight-sources">
-        <div class="lead">
-          Supported by {{ insight.source_ids | length }}
-          source{{ '' if insight.source_ids | length == 1 else 's' }}{{ ':' if insight.source_ids }}
-        </div>
-        {% if insight.source_ids %}
-          {{ source_name_chips(insight.source_ids, names) }}
-        {% else %}
-          <span class="meta">No source returned usable evidence for this finding.</span>
-        {% endif %}
-      </div>
+  {# -- 1. what we found --------------------------------------------- #}
+  <p class="icard-finding">{{ insight.summary }}</p>
 
-      {% if insight.used_web_fallback %}
-      <div class="mt-1">
-        <span class="supp-flag">{{ icon('alert', 12) }} Includes supplementary web evidence</span>
-      </div>
-      {% endif %}
-
-      {% if insight.input_reason %}
-      <div class="input-reason {{ 'is-resolved' if decided }}">
-        {% if decided %}
-        <strong>Was flagged:</strong> {{ insight.input_reason }}
-        <strong>Resolved</strong> by your decision below.
-        {% else %}
-        <strong>Why this needs you:</strong> {{ insight.input_reason }}
-        {% endif %}
-      </div>
-      {% endif %}
-
-      {% if insight.user_input %}
-      <div class="review-note is-revision">
-        <strong>Your instruction:</strong> {{ insight.user_input }}
-        {% if insight.revision_note %}<br><strong>What Celestra did:</strong> {{ insight.revision_note }}{% endif %}
-      </div>
-      {% endif %}
-
-      {% if insight.reviewer_input %}
-      <div class="review-note is-input">
-        <strong>Your input (attached, passed to later agents, printed in the document):</strong>
-        {{ insight.reviewer_input }}
-      </div>
-      {% endif %}
-    </div>
-
-    <div class="insight-aside">
-      {{ confidence_chip(insight.confidence) }}
+  <div class="icard-status">
+    {% if decided %}
       {{ review_chip(insight.review_action) }}
-      {% if agent %}<span class="meta text-sm">{{ agent.name }}</span>{% endif %}
+    {% elif needs_review %}
+      <span class="status-dot is-review" title="{{ insight.input_reason }}"></span>
+      <span class="status-text">Needs your review</span>
+    {% else %}
+      <span class="status-dot is-ready"></span>
+      <span class="status-text">Ready</span>
+    {% endif %}
+    <span class="status-sep">|</span>
+    <span class="status-text">{{ nsrc }} source{{ '' if nsrc == 1 else 's' }}</span>
+    {% if insight.used_web_fallback %}
+    <span class="status-sep">|</span><span class="status-text">includes web evidence</span>
+    {% endif %}
+  </div>
+  {% if needs_review and insight.input_reason %}
+  <p class="icard-why">{{ insight.input_reason }}</p>
+  {% elif decided and insight.input_reason %}
+  <p class="icard-why is-resolved">Was flagged: {{ insight.input_reason }} Settled by your decision.</p>
+  {% endif %}
+
+  {# -- 2. evidence ---------------------------------------------------- #}
+  {% if ev %}
+  <div class="icard-evidence">
+    {% if etype == 'metrics' %}
+    <div class="icard-metrics">
+      {% for m in ev %}
+      <div class="icard-metric"><div class="icard-metric-value">{{ m.value }}</div><div class="icard-metric-label">{{ m.label }}</div></div>
+      {% endfor %}
     </div>
+    {% elif etype == 'table' and ev.columns is defined %}
+    <div class="table-wrap">
+      <table class="data table-compact icard-table">
+        <thead><tr>{% for c in ev.columns %}<th scope="col">{{ c }}</th>{% endfor %}</tr></thead>
+        <tbody>
+          {% for row in ev.rows %}
+          <tr>{% for cell in row %}<td>{{ cell | tagify }}</td>{% endfor %}</tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% elif etype == 'steps' %}
+    <ol class="icard-steps">
+      {% for step in ev %}<li><span>{{ step }}</span></li>{% endfor %}
+    </ol>
+    {% else %}
+    <ol class="icard-points">
+      {% for point in ev %}<li>{{ point | tagify }}</li>{% endfor %}
+    </ol>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {# -- 3. interpretation ------------------------------------------- #}
+  {% if insight.interpretation %}
+  <div class="icard-section">
+    <div class="icard-label">What this means</div>
+    <p class="icard-text">{{ insight.interpretation }}</p>
+  </div>
+  {% endif %}
+  {% if insight.review_note and not decided %}
+  <p class="icard-note">{{ icon('eye', 12) }} Worth checking: {{ insight.review_note }}</p>
+  {% endif %}
+
+  {# -- reviewer notes ------------------------------------------------ #}
+  {% if insight.user_input %}
+  <div class="review-note is-revision">
+    <strong>Your instruction:</strong> {{ insight.user_input }}
+    {% if insight.revision_note %}<br><strong>What Celestra did:</strong> {{ insight.revision_note }}{% endif %}
+  </div>
+  {% endif %}
+  {% if insight.reviewer_input %}
+  <div class="review-note is-input"><strong>Your input:</strong> {{ insight.reviewer_input }}</div>
+  {% endif %}
+
+  {# -- 4. sources ---------------------------------------------------- #}
+  <div class="icard-section">
+    <div class="icard-label">Sources</div>
+    {% if insight.source_ids %}
+      {{ source_name_chips(insight.source_ids, names) }}
+    {% else %}
+      <span class="meta">No source returned usable evidence for this card.</span>
+    {% endif %}
   </div>
 
-  <div class="insight-foot">
-    <div class="meta meta-row">
-      <span>{{ insight.category }}</span>
-      {% if insight.tag %}
-        <span class="dot-sep">·</span>
-        <span class="vtag vtag-{{ enum_value(insight.tag) | lower | replace(' ', '-') }}">[{{ enum_value(insight.tag) }}]</span>
+  {# -- 5. validation ------------------------------------------------- #}
+  <footer class="icard-foot">
+    <div class="icard-links">
+      <a class="icard-link" href="/runs/{{ rid }}/stages/{{ insight.stage }}">View analysis {{ icon('arrow-right', 13) }}</a>
+      {% if insight.table_titles %}
+      <button type="button" class="icard-link as-button"
+              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/table"
+              title="{{ insight.table_titles | join(' · ') }}">Document table</button>
       {% endif %}
-      {% if not locked and not decided %}
-        <span class="dot-sep">·</span>
-        <span>{{ 'Needs one of the three decisions' if conf == 'requires_input' else 'Carries forward as generated unless you decide otherwise' }}</span>
-      {% endif %}
+      <button type="button" class="icard-link as-button"
+              data-evidence-url="/runs/{{ rid }}/insights/{{ insight.id }}/evidence">Evidence</button>
     </div>
-
-    <div class="btn-row">
+    <div class="icard-actions">
       {% if locked %}
-      <span class="meta">{{ icon('lock', 13) }} Approved document; findings are final.</span>
+      <span class="meta">{{ icon('lock', 12) }} Final</span>
       {% else %}
       {% if decision != 'approved' %}
-      <button type="button" class="btn btn-sm btn-soft"
-              title="Accept this finding exactly as written"
+      <button type="button" class="btn btn-sm btn-soft" title="Accept this card as written"
               data-action-url="/runs/{{ rid }}/insights/{{ insight.id }}/approve"
               data-swap="[data-insight-id='{{ insight.id }}']">{{ icon('check', 13) }} Approve</button>
       {% endif %}
-
-      <button type="button" class="btn btn-sm btn-secondary"
-              title="Tell Celestra what to change; it rewrites the finding"
-              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/modify">{{ icon('edit', 13) }} Modify</button>
-
-      <button type="button" class="btn btn-sm btn-secondary"
-              title="Attach what you know; it is kept as your input and passed to later agents"
-              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/input">{{ icon('plus-circle', 13) }} Add Input</button>
+      <button type="button" class="btn btn-sm btn-secondary" title="Tell Celestra what to change; it rewrites the card"
+              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/modify">Edit</button>
+      <button type="button" class="btn btn-sm btn-secondary" title="Attach what you know; kept as your input and passed to later agents"
+              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/input">Add input</button>
       {% endif %}
-
-      {% if insight.table_titles %}
-      <button type="button" class="btn btn-sm btn-secondary"
-              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/table"
-              title="{{ insight.table_titles | join(' · ') }}">View Table</button>
-      {% endif %}
-
-      <button type="button" class="btn btn-sm btn-ghost"
-              data-evidence-url="/runs/{{ rid }}/insights/{{ insight.id }}/evidence">
-        {{ icon('eye', 14) }} View Evidence
-      </button>
     </div>
-  </div>
+  </footer>
 </article>

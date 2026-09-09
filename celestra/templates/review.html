@@ -58,7 +58,10 @@
   </section>
 </div>
 
-<h2 class="section-head">Findings ({{ c.insights }})</h2>
+<h2 class="section-head">{{ c.insights }} key insights from the discovery phase</h2>
+<p class="sub mb-2">Each card is one slot the agent owes, filled from its stage document. Ready cards
+  carry forward as written unless you change them; a card marked <em>Needs your review</em> says why in
+  one line.</p>
 <div class="chips mb-2" data-filter-group>
   <button type="button" class="pill" data-filter-category="all" aria-pressed="true">All ({{ c.insights }})</button>
   <button type="button" class="pill" data-filter-category="requires_input" aria-pressed="false">Needs input ({{ c.needs_decision }})</button>
@@ -67,7 +70,7 @@
   <button type="button" class="pill" data-filter-category="{{ cat.key }}" aria-pressed="false">{{ cat.label }} ({{ cat.count }})</button>
   {% endfor %}
 </div>
-<div class="stack" data-insight-list>
+<div class="insight-grid" data-insight-list>
   {% for insight in insights | default([]) %}
     {% include "partials/insight_card.html" %}
   {% else %}

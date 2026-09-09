@@ -233,10 +233,39 @@ class Orchestrator:
                 "wave_complete", wave=index,
                 gate=get_framework()["buckets"][wave[0]].get("gate", ""),
             )
+            await self._phase_cards_if_complete()
             if gate and index == gate and index < len(waves):
                 await self._pause_for_review(index, waves)
                 return True
         return False
+
+    async def _phase_cards_if_complete(self) -> None:
+        """A phase whose agents have all finished owes its phase-level cards,
+        written from every stage document in it. Once per phase."""
+        if self.cfg.mode is not RunMode.FULL:
+            # A phase is only complete when every agent in it ran.
+            return
+        done_phases = set(self.run.context.get("phase_cards_done") or [])
+        for spec in phases_for([a.bucket for a in self.run.agents.values()]):
+            key = spec["key"]
+            if key in done_phases or not insight_gen.phase_catalogue(key):
+                continue
+            buckets = [b for b in self.run.agents if phase_of(b) == key]
+            if not all(self.run.agents[b].status is AgentStatus.COMPLETE for b in buckets):
+                continue
+            stages = {st for b in buckets for st in (self.run.agents[b].stages or [])}
+            reports = [r for r in self.stages if r.stage in stages]
+            cards = await insight_gen.phase_cards(
+                self.run.id, self.cfg, key, reports, [i for i in self.insights if i.stage in stages]
+            )
+            for card in cards:
+                self.insights.append(card)
+                await self._emit_insight(agent_key(card.bucket), card)
+            if cards:
+                store.save_insights(self.run.id, cards)
+            done_phases.add(key)
+            self.run.context["phase_cards_done"] = sorted(done_phases)
+            store.save_run(self.run)
 
     async def _emit_phase(self, key: str) -> None:
         spec = phase_spec(key)
@@ -389,14 +418,6 @@ class Orchestrator:
                 # deduplication runs once the agent has seen them all. Saving here
                 # made the duplicates permanent regardless of that pass.
 
-                # Cards are written from the finished stage document once the
-                # agent has synthesised it. Per-question cards are the fallback
-                # for a run without a model, so they are only built here then.
-                if not retrieval.llm_configured():
-                    insight = self._insight_for(question, outcome.evidence, found, bucket)
-                    if insight:
-                        self.insights.append(insight)
-                        await self._emit_insight(state.key, insight)
 
                 await self._agent(
                     state, progress=0.06 + 0.74 * (i / max(len(agent_questions), 1)),
@@ -433,42 +454,25 @@ class Orchestrator:
                                  source_count=report.source_count,
                                  tables=len(report.tables))
 
-                # Cards come from the document, not from the raw retrieval:
-                # the model reads the stage report against the outputs this
-                # agent owes and writes what a reviewer needs to decide on.
-                await self._agent(state, message=f"Writing review cards for {report.name}")
+                # Cards are the fixed slots this agent owes, filled from the
+                # stage document it just wrote (by the model when one is
+                # configured, from the mapped questions otherwise).
+                await self._agent(state, message=f"Filling review cards for {report.name}")
                 cards = await insight_gen.generate(
                     self.run.id, self.cfg, stage, bucket, report, sq, se, sc,
                     CATEGORY_BY_BUCKET.get(bucket, "Clinical"),
                 )
-                if not cards and retrieval.llm_configured():
-                    # The model call failed; fall back to one card per question
-                    # so the stage is still reviewable.
-                    for q in sq:
-                        card = self._insight_for(
-                            q, [e for e in se if e.question_id == q.id],
-                            [c for c in sc if c.stage == q.stage], bucket,
-                        )
-                        if card:
-                            cards.append(card)
                 for card in cards:
-                    self.insights.append(card)
-                    await self._emit_insight(state.key, card)
-
-                # A card names the tables it draws on; a table records which
-                # questions fed it. Join the two so every card can open a table.
-                stage_cards = [i for i in self.insights if i.stage == stage]
-                for insight in stage_cards:
-                    if not insight.table_titles:
+                    if not card.table_titles:
                         titles = [
                             t.title for t in report.tables
-                            if set(t.question_ids) & set(insight.question_ids)
+                            if set(t.question_ids) & set(card.question_ids)
                         ]
-                        if not titles and report.tables:
-                            titles = [t.title for t in report.tables]
-                        insight.table_titles = titles
-                if stage_cards:
-                    store.save_insights(self.run.id, stage_cards)
+                        card.table_titles = titles or [t.title for t in report.tables][:1]
+                    self.insights.append(card)
+                    await self._emit_insight(state.key, card)
+                if cards:
+                    store.save_insights(self.run.id, cards)
 
             produced = await handoff.build(bucket, self.cfg, agent_evidence)
             if produced:

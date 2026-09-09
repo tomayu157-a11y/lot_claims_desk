@@ -723,7 +723,7 @@ async def overview(request: Request, run_id: str):
 @app.get("/runs/{run_id}/insights", response_class=HTMLResponse)
 async def insights_page(request: Request, run_id: str):
     run = get_run_or_404(run_id)
-    insights = store.get_insights(run_id)
+    insights = sorted(store.get_insights(run_id), key=lambda i: (i.number or 999, i.stage))
     return templates.TemplateResponse(
         request, "insights.html",
         {
@@ -1035,7 +1035,7 @@ async def review_page(request: Request, run_id: str):
         c for c in contradictions
         if any(c.stage in (run.agents[b].stages or []) for b in discovery)
     ]
-    insights.sort(key=lambda i: (not i.needs_decision, i.stage))
+    insights.sort(key=lambda i: (i.number or 999, i.stage))
     fw = get_framework()["buckets"]
     phases = _phase_groups(run)
     return templates.TemplateResponse(
@@ -1353,7 +1353,7 @@ def _approval_ctx(request: Request, run: Run) -> dict[str, Any]:
     counts["evidence"] = sum(s.evidence_count for s in stages)
     # Findings that still need a decision come first, so the page reads as a
     # to-do list until it reads as a sign-off.
-    ordered = sorted(insights, key=lambda i: (not i.needs_decision, i.stage))
+    ordered = sorted(insights, key=lambda i: (i.number or 999, i.stage))
     return {
         **base_ctx(request, "approval"), "run": run, "counts": counts, "gate": gate,
         "insights": ordered, "contradictions": contradictions,

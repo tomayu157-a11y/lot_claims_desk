@@ -292,15 +292,28 @@ class InsightTable(BaseModel):
 
 
 class Insight(BaseModel):
-    """A card in the Discovery Insights view."""
+    """One review card.
+
+    Cards are fixed slots defined by the agent's objective (config/
+    insight_cards.yaml) and filled from the agent's finished stage document.
+    Five parts: what we found (summary), the evidence block, what it means
+    (interpretation), the sources, and the reviewer's decision.
+    """
     id: str = Field(default_factory=lambda: new_id("ins"))
     run_id: str = ""
     stage: str
     bucket: str
     category: str                    # Clinical | Treatment | Diagnostic | Logic | Journey | Synthesis
     title: str
-    summary: str
+    summary: str                     # 1. what we found
     detail: str = ""
+    number: int = 0                  # position in the document-wide card sequence
+    card_key: str = ""               # slot in insight_cards.yaml
+    evidence_type: str = ""          # metrics | table | steps | list | ""
+    evidence: Any = None             # 2. the card's own table / metrics / pathway
+    interpretation: str = ""         # 3. what the evidence means
+    review_note: str = ""            # what a reviewer should verify, in one line
+    covered: bool = True             # False when the sources did not cover this slot
     confidence: Confidence = Confidence.READY
     # Why the finding needs a person, in words. Empty when it is ready.
     input_reason: str = ""
@@ -336,6 +349,9 @@ class Contradiction(BaseModel):
     id: str = Field(default_factory=lambda: new_id("con"))
     run_id: str = ""
     stage: str
+    # The question on which the disagreement surfaced. Lets a conflict flag
+    # the one card it concerns rather than every card in the stage.
+    question_id: str = ""
     topic: str
     source_a_name: str
     source_a_tier: int

@@ -73,7 +73,7 @@
   <button type="button" class="pill" data-filter-category="{{ cat.key }}" aria-pressed="false">{{ cat.label }} ({{ cat.count }})</button>
   {% endfor %}
 </div>
-<div class="stack" data-insight-list>
+<div class="insight-grid" data-insight-list>
   {% for insight in insights | default([]) %}
     {% include "partials/insight_card.html" %}
   {% else %}

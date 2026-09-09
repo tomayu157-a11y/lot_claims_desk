@@ -1,0 +1,212 @@
+# The insight cards each agent owes, in the order they are shown.
+#
+# A card is a fixed slot defined by the agent's objective, not something the
+# model invents per run. The model fills each slot from the agent's finished
+# stage document; without a model the slot is filled from the questions that
+# map to it. Numbering runs across the whole document.
+#
+# evidence_type: metrics | table | steps | list
+#   metrics  a few labelled figures            evidence: [{label, value}]
+#   table    columns and rows                  evidence: {columns: [], rows: [[]]}
+#   steps    an ordered pathway                evidence: [str]
+#   list     short bullet points               evidence: [str]
+# question_hints: words that link a research question to this card
+# table_hints:    words that link a stage-report table to this card
+
+buckets:
+  A:
+    - key: epidemiology
+      number: 1
+      title: "Epidemiology"
+      objective: "How common the disease is, who gets it, and how deadly it is"
+      evidence_type: metrics
+      metrics: ["New US cases per year", "Deaths per year", "Incidence rate", "Mortality rate", "Median age at diagnosis", "5-year survival"]
+      question_hints: [incidence, prevalence, survival, mortality, epidemiolog]
+      table_hints: [epidemiolog]
+    - key: population_segmentation
+      number: 2
+      title: "Patient Population & Segmentation"
+      objective: "The population splits that matter for cohorts: age groups, lineage, biology, risk"
+      evidence_type: table
+      columns: ["Segment", "Approximate share", "Defining feature"]
+      question_hints: [subtype, immunophenotyp, molecular, risk-strat, risk strat, population, segment]
+      table_hints: [subtype, biology, breakdown]
+    - key: disease_definition
+      number: 3
+      title: "Disease Definition & Taxonomy"
+      objective: "What the disease is, how it is classified, and its natural history"
+      evidence_type: table
+      columns: ["Classification", "Category", "Note"]
+      question_hints: [definition, natural history, classification, taxonomy]
+      table_hints: [classification, taxonomy, subtype]
+    - key: diagnostic_foundation
+      number: 4
+      title: "Diagnostic Foundation"
+      objective: "The signals that establish the diagnosis, in the order they are used"
+      evidence_type: steps
+      question_hints: [diagnos, workup, confirmatory, criteria]
+      table_hints: [diagnos, workup]
+    - key: disease_journey
+      number: 5
+      title: "Natural History & Disease Journey"
+      objective: "The clinical course from diagnosis onward and its decision points"
+      evidence_type: steps
+      question_hints: [natural history, journey, course, risk-strat, risk strat, prognos]
+      table_hints: [journey, course, variable, fork]
+  C:
+    - key: treatment_landscape
+      number: 6
+      title: "Treatment Landscape"
+      objective: "The therapeutic modalities in use and the populations each serves"
+      evidence_type: table
+      columns: ["Therapy class", "Examples", "Key populations / role"]
+      question_hints: [first-line, first line, treatment, therap, regimen, differ]
+      table_hints: [inventory, agent, class, drug]
+    - key: standard_of_care
+      number: 7
+      title: "Guideline / Standard of Care"
+      objective: "Which guidelines govern treatment and how their pathways branch"
+      evidence_type: table
+      columns: ["Guideline / body", "Population", "Recommended approach"]
+      question_hints: [guideline, recommended, relapsed, refractory, standard of care]
+      table_hints: [guideline, pathway, version]
+    - key: approved_therapy
+      number: 8
+      title: "Approved Therapy & Label Intelligence"
+      objective: "Approved agents, their label indications, settings, and recent label changes"
+      evidence_type: table
+      columns: ["Therapy", "Indication / population", "Setting", "Approval", "Recent label change"]
+      question_hints: [fda, approv, label, indication, expansion]
+      table_hints: [approv, label, inventory, expansion]
+  B:
+    - key: diagnosis_codes
+      number: 10
+      title: "Diagnosis Code Footprint"
+      objective: "The diagnosis codes that identify the disease, including remission and relapse"
+      evidence_type: table
+      columns: ["Code system", "Code", "Description", "Use"]
+      question_hints: [icd-10, icd10, diagnosis code, remission, relapse]
+      table_hints: [crosswalk, diagnosis, remission, icd]
+    - key: procedure_lab_codes
+      number: 11
+      title: "Diagnostic Procedure & Lab Codes"
+      objective: "Procedure, laboratory and molecular test codes that mark the diagnostic workup"
+      evidence_type: table
+      columns: ["Category", "Code system", "Example codes", "Purpose"]
+      question_hints: [cpt, hcpcs, loinc, biopsy, flow cytometry, cytogenetic, molecular test]
+      table_hints: [procedure, test, loinc, monitoring]
+    - key: code_crosswalk
+      number: 12
+      title: "Code System Crosswalk"
+      objective: "How legacy and international code systems map onto the current one"
+      evidence_type: table
+      columns: ["ICD-9-CM", "ICD-10-CM", "ICD-11", "Description"]
+      question_hints: [icd-9, icd9, icd-11, icd11, crosswalk, extension]
+      table_hints: [crosswalk, icd-11, extension]
+    - key: observability_limits
+      number: 13
+      title: "Claims Observability Limits"
+      objective: "Which clinical concepts claims cannot see, and what that means for cohorts"
+      evidence_type: list
+      question_hints: [observab, limitation, not observable, claims alone]
+      table_hints: [observab, limitation]
+  D:
+    - key: lot_rules
+      number: 14
+      title: "Line-of-Therapy Rules"
+      objective: "The triggers that start, advance and end a line of therapy"
+      evidence_type: list
+      question_hints: [line of therapy, lines of therapy, lot, trigger]
+      table_hints: [trigger, line-of-therapy, lot]
+    - key: regimen_library
+      number: 15
+      title: "Regimen Library"
+      objective: "Standard regimens by phase and setting with their components"
+      evidence_type: table
+      columns: ["Regimen", "Setting / phase", "Components", "Population"]
+      question_hints: [regimen, induction, consolidation, maintenance]
+      table_hints: [regimen]
+    - key: drug_codes
+      number: 16
+      title: "Drug, Administration & NDC Codes"
+      objective: "How regimen components appear in medical and pharmacy claims"
+      evidence_type: table
+      columns: ["Agent", "HCPCS / J-code", "NDC / labeler", "Benefit", "Note"]
+      question_hints: [hcpcs, j-code, ndc, labeler, pharmacy benefit, medical benefit, dosing, administration]
+      table_hints: [hcpcs, ndc, dosing, component]
+    - key: exclusions_ambiguity
+      number: 17
+      title: "Exclusions & Ambiguity Rules"
+      objective: "Supportive-care agents to exclude and the same-drug, different-intent rules"
+      evidence_type: list
+      question_hints: [supportive, exclu, ambigu]
+      table_hints: [exclusion, ambiguity, supportive]
+  E:
+    - key: journey_states
+      number: 18
+      title: "Treatment Journey States"
+      objective: "The states a patient passes through from initiation to an end state"
+      evidence_type: steps
+      question_hints: [journey, state, initiation, transplant, car-t, cellular, end state]
+      table_hints: [state model, journey, end-of-journey, outcome state]
+    - key: discontinuation_signals
+      number: 19
+      title: "Discontinuation & Adverse-Event Signals"
+      objective: "Why treatment stops or switches, by agent class, and the signature toxicities"
+      evidence_type: table
+      columns: ["Agent class", "Signature adverse event", "Effect on treatment"]
+      question_hints: [discontinu, dose modification, adverse, toxicit, switch]
+      table_hints: [discontinu, adverse, signal]
+    - key: monitoring_response
+      number: 20
+      title: "Monitoring & Response Assessment"
+      objective: "How response, residual disease and progression are assessed and how often"
+      evidence_type: table
+      columns: ["Assessment", "Tool / criteria", "Timing"]
+      question_hints: [response, residual disease, mrd, monitoring, cadence, progression]
+      table_hints: [monitoring, response, criteria]
+    - key: outcome_states
+      number: 21
+      title: "Outcomes & Claims Observability"
+      objective: "End states and which journey signals claims can actually observe"
+      evidence_type: table
+      columns: ["Journey signal", "Observable in claims", "How"]
+      question_hints: [transplant, car-t, hospice, death, end state, observab]
+      table_hints: [observab, end-of-journey, outcome]
+  F:
+    - key: unmet_needs
+      number: 22
+      title: "Unmet Needs & Evidence Gaps"
+      objective: "Where treatment falls short and where the evidence is thin"
+      evidence_type: table
+      columns: ["Gap area", "Description", "Impact on modelling"]
+      question_hints: [unmet, gap, evidence gap]
+      table_hints: [unmet, gap]
+    - key: source_divergence
+      number: 23
+      title: "Guideline, Label & Evidence Divergence"
+      objective: "Where guidelines, labels and literature disagree and what was decided"
+      evidence_type: table
+      columns: ["Topic", "Guideline says", "Label / evidence says", "Resolution"]
+      question_hints: [diverge, differ, contradict, conflict, guideline recommendations and fda]
+      table_hints: [contradiction, divergence, conflict]
+    - key: modelling_insights
+      number: 24
+      title: "Key Insights for Downstream Modelling"
+      objective: "What the diagnostic-footprint, treatment-logic and journey work must carry forward"
+      evidence_type: list
+      question_hints: [sequencing, not observable, claims alone, real-world]
+      table_hints: [assumption, limitation, readiness]
+
+# Cards written once every agent in a phase has finished, from all of that
+# phase's stage documents together.
+phase_cards:
+  discovery:
+    - key: key_clinical_treatment_insights
+      number: 9
+      title: "Key Clinical & Treatment Insights"
+      objective: "What the discovery phase established that downstream modelling must preserve"
+      evidence_type: list
+      bucket: C
+      stage: stage_2
+      category: Synthesis

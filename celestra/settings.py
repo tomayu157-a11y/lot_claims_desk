@@ -259,6 +259,11 @@ def get_source_registry() -> dict[str, Any]:
 
 
 @functools.lru_cache(maxsize=1)
+def get_insight_cards() -> dict[str, Any]:
+    return _load_yaml("insight_cards.yaml")
+
+
+@functools.lru_cache(maxsize=1)
 def get_thresholds() -> dict[str, Any]:
     return _load_yaml("thresholds.yaml")
 

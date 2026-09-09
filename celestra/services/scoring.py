@@ -168,11 +168,15 @@ def assess_confidence(
             "so a person has to accept it, correct it, or add a source."
         )
 
+    # A conflict concerns the question it surfaced on. Only conflicts with no
+    # recorded question fall back to the stage, so one disagreement no longer
+    # flags every card in the stage.
     open_conflicts = [
         c for c in contradictions
         if c.severity is ContradictionSeverity.ESCALATED
         and c.review_action is ReviewAction.PENDING
-        and (not c.stage or c.stage == question.stage)
+        and ((c.question_id == question.id) if c.question_id
+             else (not c.stage or c.stage == question.stage))
     ]
     if open_conflicts:
         c = open_conflicts[0]
