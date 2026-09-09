@@ -1,0 +1,23 @@
+{# ---------------------------------------------------------------------------
+   Result of one live Firecrawl probe. Context: probe, network
+   --------------------------------------------------------------------------- #}
+{% from "partials/icons.html" import icon %}
+<div data-web-test class="mt-2">
+  {% if probe.ok %}
+  <div class="callout is-green">
+    {{ icon('check-circle', 15) }}
+    <strong>Web search works.</strong> Firecrawl {{ probe.version }} answered in {{ probe.elapsed_ms }} ms
+    with {{ probe.results }} result{{ '' if probe.results == 1 else 's' }}. Calls will now appear on your
+    Firecrawl dashboard.
+  </div>
+  {% else %}
+  <div class="callout is-rose">
+    {{ icon('alert', 15) }}
+    <strong>Web search failed{% if probe.configured %} after {{ probe.elapsed_ms }} ms{% endif %}.</strong>
+    <div class="mt-1"><strong>What happened:</strong> {{ probe.detail }}</div>
+    {% if probe.remedy %}<div class="mt-1"><strong>What to do:</strong> {{ probe.remedy }}</div>{% endif %}
+    <div class="mt-1 text-sm text-faint">Endpoint: <span class="mono">{{ probe.endpoint }}</span>.
+      After changing <code>.env</code>, restart the server and test again.</div>
+  </div>
+  {% endif %}
+</div>

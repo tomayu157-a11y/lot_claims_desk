@@ -114,6 +114,17 @@
                   aria-label="Dismiss model notice">{{ icon('x', 15) }}</button>
         </div>
         {% endif %}
+        {% if web_search is defined and web_search.get('keyed') and web_search.get('error') %}
+        <div class="banner is-danger" role="alert">
+          {{ icon('alert', 16) }}
+          <div class="banner-body">
+            <strong>Firecrawl is configured but its last call failed.</strong>
+            {{ web_search.error }}
+            Web fallback is using the keyless path until this is fixed.
+            <a href="/settings#web-search">Test it on the Settings page</a>.
+          </div>
+        </div>
+        {% endif %}
         {% if not credentials.get('firecrawl_api_key') %}
         <div class="banner" role="status">
           {{ icon('alert', 16) }}

@@ -195,6 +195,15 @@ and name any setting it is still missing.
 | Key | Absent means |
 |---|---|
 | `FIRECRAWL_API_KEY` | open-web fallback uses a keyless search path, which several networks block outright |
+
+**Web search failing with a connection error.** `python run.py --check`, or
+the "Test web search now" button on the Settings page, makes one real
+Firecrawl call and prints the cause and the fix. The usual ones are a corporate
+proxy (set `HTTPS_PROXY` or `PROXY_URL`), a TLS-intercepting proxy (export its
+root certificate as PEM and set `CA_BUNDLE`), or DNS with no route out. The
+Firecrawl endpoint is `FIRECRAWL_API_URL` + `FIRECRAWL_API_VERSION` (v2 by
+default; v1 still accepted). While a configured key is failing, every page
+shows a banner saying so, and the fallback uses the keyless path.
 | `NCBI_API_KEY` | E-utilities limited to 3 requests/second instead of 10 |
 | `ICD11_CLIENT_ID` / `SECRET` | ICD-11 codes unavailable; those questions report the blocker |
 | `LOINC_USERNAME` / `PASSWORD` | LOINC search unavailable; the free NLM tables still answer most of it |

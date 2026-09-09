@@ -60,6 +60,25 @@ class Settings(BaseSettings):
 
     # --- Retrieval credentials ------------------------------------------
     firecrawl_api_key: str | None = None
+    # Base URL of the Firecrawl API. Change it for a self-hosted instance or a
+    # regional endpoint. A pasted "/v1" or "/v2" suffix is tolerated.
+    firecrawl_api_url: str = "https://api.firecrawl.dev"
+    firecrawl_api_version: str = "v2"       # v2 (current) or v1 (legacy)
+
+    # --- Network ---------------------------------------------------------
+    # HTTPS_PROXY / HTTP_PROXY / NO_PROXY from the environment are honoured
+    # automatically. PROXY_URL forces one for every outbound call, for
+    # machines where the proxy is set in the OS but not exported to the shell.
+    proxy_url: str | None = None
+    # Path to a PEM bundle that includes your network's root certificate. Needed
+    # behind a TLS-intercepting proxy (Zscaler, Netskope, corporate firewalls),
+    # which otherwise fails every HTTPS call with CERTIFICATE_VERIFY_FAILED.
+    # SSL_CERT_FILE and REQUESTS_CA_BUNDLE are read as well.
+    ca_bundle: str | None = None
+    ssl_cert_file: str | None = None
+    requests_ca_bundle: str | None = None
+    # Last resort only: disables certificate verification for every call.
+    tls_verify: bool = True
     ncbi_api_key: str | None = None
     ncbi_tool: str = "celestra"
     ncbi_email: str = "research@example.org"
@@ -150,6 +169,42 @@ class Settings(BaseSettings):
     @property
     def firecrawl_enabled(self) -> bool:
         return bool(self.firecrawl_api_key)
+
+    def firecrawl_endpoint(self, action: str) -> str:
+        """Full URL for a Firecrawl action, from the configured base and version."""
+        base = (self.firecrawl_api_url or "https://api.firecrawl.dev").strip().rstrip("/")
+        version = (self.firecrawl_api_version or "v2").strip().strip("/").lower()
+        for suffix in ("/v1", "/v2"):
+            if base.endswith(suffix):
+                version = suffix.strip("/")
+                base = base[: -len(suffix)]
+        if version not in ("v1", "v2"):
+            version = "v2"
+        return f"{base}/{version}/{action}"
+
+    @property
+    def firecrawl_version(self) -> str:
+        return self.firecrawl_endpoint("x").rsplit("/", 2)[-2]
+
+    def tls_verify_value(self) -> bool | str:
+        """What httpx should verify against: a CA bundle path, True, or False."""
+        if not self.tls_verify:
+            return False
+        for candidate in (self.ca_bundle, self.ssl_cert_file, self.requests_ca_bundle):
+            if candidate and candidate.strip():
+                return candidate.strip()
+        return True
+
+    def network_status(self) -> dict[str, Any]:
+        verify = self.tls_verify_value()
+        return {
+            "proxy": self.proxy_url or "from environment (HTTPS_PROXY) if set",
+            "proxy_forced": bool(self.proxy_url),
+            "ca_bundle": verify if isinstance(verify, str) else "",
+            "tls_verify": verify is not False,
+            "firecrawl_endpoint": self.firecrawl_endpoint("search"),
+            "firecrawl_version": self.firecrawl_version,
+        }
 
     def llm_status(self) -> dict[str, Any]:
         """What the UI shows about the model layer."""

@@ -8,7 +8,8 @@ Two modes, one class:
   registry tier for that source, NOT 5. A targeted search of cdc.gov is
   approved-domain evidence; calling it tier 5 would understate it.
 
-With `FIRECRAWL_API_KEY` set, the Firecrawl v1 API does search and scrape.
+With `FIRECRAWL_API_KEY` set, the Firecrawl API (v2 by default; v1 via
+FIRECRAWL_API_VERSION, any base via FIRECRAWL_API_URL) does search and scrape.
 Without it the connector still works through a keyless chain, tried in order
 until one returns on-topic results:
 
@@ -38,10 +39,8 @@ from selectolax.parser import HTMLParser
 from ..models import EvidenceOrigin, SourceRef
 from ..settings import get_settings, get_thresholds
 from ._util import clean, clip, html_text, tokens
-from .base import ConnectorResult, RetrievalContext, describe_http_error, http
+from .base import ConnectorResult, RetrievalContext, describe_http_error, http, remedy_for
 
-FIRECRAWL_SEARCH = "https://api.firecrawl.dev/v1/search"
-FIRECRAWL_SCRAPE = "https://api.firecrawl.dev/v1/scrape"
 DDG_HTML = "https://html.duckduckgo.com/html/"
 DDG_LITE = "https://lite.duckduckgo.com/lite/"
 BING_HTML = "https://www.bing.com/search"
@@ -159,6 +158,18 @@ class _SearchBreaker:
 # backends and therefore all fail for the same reason.
 breaker = _SearchBreaker()
 
+# The most recent Firecrawl failure across every instance, in words, with the
+# time it happened. Empty once a call succeeds. The Settings page and the
+# banner read this so a failing key is visible without opening a log.
+firecrawl_status: dict[str, str] = {"error": "", "at": ""}
+
+
+def _record_firecrawl_failure(message: str) -> None:
+    from datetime import datetime, timezone
+
+    firecrawl_status["error"] = message
+    firecrawl_status["at"] = datetime.now(timezone.utc).isoformat(timespec="seconds") if message else ""
+
 # domain -> harvested sitemap URLs, or [] when the domain will not serve them.
 # Process-lifetime, because a sitemap changes far more slowly than a run.
 _SITEMAP_CACHE: dict[str, list[str]] = {}
@@ -207,21 +218,89 @@ class FirecrawlConnector:
         return f"site:{self.domain} {query}" if self.domain else query
 
     # -- backends --------------------------------------------------------
-    async def _firecrawl_search(self, query: str, limit: int) -> list[dict]:
-        key = get_settings().firecrawl_api_key
-        payload = await http.request(
-            "POST", FIRECRAWL_SEARCH,
-            json_body={"query": self._scoped(query), "limit": max(1, min(limit, 20))},
-            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-            use_cache=False,
-        )
-        out = []
-        for item in (payload.get("data") or []):
+    @staticmethod
+    def _firecrawl_headers() -> dict[str, str]:
+        key = (get_settings().firecrawl_api_key or "").strip()
+        return {"Authorization": f"Bearer {key}", "Content-Type": "application/json",
+                "Accept": "application/json"}
+
+    @staticmethod
+    def parse_search_payload(payload: dict) -> list[dict]:
+        """Results from either API shape.
+
+        v1 returns `data` as a list. v2 returns `data` as an object keyed by
+        source (`web`, `news`, `images`); only `web` carries pages worth
+        quoting. Both are accepted so a version change never means an empty
+        result that looks like "nothing on the web".
+        """
+        if not isinstance(payload, dict):
+            return []
+        if payload.get("success") is False:
+            raise RuntimeError(str(payload.get("error") or "Firecrawl returned success=false"))
+        data = payload.get("data")
+        items: list = []
+        if isinstance(data, list):
+            items = data
+        elif isinstance(data, dict):
+            items = list(data.get("web") or [])
+        out: list[dict] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
             url = clean(item.get("url"))
-            if url:
-                out.append({"url": url, "title": clean(item.get("title")),
-                            "snippet": clean(item.get("description")), "backend": "firecrawl"})
+            if not url:
+                continue
+            out.append({
+                "url": url,
+                "title": clean(item.get("title")),
+                "snippet": clean(item.get("description") or item.get("snippet")),
+                "markdown": clean(item.get("markdown")),
+                "backend": "firecrawl",
+            })
         return out
+
+    async def _firecrawl_search(self, query: str, limit: int) -> list[dict]:
+        s = get_settings()
+        body: dict = {"query": self._scoped(query), "limit": max(1, min(limit, 20))}
+        if s.firecrawl_version == "v2":
+            body["sources"] = ["web"]
+        payload = await http.request(
+            "POST", s.firecrawl_endpoint("search"), json_body=body,
+            headers=self._firecrawl_headers(), use_cache=False,
+        )
+        return self.parse_search_payload(payload)
+
+    @classmethod
+    async def probe(cls, query: str = "chronic lymphocytic leukemia incidence") -> dict:
+        """One live Firecrawl call, reported in words. Used by `run.py --check`
+        and the Settings page so a broken key or a blocked network is
+        diagnosed where the person is looking, not in a log."""
+        s = get_settings()
+        started = time.perf_counter()
+        info = {
+            "configured": s.firecrawl_enabled,
+            "endpoint": s.firecrawl_endpoint("search"),
+            "version": s.firecrawl_version,
+            "ok": False, "results": 0, "detail": "", "remedy": "", "elapsed_ms": 0,
+        }
+        if not s.firecrawl_enabled:
+            info["detail"] = "FIRECRAWL_API_KEY is not set"
+            info["remedy"] = ("Add FIRECRAWL_API_KEY to .env and restart. Until then the "
+                              "open-web fallback uses a keyless path that many networks block.")
+            return info
+        conn = cls()
+        try:
+            hits = await conn._firecrawl_search(query, 3)
+            info["ok"] = bool(hits)
+            info["results"] = len(hits)
+            if not hits:
+                info["detail"] = "the key was accepted but the probe query returned no results"
+                info["remedy"] = "Unusual for this query; retry, then check the Firecrawl status page."
+        except Exception as exc:  # noqa: BLE001 - this is the diagnostic
+            info["detail"] = describe_http_error(exc)
+            info["remedy"] = remedy_for(exc)
+        info["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
+        return info
 
     async def _ddg(self, query: str, limit: int, lite: bool = False) -> list[dict]:
         url = DDG_LITE if lite else DDG_HTML
@@ -401,11 +480,17 @@ class FirecrawlConnector:
                 if name == "firecrawl":
                     # Firecrawl is configured and billed. Falling through to a
                     # keyless engine without saying so is how a broken key
-                    # looks exactly like a working one.
-                    log.warning("firecrawl search failed (%s); falling back to a "
-                                "keyless engine. query=%r", detail, query[:120])
-                    self.last_error = last_error
+                    # looks exactly like a working one. Say what broke and
+                    # what fixes it; "ConnectError" alone helps nobody.
+                    remedy = remedy_for(exc) if isinstance(exc, Exception) else ""
+                    log.warning("firecrawl search failed: %s. %s Falling back to a "
+                                "keyless engine for query=%r",
+                                detail, remedy, query[:120])
+                    self.last_error = f"{detail}. {remedy}".strip()
+                    _record_firecrawl_failure(self.last_error)
                 continue
+            if name == "firecrawl":
+                _record_firecrawl_failure("")
             self.last_backend = name
             kept: list[dict] = []
             for item in results:
@@ -437,15 +522,14 @@ class FirecrawlConnector:
             return {}
         if get_settings().firecrawl_enabled:
             try:
-                key = get_settings().firecrawl_api_key
                 payload = await http.request(
-                    "POST", FIRECRAWL_SCRAPE,
+                    "POST", get_settings().firecrawl_endpoint("scrape"),
                     json_body={"url": url, "formats": ["markdown"]},
-                    headers={"Authorization": f"Bearer {key}",
-                             "Content-Type": "application/json"},
-                    use_cache=False,
+                    headers=self._firecrawl_headers(), use_cache=False,
                 )
-                data = payload.get("data") or {}
+                if isinstance(payload, dict) and payload.get("success") is False:
+                    raise RuntimeError(str(payload.get("error") or "success=false"))
+                data = (payload.get("data") if isinstance(payload, dict) else None) or {}
                 text = clean(data.get("markdown") or data.get("content"))
                 if text:
                     meta = data.get("metadata") or {}
@@ -453,9 +537,9 @@ class FirecrawlConnector:
                             "text": text, "backend": "firecrawl"}
             except Exception as exc:  # noqa: BLE001 - fall back to a direct fetch
                 detail = describe_http_error(exc)
-                log.warning("firecrawl scrape failed (%s); fetching directly. url=%s",
-                            detail, url)
-                self.last_error = f"firecrawl scrape: {detail}"
+                log.warning("firecrawl scrape failed: %s. %s Fetching %s directly.",
+                            detail, remedy_for(exc), url)
+                self.last_error = f"scrape: {detail}"
         try:
             html = await http.get_text(url, headers={"User-Agent": BROWSER_UA})
         except Exception:  # noqa: BLE001 - an unreachable page is not an error

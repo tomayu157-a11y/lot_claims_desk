@@ -243,29 +243,20 @@ def self_check() -> int:
         from celestra.settings import get_settings as _gs
 
         settings = _gs()
-        if settings.firecrawl_enabled:
-            from celestra.connectors.firecrawl import FirecrawlConnector
+        from celestra.connectors.firecrawl import FirecrawlConnector
 
-            conn = FirecrawlConnector()
-
-            async def _probe():
-                return await conn._firecrawl_search("chronic lymphocytic leukemia", 1)
-
-            try:
-                hits = _a.run(_probe())
-                ok = bool(hits)
-                print(f"  {'ok  ' if ok else 'FAIL'}  firecrawl: key accepted, "
-                      f"{len(hits)} result(s)")
-                if not ok:
-                    problems.append("firecrawl returned no results for a probe query")
-            except Exception as exc:
-                from celestra.connectors.base import describe_http_error
-
-                print(f"  FAIL  firecrawl: {describe_http_error(exc)}")
-                problems.append(f"firecrawl call failed: {describe_http_error(exc)}")
-        else:
+        probe_result = _a.run(FirecrawlConnector.probe())
+        if not settings.firecrawl_enabled:
             print("  warn  firecrawl: no FIRECRAWL_API_KEY, web fallback uses the "
                   "keyless path")
+        elif probe_result["ok"]:
+            print(f"  ok    firecrawl {probe_result['version']}: key accepted, "
+                  f"{probe_result['results']} result(s) in {probe_result['elapsed_ms']} ms")
+        else:
+            print(f"  FAIL  firecrawl: {probe_result['detail']}")
+            if probe_result["remedy"]:
+                print(f"        fix: {probe_result['remedy']}")
+            problems.append(f"firecrawl call failed: {probe_result['detail']}")
     except Exception as exc:
         print(f"  warn  firecrawl probe skipped: {type(exc).__name__}: {exc}")
 
@@ -277,9 +268,12 @@ def self_check() -> int:
         # Match the advice to the failure. Telling someone to git pull when
         # their API key is rejected sends them the wrong way entirely.
         if any("firecrawl" in p for p in problems):
-            print("\n  Check FIRECRAWL_API_KEY in .env against your Firecrawl")
-            print("  dashboard. Until it works, web fallback silently uses the")
-            print("  keyless path and no calls appear on your account.")
+            print("\n  Web search is failing; the fix line above says why. Until it")
+            print("  works, web fallback uses the keyless path and no calls appear")
+            print("  on your Firecrawl account. Network settings live in .env:")
+            print("    HTTPS_PROXY / PROXY_URL   when the machine reaches the web via a proxy")
+            print("    CA_BUNDLE=/path/root.pem  behind a TLS-intercepting proxy")
+            print("    FIRECRAWL_API_URL         for a self-hosted or regional endpoint")
         if any(p.startswith(("GET ", "app ", "templates", "stylesheet", "javascript"))
                for p in problems):
             print("\n  A page or asset failed, which usually means a stale checkout:")

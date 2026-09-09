@@ -89,21 +89,33 @@ def _llm_describe() -> str:
 
 
 def web_search_status() -> dict[str, Any]:
-    """Why open-web fallback is or is not contributing, for the sources panel."""
+    """Why open-web fallback is or is not contributing, for the sources panel,
+    the Settings page and the banner. No network call; it reads what the
+    connector recorded on its last real call."""
     settings = get_settings()
     try:
-        from .connectors.firecrawl import breaker
+        from .connectors.firecrawl import breaker, firecrawl_status
     except Exception:
-        return {"available": False, "reason": "web connector unavailable", "keyed": False}
+        return {"available": False, "reason": "web connector unavailable", "keyed": False,
+                "error": "", "error_at": ""}
     if settings.firecrawl_enabled:
-        return {"available": True, "reason": "Firecrawl configured", "keyed": True}
+        error = firecrawl_status.get("error", "")
+        return {
+            "available": not error,
+            "reason": ("Firecrawl configured; the last call failed" if error
+                       else "Firecrawl configured"),
+            "keyed": True, "error": error, "error_at": firecrawl_status.get("at", ""),
+            "endpoint": settings.firecrawl_endpoint("search"),
+            "version": settings.firecrawl_version,
+        }
     if breaker.open:
-        return {"available": False, "reason": breaker.reason, "keyed": False}
+        return {"available": False, "reason": breaker.reason, "keyed": False,
+                "error": breaker.reason, "error_at": ""}
     return {
         "available": True,
         "reason": "using the keyless search path; configure FIRECRAWL_API_KEY for "
                   "reliable fallback",
-        "keyed": False,
+        "keyed": False, "error": "", "error_at": "",
     }
 
 
@@ -245,6 +257,7 @@ def base_ctx(request: Request, active: str = "") -> dict[str, Any]:
         "app_name": s.app_name,
         "messages": [],
         "source_names": _source_names(),
+        "web_search": web_search_status(),
         "tiers": {
             int(k): v["label"] for k, v in get_source_registry()["tiers"].items()
         },
@@ -1442,7 +1455,22 @@ async def settings_page(request: Request):
             "model": _llm_describe(),
             "provider": get_settings().provider,
             "provider_gaps": get_settings().provider_gaps(),
+            "network": get_settings().network_status(),
         },
+    )
+
+
+@app.post("/settings/web-search-test", response_class=HTMLResponse)
+async def web_search_test(request: Request):
+    """One live Firecrawl call, with the cause and the fix in words when it
+    fails. The same probe `run.py --check` runs, put where the person is."""
+    from .connectors.firecrawl import FirecrawlConnector
+
+    result = await FirecrawlConnector.probe()
+    return templates.TemplateResponse(
+        request, "partials/web_search_test.html",
+        {**base_ctx(request, "settings"), "probe": result,
+         "network": get_settings().network_status()},
     )
 
 

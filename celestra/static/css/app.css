@@ -1231,3 +1231,5 @@ ul.checks .ic { flex: 0 0 auto; margin-top: 2px; color: var(--ok); }
 .insight-card.is-flash, .contra.is-flash { animation: card-flash 1.6s ease-out; }
 @keyframes card-flash { 0% { box-shadow: 0 0 0 3px var(--green-border); } 100% { box-shadow: var(--shadow-xs); } }
 textarea.is-invalid { border-color: var(--danger); }
+
+.callout.is-green { border-left-color: var(--green-border); background: var(--green-soft); color: var(--green-ink); }

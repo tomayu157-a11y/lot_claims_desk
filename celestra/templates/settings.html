@@ -40,6 +40,40 @@
   </p>
 </section>
 
+<section class="section" id="web-search">
+  <h2 class="section-title">Web search (Firecrawl)</h2>
+  <div class="card card-pad">
+    {% set ws = web_search | default({}) %}
+    {% set net = network | default({}) %}
+    <table class="kv">
+      <tbody>
+        <tr><th scope="row">API key</th>
+          <td>{% if ws.get('keyed') %}<span class="chip chip-sm chip-ready">{{ icon('check', 12) }} Configured</span>
+              {% else %}<span class="chip chip-sm chip-amber">{{ icon('alert', 12) }} Not configured</span>{% endif %}</td></tr>
+        <tr><th scope="row">Endpoint</th><td class="mono break">{{ net.get('firecrawl_endpoint', '—') }} <span class="text-faint">(API {{ net.get('firecrawl_version', 'v2') }}; FIRECRAWL_API_URL / FIRECRAWL_API_VERSION)</span></td></tr>
+        <tr><th scope="row">Proxy</th><td>{{ net.get('proxy', '—') }} <span class="text-faint">(PROXY_URL or HTTPS_PROXY)</span></td></tr>
+        <tr><th scope="row">TLS</th>
+          <td>{% if not net.get('tls_verify', true) %}<span class="chip chip-sm chip-requires_input">Verification disabled</span>
+              {% elif net.get('ca_bundle') %}Custom CA bundle: <span class="mono break">{{ net.get('ca_bundle') }}</span>
+              {% else %}System certificates <span class="text-faint">(set CA_BUNDLE behind an intercepting proxy)</span>{% endif %}</td></tr>
+        <tr><th scope="row">Last call</th>
+          <td>{% if ws.get('error') %}<span class="chip chip-sm chip-requires_input">Failed</span> {{ ws.get('error') }}
+              {% if ws.get('error_at') %}<span class="text-faint">({{ ws.get('error_at') }})</span>{% endif %}
+              {% elif ws.get('keyed') %}<span class="chip chip-sm chip-ready">No failure recorded</span>
+              {% else %}{{ ws.get('reason', '') }}{% endif %}</td></tr>
+      </tbody>
+    </table>
+    <div class="row mt-2 wrap" data-action-scope>
+      <button type="button" class="btn btn-primary btn-sm"
+              data-action-url="/settings/web-search-test"
+              data-swap="[data-web-test]"
+              data-busy-label="Calling Firecrawl…">Test web search now</button>
+      <span class="hint">Makes one real search call and shows exactly what happened.</span>
+    </div>
+    <div data-web-test class="mt-2"></div>
+  </div>
+</section>
+
 <section class="section">
   <h2 class="section-title">Thresholds</h2>
   {% if thresholds %}
