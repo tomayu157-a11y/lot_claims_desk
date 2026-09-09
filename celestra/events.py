@@ -52,6 +52,11 @@ class EventBus:
         return ch
 
     async def publish(self, run_id: str, type_: str, **data: Any) -> None:
+        # `run_id` and `type` are supplied by the channel and the envelope. A
+        # caller passing them again would collide with these parameters, so
+        # they are dropped rather than allowed to raise mid-run.
+        data.pop("run_id", None)
+        data.pop("type", None)
         async with self._lock:
             ch = self._channel(run_id)
             ch.seq += 1

@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import agent_tile %}
+{% block title %}New project — Celestra{% endblock %}
+
+{% block content %}
+<div class="shell-narrow">
+  <form class="card" method="post" action="/projects" novalidate>
+    <div class="card-body">
+      <h1>Create a New Project</h1>
+      <p class="sub mb-3">Provide basic details to help Celestra understand your research objective.</p>
+
+      <div class="field">
+        <label for="drug_brand">Drug / Brand <span class="optional">(Optional)</span></label>
+        <input type="text" id="drug_brand" name="drug_brand" autocomplete="off"
+               placeholder="e.g. Blinatumomab (Blincyto)">
+      </div>
+
+      <div class="field">
+        <label for="indication">Indication <span class="req" aria-hidden="true">*</span>
+          <span class="visually-hidden">(required)</span></label>
+        <input type="text" id="indication" name="indication" list="indication-options" required
+               autocomplete="off" placeholder="e.g. Acute Lymphoblastic Leukemia (ALL)"
+               aria-describedby="indication-hint">
+        <datalist id="indication-options">
+          {% for ind in indications | default([]) %}
+          <option value="{{ ind.label }}">{{ ind.synonyms | join(', ') if ind.synonyms else ind.key }}</option>
+          {% endfor %}
+        </datalist>
+        <p class="hint" id="indication-hint">
+          {% if indications %}
+            Configured indications:
+            {% for ind in indications %}<strong>{{ ind.label }}</strong>{{ ', ' if not loop.last }}{% endfor %}.
+            Any other indication is researched from the generic question plan.
+          {% else %}
+            Type the indication exactly as it should appear in the report.
+          {% endif %}
+        </p>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="geography">Geography <span class="req" aria-hidden="true">*</span></label>
+          <select id="geography" name="geography" required>
+            {% for g in geographies | default(['United States']) %}
+            <option value="{{ g }}" {{ 'selected' if g == 'United States' }}>{{ g }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="objective">Objective <span class="req" aria-hidden="true">*</span></label>
+          <select id="objective" name="objective" required>
+            {% for o in objectives | default(['Build Claims Line of Therapy']) %}
+            <option value="{{ o }}" {{ 'selected' if o == 'Build Claims Line of Therapy' }}>{{ o }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="target_population">Target Population <span class="optional">(Optional)</span></label>
+        <input type="text" id="target_population" name="target_population" autocomplete="off"
+               placeholder="e.g. Adult patients with newly diagnosed ALL">
+      </div>
+
+      <div class="field">
+        <label for="additional_context">Additional Context <span class="optional">(Optional)</span></label>
+        <textarea id="additional_context" name="additional_context" rows="4"
+                  placeholder="E.g. focus on systemic therapy, exclude early stage, etc."></textarea>
+      </div>
+
+      <fieldset class="field" style="border:0;padding:0;margin:24px 0 0;">
+        <legend class="label" style="padding:0;">Research mode</legend>
+        <p class="hint mt-0 mb-1">
+          Run the whole programme, or re-run a single agent against the cached context of the others.
+        </p>
+
+        <div class="radio-cards mt-1">
+          <label class="radio-card" for="mode-full">
+            <input type="radio" id="mode-full" name="mode" value="full" checked data-mode-radio>
+            <span>
+              <span class="rc-title">Run all agents</span>
+              <span class="rc-desc">End to end, in dependency order. Each wave closes with a
+                reconciliation gate before the next begins.</span>
+            </span>
+          </label>
+
+          <label class="radio-card" for="mode-single">
+            <input type="radio" id="mode-single" name="mode" value="single" data-mode-radio>
+            <span>
+              <span class="rc-title">Run a single agent</span>
+              <span class="rc-desc">One agent only. Its dependencies are satisfied from the most
+                recent cached context rather than re-researched.</span>
+            </span>
+          </label>
+        </div>
+
+        <div class="reveal" data-mode-reveal hidden>
+          <div class="field mb-0">
+            <label for="selected_agent">Agent to run</label>
+            <select id="selected_agent" name="selected_agent">
+              {% for a in agents | default([]) %}
+              <option value="{{ a.key }}">{{ a.name }} — {{ a.tagline }}</option>
+              {% endfor %}
+            </select>
+            <p class="hint">
+              Anything this agent depends on is read from the most recent completed run for the
+              same indication.
+            </p>
+          </div>
+        </div>
+      </fieldset>
+    </div>
+
+    <div class="card-foot">
+      <button type="submit" class="btn btn-primary btn-lg btn-block">
+        Start Discovery {{ icon('arrow-right', 16) }}
+      </button>
+    </div>
+  </form>
+
+  {% if agents %}
+  <div class="card card-pad mt-2">
+    <h2 class="mb-2">Agents in this programme</h2>
+    <div class="stack-sm">
+      {% for a in agents %}
+      <div class="row" style="align-items:flex-start;gap:12px;">
+        {{ agent_tile(a.icon, 'tile-sm') }}
+        <div>
+          <div class="included-name">{{ a.name }}</div>
+          <div class="included-desc">{{ a.tagline }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

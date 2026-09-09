@@ -67,7 +67,7 @@ def _shared_subject(a: str, b: str) -> bool:
     wb = {w for w in re.findall(r"[a-z]{5,}", b.lower())}
     if not wa or not wb:
         return False
-    return len(wa & wb) / min(len(wa), len(wb)) >= 0.18
+    return len(wa & wb) / min(len(wa), len(wb)) >= 0.28
 
 
 def _severity(tier_a: int, tier_b: int, numeric: bool) -> ContradictionSeverity:
@@ -82,6 +82,24 @@ def _reason(tier_a: int, tier_b: int) -> str:
     if abs(tier_a - tier_b) >= cfg["escalate_on_tier_gap"]:
         return _TIER_GAP_REASON
     return _SAME_CONCEPT_REASON
+
+
+def dedupe(items: list[Contradiction]) -> list[Contradiction]:
+    """Collapse repeats of the same claim pair.
+
+    A single disagreement between two sources surfaces on every question both
+    sources answered. Reviewers need one decision per disagreement, not one per
+    question, so the pair of claims is the identity.
+    """
+    out: list[Contradiction] = []
+    seen: set[tuple[str, str]] = set()
+    for c in sorted(items, key=lambda x: (x.severity is not ContradictionSeverity.ESCALATED,)):
+        key = tuple(sorted((c.source_a_claim[:90].lower(), c.source_b_claim[:90].lower())))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    return out
 
 
 def detect_deterministic(

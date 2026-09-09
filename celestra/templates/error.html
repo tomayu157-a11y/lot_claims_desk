@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% block title %}Something went wrong — Celestra{% endblock %}
+
+{% block content %}
+<div class="shell-narrow">
+  <div class="card card-pad">
+    <div class="row mb-2">
+      <span class="tile tile-lg tint-rose">{{ icon('alert', 22) }}</span>
+      <div>
+        <h1>{{ message | default('Something went wrong', true) }}</h1>
+        <p class="sub mb-0">Nothing was changed. You can go back and try again.</p>
+      </div>
+    </div>
+
+    {% if detail %}
+    <div class="callout is-rose mb-2">
+      <strong>Detail</strong>
+      <div class="mt-1 break">{{ detail }}</div>
+    </div>
+    {% endif %}
+
+    <div class="btn-row">
+      <a class="btn btn-primary" href="/">Back to home</a>
+      <a class="btn btn-secondary" href="/projects">All projects</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import stat_tile, confidence_chip, agent_tile, tinted_tile %}
+{% block title %}Discovery complete — Celestra{% endblock %}
+
+{% set c = counts | default({}) %}
+
+{% block content %}
+<div class="page-head page-head-row">
+  <div>
+    <h1>Discovery Complete</h1>
+    <p class="sub">
+      {{ c.get('insights', 0) }} insights generated from {{ c.get('sources', 0) }} trusted sources
+    </p>
+    <div class="meta meta-row mt-1">
+      <span><strong>{{ run.config.indication }}</strong></span>
+      <span class="dot-sep">·</span>
+      <span>{{ run.config.geography }}</span>
+      {% if run.config.target_population %}
+      <span class="dot-sep">·</span><span>{{ run.config.target_population }}</span>
+      {% endif %}
+      {% if run.reference %}
+      <span class="dot-sep">·</span><span class="mono">{{ run.reference }}</span>
+      {% endif %}
+    </div>
+  </div>
+  <a class="btn btn-secondary" href="/runs/{{ run.id }}/sources">
+    {{ icon('database', 15) }} View Sources
+  </a>
+</div>
+
+<div class="stats mb-3">
+  {{ stat_tile(c.get('high', 0), 'High Confidence', 'green') }}
+  {{ stat_tile(c.get('medium', 0), 'Medium Confidence', 'amber') }}
+  {{ stat_tile(c.get('requires_input', 0), 'Require Input', 'rose') }}
+  {{ stat_tile(c.get('rejected', 0), 'Rejected', 'slate') }}
+</div>
+
+{% if categories %}
+<div class="pills mb-3">
+  <a class="pill is-active" href="/runs/{{ run.id }}/insights">All Insights ({{ c.get('insights', 0) }})</a>
+  {% for cat in categories %}
+  <a class="pill" href="/runs/{{ run.id }}/insights?category={{ cat.key }}">{{ cat.label }} ({{ cat.count }})</a>
+  {% endfor %}
+</div>
+{% endif %}
+
+<section class="section">
+  <h2 class="section-title">Key Takeaways</h2>
+  {% if takeaways %}
+  <div class="grid grid-3">
+    {% for ins in takeaways %}
+    <article class="card card-hover takeaway">
+      <div class="row-between">
+        {{ tinted_tile('sparkle', ['green', 'blue', 'rose', 'indigo', 'teal'][loop.index0 % 5], 'tile-sm') }}
+      </div>
+      <div class="tk-title">{{ ins.title }}</div>
+      <div class="tk-body">{{ ins.summary }}</div>
+      <div class="row-between wrap">
+        {{ confidence_chip(ins.confidence, true) }}
+        <span class="meta">{{ ins.source_ids | length }} source{{ '' if ins.source_ids | length == 1 else 's' }}</span>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty"><h3>No takeaways yet</h3><p class="mb-0">Takeaways appear once the agents finish synthesising.</p></div>
+  {% endif %}
+</section>
+
+{% if stages %}
+<section class="section">
+  <h2 class="section-title">Stage outputs <span class="count">({{ stages | length }})</span></h2>
+  <div class="card">
+    {% for s in stages %}
+    <div class="run-row">
+      {{ agent_tile('sparkle', 'tile-sm') }}
+      <div class="run-main">
+        <div class="run-title">
+          <a href="/runs/{{ run.id }}/stages/{{ s.stage }}">{{ s.name }}</a>
+        </div>
+        <div class="meta meta-row">
+          <span>{{ s.agent_name }}</span>
+          <span class="dot-sep">·</span>
+          <span>{{ s.core_question }}</span>
+        </div>
+      </div>
+      <span class="chip chip-sm">{{ s.evidence_count }} evidence</span>
+      <span class="chip chip-sm">{{ s.source_count }} sources</span>
+      <a class="btn btn-ghost btn-sm" href="/runs/{{ run.id }}/stages/{{ s.stage }}">
+        Open {{ icon('chevron-right', 14) }}
+      </a>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<div class="btn-row mt-3">
+  <a class="btn btn-primary" href="/runs/{{ run.id }}/insights">
+    Review insights {{ icon('arrow-right', 15) }}
+  </a>
+  <a class="btn btn-secondary" href="/runs/{{ run.id }}/contradictions">Source conflicts</a>
+  <a class="btn btn-secondary" href="/runs/{{ run.id }}/report">Full report</a>
+  <a class="btn btn-ghost" href="/runs/{{ run.id }}/approval">Approval</a>
+</div>
+{% endblock %}

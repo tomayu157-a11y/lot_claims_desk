@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import run_status_chip, dt, tinted_tile %}
+{% block title %}Celestra — Clinical desk research{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div class="eyebrow">Clinical desk research</div>
+  <h1>Welcome to Celestra</h1>
+  <p class="sub">
+    Celestra runs source-first desk research across approved clinical databases, then hands you an
+    evidence-backed context layer to review, correct and approve.
+  </p>
+</div>
+
+<div class="card card-pad mb-3">
+  <div class="row-between wrap">
+    <div>
+      <h2>Start a new indication project</h2>
+      <p class="text-muted mt-1 mb-0">
+        Give Celestra the indication, geography and objective. It plans the research questions,
+        queries approved sources first, and reports which source produced every finding.
+      </p>
+    </div>
+    <a class="btn btn-primary btn-lg" href="/projects/new">
+      {{ icon('plus-circle', 16) }} New project
+    </a>
+  </div>
+</div>
+
+<div class="grid grid-3 mb-3">
+  <div class="card card-pad">
+    <div class="row mb-1">{{ tinted_tile('database', 'green') }}</div>
+    <h3>Approved sources first</h3>
+    <p class="text-muted text-sm mb-0">
+      Native source APIs and targeted domain search run before anything else. Open-web results are
+      only ever supplementary, and are labelled wherever they appear.
+    </p>
+  </div>
+  <div class="card card-pad">
+    <div class="row mb-1">{{ tinted_tile('split', 'amber') }}</div>
+    <h3>Conflicts are surfaced</h3>
+    <p class="text-muted text-sm mb-0">
+      Where two sources disagree, both sides are reported as stated with their tier. Nothing is
+      auto-resolved: a human decides.
+    </p>
+  </div>
+  <div class="card card-pad">
+    <div class="row mb-1">{{ tinted_tile('users', 'indigo') }}</div>
+    <h3>Your input propagates</h3>
+    <p class="text-muted text-sm mb-0">
+      Modify a finding and Celestra recalculates every related insight across the other agents
+      before you approve the context.
+    </p>
+  </div>
+</div>
+
+<div class="section">
+  <div class="row-between mb-1">
+    <h2 class="section-title mb-0">Recent projects <span class="count">({{ runs | default([]) | length }})</span></h2>
+    <a class="btn btn-ghost btn-sm" href="/projects">View all {{ icon('chevron-right', 14) }}</a>
+  </div>
+
+  {% if runs %}
+  <div class="card">
+    {% for r in runs %}
+    <div class="run-row">
+      {{ tinted_tile('file-text', 'blue', 'tile-sm') }}
+      <div class="run-main">
+        <div class="run-title">
+          <a href="/runs/{{ r.id }}/overview">{{ r.config.indication }}</a>
+          {% if r.config.drug_brand %}<span class="text-faint">· {{ r.config.drug_brand }}</span>{% endif %}
+        </div>
+        <div class="meta meta-row">
+          <span>{{ r.reference or r.id }}</span>
+          <span class="dot-sep">·</span>
+          <span>{{ r.config.geography }}</span>
+          <span class="dot-sep">·</span>
+          <span>{{ r.config.objective }}</span>
+          <span class="dot-sep">·</span>
+          <span>{{ dt(r.created_at) }}</span>
+        </div>
+      </div>
+      {{ run_status_chip(r.status) }}
+      <a class="btn btn-secondary btn-sm" href="/runs/{{ r.id }}/overview">Open</a>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">
+    <h3>No projects yet</h3>
+    <p class="mb-2">Create your first indication project to see discovery results here.</p>
+    <a class="btn btn-primary" href="/projects/new">Start discovery {{ icon('arrow-right', 15) }}</a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

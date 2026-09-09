@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import run_status_chip, dt, tinted_tile %}
+{% block title %}Projects — Celestra{% endblock %}
+
+{% block content %}
+<div class="page-head page-head-row">
+  <div>
+    <h1>Projects</h1>
+    <p class="sub">Every discovery run, newest first.</p>
+  </div>
+  <a class="btn btn-primary" href="/projects/new">{{ icon('plus-circle', 16) }} New project</a>
+</div>
+
+{% if runs %}
+<div class="card">
+  <div class="table-wrap">
+    <table class="data">
+      <thead>
+        <tr>
+          <th scope="col">Indication</th>
+          <th scope="col">Reference</th>
+          <th scope="col">Geography</th>
+          <th scope="col">Objective</th>
+          <th scope="col">Mode</th>
+          <th scope="col">Status</th>
+          <th scope="col" class="nowrap">Created</th>
+          <th scope="col"><span class="visually-hidden">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in runs %}
+        <tr>
+          <td>
+            <a href="/runs/{{ r.id }}/overview"><strong>{{ r.config.indication }}</strong></a>
+            {% if r.config.drug_brand %}<div class="text-faint text-sm">{{ r.config.drug_brand }}</div>{% endif %}
+          </td>
+          <td class="mono">{{ r.reference or r.id }}</td>
+          <td>{{ r.config.geography }}</td>
+          <td>{{ r.config.objective }}</td>
+          <td class="nowrap">
+            {% set m = r.config.mode.value if r.config.mode.value is defined else r.config.mode %}
+            {{ 'All agents' if m == 'full' else 'Single agent' }}
+          </td>
+          <td>{{ run_status_chip(r.status) }}</td>
+          <td class="nowrap">{{ dt(r.created_at, '%d %b %Y') }}</td>
+          <td class="nowrap">
+            <a class="btn btn-secondary btn-sm" href="/runs/{{ r.id }}/overview">Overview</a>
+            <a class="btn btn-ghost btn-sm" href="/runs/{{ r.id }}/report">Report</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% else %}
+<div class="empty">
+  <h3>No projects yet</h3>
+  <p class="mb-2">Discovery runs will be listed here once you create one.</p>
+  <a class="btn btn-primary" href="/projects/new">Start discovery {{ icon('arrow-right', 15) }}</a>
+</div>
+{% endif %}
+{% endblock %}

@@ -159,7 +159,7 @@ class Orchestrator:
         waves = compute_waves(selected)
         await self._emit(
             "run_started",
-            run_id=self.run.id, mode=self.cfg.mode.value,
+            mode=self.cfg.mode.value,
             indication=self.cfg.indication,
             agents=[
                 {"key": a.key, "name": a.name, "tagline": a.tagline,
@@ -262,6 +262,7 @@ class Orchestrator:
 
             store.save_questions(self.run.id, agent_questions)
             store.save_evidence(self.run.id, agent_evidence)
+            agent_contra = contra.dedupe(agent_contra)
             store.save_contradictions(self.run.id, agent_contra)
             store.save_insights(self.run.id, [i for i in self.insights if i.bucket == bucket])
 
@@ -355,7 +356,6 @@ class Orchestrator:
             counts[i.confidence.value] += 1
         await self._emit(
             "run_complete",
-            run_id=self.run.id,
             redirect=f"/runs/{self.run.id}/overview",
             insights=len(self.insights),
             sources=metrics.distinct_sources,
