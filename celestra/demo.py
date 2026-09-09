@@ -74,6 +74,44 @@ FIXTURES: dict[str, tuple[int, str, str, str, str]] = {
         "lymphocytic leukemia of B-cell type in remission. ICD-10-CM code C91.12 is "
         "defined as Chronic lymphocytic leukemia of B-cell type in relapse.",
     ),
+    "dailymed": (
+        1, "DailyMed", "https://dailymed.nlm.nih.gov/dailymed/drugInfo.cfm?setid=venclexta",
+        "VENCLEXTA (venetoclax) tablet, film coated — prescribing information",
+        "VENCLEXTA is indicated for the treatment of adult patients with chronic "
+        "lymphocytic leukemia or small lymphocytic lymphoma. The recommended starting "
+        "dose is 20 mg once daily for 7 days, followed by a weekly ramp-up over 5 weeks "
+        "to the recommended daily dose of 400 mg. Tumor lysis syndrome is an important "
+        "identified risk; assess tumor burden and initiate prophylaxis before the first "
+        "dose. The most common adverse reactions are neutropenia, diarrhea, nausea, "
+        "anemia, upper respiratory tract infection, thrombocytopenia and fatigue. "
+        "Dosage should be interrupted for Grade 3 or 4 neutropenia with infection. "
+        "In combination with obinutuzumab, treatment is given for a fixed duration of "
+        "12 cycles. Venetoclax is administered orally with a meal and water.",
+    ),
+    "openfda_label": (
+        1, "FDA Drug Labeling (openFDA)",
+        "https://api.fda.gov/drug/label.json",
+        "IMBRUVICA (ibrutinib) — Indications and Usage",
+        "IMBRUVICA is a kinase inhibitor indicated for the treatment of adult patients "
+        "with chronic lymphocytic leukemia or small lymphocytic lymphoma, including "
+        "patients with 17p deletion. The recommended dose for chronic lymphocytic "
+        "leukemia is 420 mg orally once daily until disease progression or unacceptable "
+        "toxicity. Atrial fibrillation, hypertension and bleeding events are important "
+        "identified risks requiring monitoring and possible dose modification. "
+        "Treatment with a Bruton tyrosine kinase inhibitor is continuous rather than "
+        "fixed duration.",
+    ),
+    "clinicaltrials": (
+        2, "ClinicalTrials.gov", "https://clinicaltrials.gov/study/NCT03462719",
+        "Venetoclax and Obinutuzumab in Previously Untreated CLL",
+        "This phase 3 study enrolls previously untreated patients with chronic "
+        "lymphocytic leukemia requiring treatment according to iwCLL criteria. Patients "
+        "are randomised to fixed-duration venetoclax plus obinutuzumab or to "
+        "chlorambucil plus obinutuzumab. The primary outcome measure is progression-free "
+        "survival. Key secondary outcomes include undetectable minimal residual disease "
+        "in peripheral blood and overall response rate. Eligibility requires treatment-"
+        "naive disease and adequate organ function.",
+    ),
     "acs": (
         3, "American Cancer Society",
         "https://www.cancer.org/cancer/types/chronic-lymphocytic-leukemia/about/key-statistics.html",
