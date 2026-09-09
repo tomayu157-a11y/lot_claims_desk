@@ -8,15 +8,68 @@ The unit of work is an **agent**. Seven of them cover the 15-step Phase 1
 Clinical Foundation framework, and they execute by dependency, not in stage
 order.
 
-## Running it
+## Run it locally
 
 ```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env        # optional; the app runs without any key
-python run.py               # http://localhost:8000
+
+python run.py --setup              # creates .env, checks the install
+python run.py --demo               # seeds a run so the UI has content
+python run.py                      # start the server
 ```
 
-Production:
+Then open the URL the banner prints, normally <http://localhost:8000>.
+
+Two things that look like a broken app but are not:
+
+- **Do not open `0.0.0.0:8000`.** That is the bind address, not a reachable
+  one. Use `localhost`.
+- **If the banner warns that the port is in use**, an older server is still
+  running and your browser is probably hitting it. Open the port the banner
+  names, or stop the old process first:
+
+  ```bash
+  lsof -ti:8000 | xargs kill                  # macOS/Linux
+  netstat -ano | findstr :8000                # Windows, then taskkill /PID <pid> /F
+  ```
+
+`python run.py --check` renders the real pages and reports what is wrong if
+anything is, which is the fastest way to tell a stale checkout from a
+misaddressed browser. It prints the git revision, as does the startup banner.
+
+### Commands
+
+| Command | Does |
+|---|---|
+| `python run.py` | start the server |
+| `python run.py --setup` | check dependencies, create `.env`, prepare data directories |
+| `python run.py --demo` | seed a completed run offline, no network or credentials |
+| `python run.py --check` | verify the app can serve its pages, print the revision |
+
+### The demo run
+
+`--demo` drives the real pipeline through bundled fixtures, so what you see is
+the actual orchestrator, scoring, contradiction detection and report rendering
+rather than canned screenshots. It needs no network and no API keys. Some
+questions deliberately stay unanswered, which is what exercises the
+below-threshold and blocked-source paths in the UI.
+
+For a live run, use **New Project** in the app. That queries the real sources
+and takes roughly one to three minutes for all agents.
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+python tests/test_pipeline.py          # orchestration, thresholds, QA, events
+python tests/test_llm_providers.py     # provider dispatch
+python tests/test_smoke_http.py        # every route and interaction
+python -m pytest tests/test_templates_render.py -q
+```
+
+## Production
 
 ```bash
 uvicorn celestra.main:app --host 0.0.0.0 --port 8000 --workers 1
