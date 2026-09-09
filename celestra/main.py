@@ -34,6 +34,7 @@ from .services import orchestrator as orch
 from .services.scoring import assess_confidence
 from .settings import (
     BASE_DIR,
+    configure_tls,
     ensure_dirs,
     get_framework,
     get_questions,
@@ -131,6 +132,8 @@ def reference_datasets() -> dict[str, bool]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_dirs()
+    tls = configure_tls()
+    log.info("TLS verification: %s", tls.get("detail"))
     registry()
     yield
     for task in list(_RUNNING.values()):

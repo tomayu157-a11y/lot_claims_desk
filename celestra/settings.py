@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     requests_ca_bundle: str | None = None
     # Last resort only: disables certificate verification for every call.
     tls_verify: bool = True
+    # Verify against the operating system's certificate store (Windows, macOS,
+    # Linux) instead of Python's bundled list. This is what makes a corporate
+    # proxy's root certificate, which the OS already trusts, work for Python
+    # too. Needs the `truststore` package; falls back silently without it.
+    use_system_certs: bool = True
     ncbi_api_key: str | None = None
     ncbi_tool: str = "celestra"
     ncbi_email: str = "research@example.org"
@@ -198,6 +203,7 @@ class Settings(BaseSettings):
     def network_status(self) -> dict[str, Any]:
         verify = self.tls_verify_value()
         return {
+            "trust_store": tls_trust_description(),
             "proxy": self.proxy_url or "from environment (HTTPS_PROXY) if set",
             "proxy_forced": bool(self.proxy_url),
             "ca_bundle": verify if isinstance(verify, str) else "",
@@ -257,6 +263,56 @@ def get_thresholds() -> dict[str, Any]:
     return _load_yaml("thresholds.yaml")
 
 
+_TLS_STATE: dict[str, Any] = {"configured": False, "system": False, "detail": ""}
+
+
+def configure_tls() -> dict[str, Any]:
+    """Make every HTTPS client in the process trust what the operating system
+    trusts. Idempotent; call it before the first client is built.
+
+    Python ships its own certificate list and ignores the OS store. On a
+    machine behind a TLS-intercepting proxy the browser works (Windows trusts
+    the proxy's root certificate) while Python fails every call with
+    CERTIFICATE_VERIFY_FAILED. `truststore` closes that gap by routing
+    verification through the OS store, which is what pip itself does.
+    """
+    if _TLS_STATE["configured"]:
+        return _TLS_STATE
+    s = get_settings()
+    _TLS_STATE["configured"] = True
+    verify = s.tls_verify_value()
+    if verify is False:
+        _TLS_STATE["detail"] = "verification disabled (TLS_VERIFY=false)"
+        return _TLS_STATE
+    if isinstance(verify, str):
+        _TLS_STATE["detail"] = f"custom CA bundle {verify}"
+        return _TLS_STATE
+    if not s.use_system_certs:
+        _TLS_STATE["detail"] = "Python's bundled certificates (USE_SYSTEM_CERTS=false)"
+        return _TLS_STATE
+    try:
+        import truststore  # noqa: PLC0415
+
+        truststore.inject_into_ssl()
+        _TLS_STATE["system"] = True
+        _TLS_STATE["detail"] = "operating system certificate store (truststore)"
+    except ImportError:
+        _TLS_STATE["detail"] = ("Python's bundled certificates; install `truststore` "
+                                "(pip install -r requirements.txt) to use the OS store")
+    except Exception as exc:  # noqa: BLE001 - never fail startup over this
+        _TLS_STATE["detail"] = f"Python's bundled certificates (truststore failed: {exc})"
+    return _TLS_STATE
+
+
+def tls_trust_description() -> str:
+    return str(configure_tls().get("detail") or "")
+
+
+def system_certs_active() -> bool:
+    return bool(configure_tls().get("system"))
+
+
 def ensure_dirs() -> None:
+    configure_tls()
     for path in (DATA_DIR, REFERENCE_DIR, DATA_DIR / "cache"):
         path.mkdir(parents=True, exist_ok=True)

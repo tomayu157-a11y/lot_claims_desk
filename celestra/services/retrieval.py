@@ -1,15 +1,21 @@
 """Answering one question against the source registry.
 
 Order of attack, and it is deliberate:
-  1. Approved sources mapped to this stage and indication, queried in parallel.
-  2. If that misses sufficiency, refine the query and retry, up to the
-     configured number of rounds.
-  3. If it still misses, fall back to open-web search and scrape.
+  1. Approved API and local sources mapped to this stage and indication,
+     queried in parallel. No web search is made at this step.
+  2. If that misses, refine the query and retry, up to the configured number
+     of rounds.
+  3. If still unanswered, the approved sources that are reached by a
+     domain-scoped web search (cdc.gov, who.int, cancer.org, fda.gov ...).
+     Still tier 1-2 evidence, but each call costs a search credit, so they
+     wait until the APIs have had their turn.
+  4. If still unanswered, the open web.
 
-Getting an answer is the priority, so step 3 is a real escalation rather than a
-formality. What it is not allowed to do is quietly pass itself off as an
-approved source: open-web evidence is tier 5, carries EvidenceOrigin.OPEN_WEB,
-and renders as SUPPLEMENTARY WEB EVIDENCE everywhere it appears.
+Getting an answer is the priority, so steps 3 and 4 are real escalations
+rather than formalities. What step 4 is not allowed to do is quietly pass
+itself off as an approved source: open-web evidence is tier 3, carries
+EvidenceOrigin.OPEN_WEB, and renders as SUPPLEMENTARY WEB EVIDENCE everywhere
+it appears.
 """
 from __future__ import annotations
 
@@ -48,6 +54,7 @@ class RetrievalOutcome:
     answered: list[str] = field(default_factory=list)
     failures: dict[str, str] = field(default_factory=dict)
     used_web: bool = False
+    used_targeted: bool = False
     rounds: int = 0
 
 
@@ -65,8 +72,33 @@ def _unusable_source_ids() -> frozenset[str]:
         return frozenset()
 
 
+SEARCH_ACCESS = ("targeted_search", "firecrawl_search")
+
+
+def _registry_matches(src: dict, stage: str, indication_key: str) -> bool:
+    if not src.get("enabled", True) or src.get("fallback_only"):
+        return False
+    if stage not in (src.get("stages") or []):
+        return False
+    inds = src.get("indications") or []
+    return not inds or indication_key in inds or "ANY" in inds
+
+
+def targeted_sources_for(stage: str, indication_key: str) -> list[dict]:
+    """Approved sources that are reached by a domain-scoped web search. They
+    are consulted only once the API sources have failed to answer."""
+    out = [
+        src for src in get_source_registry()["sources"]
+        if src.get("access_method") in SEARCH_ACCESS
+        and _registry_matches(src, stage, indication_key)
+    ]
+    blocked = _unusable_source_ids()
+    return sorted(out, key=lambda s: (s["id"] in blocked, s["tier"], s["id"]))
+
+
 def sources_for(stage: str, indication_key: str) -> list[dict]:
-    """Approved sources for this stage and indication, best first.
+    """Approved API and local-file sources for this stage and indication, best
+    first. Search-reached sources are excluded here; see targeted_sources_for.
 
     Ordering matters because the per-question source budget is finite. Sorting
     by tier then id alone spent the whole budget alphabetically: a stage with
@@ -75,16 +107,11 @@ def sources_for(stage: str, indication_key: str) -> list[dict]:
     unusable are therefore ranked last, so they are attempted only if budget
     remains and still appear in the attempted list with their blocking reason.
     """
-    out = []
-    for src in get_source_registry()["sources"]:
-        if not src.get("enabled", True) or src.get("fallback_only"):
-            continue
-        if stage not in (src.get("stages") or []):
-            continue
-        inds = src.get("indications") or []
-        if inds and indication_key not in inds and "ANY" not in inds:
-            continue
-        out.append(src)
+    out = [
+        src for src in get_source_registry()["sources"]
+        if src.get("access_method") not in SEARCH_ACCESS
+        and _registry_matches(src, stage, indication_key)
+    ]
     blocked = _unusable_source_ids()
     return sorted(out, key=lambda s: (s["id"] in blocked, s["tier"], s["id"]))
 
@@ -238,18 +265,26 @@ async def retrieve(
     batch_size = max(1, int(limits.get("extract_batch_size", 3)))
     min_relevance = float(limits.get("min_relevance", 0.35))
 
-    for round_no in range(esc["max_refinement_rounds"] + 1):
-        outcome.rounds = round_no
+    def answered() -> bool:
+        """Stop condition. With a model, an answer must exist; without one,
+        the deterministic engine can only collect quotes, so sufficiency
+        alone is the honest bar."""
+        return bool(outcome.sufficiency and outcome.sufficiency.ok
+                    and (outcome.answers or not llm.available))
+
+    async def run_round(ids: list[str], round_no: int, query_text: str) -> None:
+        """One pass: discover from `ids`, rank, hydrate, answer in batches."""
+        nonlocal top_k
         ctx = RetrievalContext(
             indication=cfg.indication, indication_key=cfg.indication_key,
             synonyms=synonyms, geography=cfg.geography,
             population=cfg.target_population, stage=question.stage,
-            question=query, aspects=question.aspects, cutoff=cfg.research_cutoff,
+            question=query_text, aspects=question.aspects, cutoff=cfg.research_cutoff,
             extra=dict(context or {}),
         )
 
         # 1. discover
-        results = await _gather(registry, source_ids, ctx, per_source)
+        results = await _gather(registry, ids, ctx, per_source)
         for r in results:
             if r.source_id not in outcome.attempted:
                 outcome.attempted.append(r.source_id)
@@ -265,54 +300,60 @@ async def retrieve(
                                 r.ok, r.count, r.reason)
 
         if not candidates:
-            outcome.sufficiency = assess(question, [])
-        else:
-            # 2. rank, eliminate the irrelevant, keep the top slice
-            ranked = await rank(list(candidates.values()), question.text, terms)
-            relevant = [(ref, score) for ref, score in ranked if score >= min_relevance]
-            outcome.eliminated = len(ranked) - len(relevant)
-            if not relevant:
-                # Nothing cleared the relevance floor. Keep the single best so
-                # the round still reads something rather than reporting an
-                # empty result that a wider query might have answered.
-                relevant = ranked[:1]
-            keep = [ref for ref, _ in relevant[:top_k]]
-
-            # 3. hydrate the best few; the rest are read from their abstracts
-            docs: list[SourceRef] = []
-            for i, ref in enumerate(keep):
-                if i < hydrate_k:
-                    if ref.key not in hydrated:
-                        hydrated[ref.key] = await hydrate(ref, registry)
-                    docs.append(hydrated[ref.key])
-                else:
-                    docs.append(ref)
-
-            # 4. answer the question from each batch, stopping as soon as the
-            #    accumulated evidence clears the threshold. Later batches are
-            #    not read when earlier ones already answered it.
-            round_evidence: list[Evidence] = list(outcome.evidence)
-            for batch_no, start in enumerate(range(0, len(docs), batch_size)):
-                answer, evidence = await answer_batch(
-                    question.text, question.aspects, docs[start:start + batch_size],
-                    question.id, terms, batch_index=batch_no, round_index=round_no,
-                    notes=notes,
-                )
-                if answer is not None:
-                    outcome.answers.append(answer)
-                round_evidence = _merge_evidence(round_evidence, evidence, limits)
-                outcome.evidence = round_evidence
-                outcome.sufficiency = assess(question, round_evidence)
-                if outcome.sufficiency.ok and outcome.answers:
-                    break
-
-            # 5. assess
             outcome.sufficiency = assess(question, outcome.evidence)
+            return
+
+        # 2. rank, eliminate the irrelevant, keep the top slice
+        ranked = await rank(list(candidates.values()), question.text, terms)
+        relevant = [(ref, score) for ref, score in ranked if score >= min_relevance]
+        outcome.eliminated = len(ranked) - len(relevant)
+        if not relevant:
+            # Nothing cleared the relevance floor. Keep the single best so
+            # the round still reads something rather than reporting an
+            # empty result that a wider query might have answered.
+            relevant = ranked[:1]
+        keep = [ref for ref, _ in relevant[:top_k]]
+
+        # 3. hydrate the best few; the rest are read from their abstracts
+        docs: list[SourceRef] = []
+        for i, ref in enumerate(keep):
+            if i < hydrate_k:
+                if ref.key not in hydrated:
+                    hydrated[ref.key] = await hydrate(ref, registry)
+                docs.append(hydrated[ref.key])
+            else:
+                docs.append(ref)
+
+        # 4. answer the question from each batch, stopping as soon as the
+        #    accumulated evidence clears the threshold. Later batches are
+        #    not read when earlier ones already answered it.
+        round_evidence: list[Evidence] = list(outcome.evidence)
+        for batch_no, start in enumerate(range(0, len(docs), batch_size)):
+            answer, evidence = await answer_batch(
+                question.text, question.aspects, docs[start:start + batch_size],
+                question.id, terms, batch_index=batch_no, round_index=round_no,
+                notes=notes,
+            )
+            if answer is not None:
+                outcome.answers.append(answer)
+            round_evidence = _merge_evidence(round_evidence, evidence, limits)
+            outcome.evidence = round_evidence
+            outcome.sufficiency = assess(question, round_evidence)
+            if answered():
+                break
+
+        # 5. assess
+        outcome.sufficiency = assess(question, outcome.evidence)
+
+    # -- API and local sources first, widening the query between rounds ------
+    for round_no in range(esc["max_refinement_rounds"] + 1):
+        outcome.rounds = round_no
+        await run_round(source_ids, round_no, query)
 
         # Finding the answer matters more than which source supplies it. Held
         # evidence that never produced an answer is not a reason to stop: the
-        # question is still unanswered, so keep going and let the open web try.
-        if outcome.sufficiency.ok and outcome.answers:
+        # question is still unanswered, so keep going and let the next tier try.
+        if answered():
             return outcome
 
         # 6. widen: keep more candidates next round and rewrite the query
@@ -322,13 +363,27 @@ async def retrieve(
             log.info("refining q=%s round=%s top_k=%s -> %s",
                      question.id, round_no + 1, top_k, query)
 
+    # -- approved sources reached by a domain-scoped search ------------------
+    # Only now. Every call here is a web-search credit, and the answer may
+    # already be in the APIs above. These are still approved, tier 1-2 sources.
+    targeted = targeted_sources_for(question.stage, cfg.indication_key)
+    targeted = targeted[: int(esc.get("targeted_search_max_sources", 4))]
+    if targeted and esc.get("enable_targeted_search_fallback", True):
+        names.update({s["id"]: s["name"] for s in targeted})
+        outcome.used_targeted = True
+        log.info("q=%s unanswered by API sources; searching approved domains %s",
+                 question.id, [s["id"] for s in targeted])
+        await run_round([s["id"] for s in targeted], outcome.rounds + 1, query)
+        if answered():
+            return outcome
+
     if not esc["enable_open_web_fallback"]:
         return outcome
-    if outcome.answers and outcome.sufficiency and outcome.sufficiency.ok:
+    if answered():
         # Already answered from registered sources; the web has nothing to add.
         return outcome
 
-    # 7. open-web fallback, only once the approved sources are exhausted
+    # 7. open-web fallback, only once every approved source is exhausted
     fire = registry.get("open_web")
     if fire is None:
         return outcome
@@ -363,7 +418,8 @@ async def retrieve(
             if extra and "open_web" not in outcome.answered:
                 outcome.answered.append("open_web")
             outcome.evidence = _merge_evidence(outcome.evidence, extra, limits)
-            if assess(question, outcome.evidence).ok and outcome.answers:
+            outcome.sufficiency = assess(question, outcome.evidence)
+            if answered():
                 break
         extra = [e for e in outcome.evidence if e.is_supplementary]
         # Mark which pages actually produced a quote.

@@ -244,7 +244,9 @@ def self_check() -> int:
 
         settings = _gs()
         from celestra.connectors.firecrawl import FirecrawlConnector
+        from celestra.settings import configure_tls as _tls
 
+        print(f"  info  TLS: {_tls().get('detail')}")
         probe_result = _a.run(FirecrawlConnector.probe())
         if not settings.firecrawl_enabled:
             print("  warn  firecrawl: no FIRECRAWL_API_KEY, web fallback uses the "

@@ -30,6 +30,12 @@ confidence:
 
 escalation:
   max_refinement_rounds: 2       # query rewrites against approved sources
+  # Registry sources reached by a domain-scoped web search (cdc.gov, who.int,
+  # cancer.org, fda.gov ...) are approved, tier 1-2 evidence, but every call
+  # costs a web-search credit. They are consulted only after the API sources
+  # have failed to answer the question, and before the open web.
+  enable_targeted_search_fallback: true
+  targeted_search_max_sources: 4
   enable_open_web_fallback: true
   # Last-resort harvest of a domain's own sitemap, used when every search
   # front-end is blocked. Off by default: it costs 60-90s per domain, and the

@@ -20,7 +20,7 @@ from typing import Any, Protocol
 import httpx
 
 from ..models import EvidenceOrigin, SourceRef
-from ..settings import DATA_DIR, get_settings
+from ..settings import DATA_DIR, configure_tls, get_settings, system_certs_active
 
 log = logging.getLogger("celestra.connector")
 
@@ -130,7 +130,14 @@ class HttpClient:
     async def client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             s = get_settings()
-            verify = s.tls_verify_value()
+            configure_tls()
+            verify: Any = s.tls_verify_value()
+            if verify is True and system_certs_active():
+                import ssl  # noqa: PLC0415
+
+                import truststore  # noqa: PLC0415
+
+                verify = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             if verify is False:
                 log.warning("TLS_VERIFY=false: certificate verification is disabled for "
                             "every outbound call. Use CA_BUNDLE instead where possible.")
@@ -236,12 +243,23 @@ def explain_transport_error(exc: Exception) -> tuple[str, str]:
     cause = _root_cause(exc)
     low = cause.lower()
     if "certificate_verify_failed" in low or "ssl" in low and "verif" in low:
-        return (
-            f"TLS certificate verification failed ({cause[:160]})",
-            "Something on this network intercepts HTTPS (a corporate proxy or firewall). "
-            "Export its root certificate as PEM and set CA_BUNDLE=/path/to/bundle.pem in "
-            ".env. TLS_VERIFY=false disables checking entirely, as a last resort.",
-        )
+        if system_certs_active():
+            remedy = (
+                "Something on this network intercepts HTTPS and its certificate is not "
+                "trusted even by the operating system store. Export the proxy's root "
+                "certificate as PEM and set CA_BUNDLE=/path/to/bundle.pem in .env. "
+                "TLS_VERIFY=false disables checking entirely, as a last resort."
+            )
+        else:
+            remedy = (
+                "Something on this network intercepts HTTPS (a corporate proxy or firewall). "
+                "Run `pip install -r requirements.txt` so the `truststore` package is "
+                "installed: Celestra then verifies against the operating system's "
+                "certificate store, which already trusts the proxy (that is why the "
+                "browser works). Otherwise export the proxy's root certificate as PEM and "
+                "set CA_BUNDLE=/path/to/bundle.pem. TLS_VERIFY=false is the last resort."
+            )
+        return (f"TLS certificate verification failed ({cause[:160]})", remedy)
     if "ssl" in low or "tls" in low or "handshake" in low:
         return (
             f"TLS handshake failed ({cause[:160]})",

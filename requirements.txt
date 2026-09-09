@@ -8,3 +8,6 @@ pyyaml>=6.0
 python-multipart>=0.0.9
 selectolax>=0.3.21
 anthropic>=0.40
+# Verifies HTTPS against the operating system certificate store, so a
+# corporate proxy the browser trusts works for Python too.
+truststore>=0.10
