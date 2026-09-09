@@ -101,7 +101,7 @@ async def main() -> int:
             r = await c.get(path)
             check(f"GET {path}", r.status_code == 200, f"HTTP {r.status_code}")
             html_by_path[path] = r.text
-            check(f"  no internal vocabulary", not FORBIDDEN.search(r.text))
+            check("  no internal vocabulary", not FORBIDDEN.search(r.text))
 
         report = html_by_path[f"/runs/{run_id}/report"]
         check("report shows the agent name",

@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -72,6 +73,16 @@ def connector_health() -> list[dict]:
         return ch()
     except Exception:
         return []
+
+
+def _llm_describe() -> str:
+    """Active provider and model for the report header and settings page."""
+    try:
+        from .services.llm import llm
+
+        return llm.describe() if llm.available else f"Deterministic ({llm.describe()})"
+    except Exception:
+        return "Deterministic (LLM layer unavailable)"
 
 
 def web_search_status() -> dict[str, Any]:
@@ -691,8 +702,7 @@ async def report(request: Request, run_id: str):
         {"label": "Evidence items", "value": str(len(evidence))},
         {"label": "Distinct sources", "value": str(len({e.source_id for e in evidence}))},
         {"label": "Synthesis engine",
-         "value": get_settings().llm_model if get_settings().llm_enabled
-         else "Deterministic (no model configured)"},
+         "value": _llm_describe()},
     ]
     if cfg.drug_brand:
         params.insert(1, {"label": "Drug / brand", "value": cfg.drug_brand})
@@ -839,7 +849,9 @@ async def settings_page(request: Request):
             "datasets": reference_datasets(),
             "health": connector_health(),
             "web_search": web_search_status(),
-            "model": get_settings().llm_model,
+            "model": _llm_describe(),
+            "provider": get_settings().provider,
+            "provider_gaps": get_settings().provider_gaps(),
         },
     )
 
@@ -864,14 +876,59 @@ async def healthz():
     }
 
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    if request.url.path.startswith(("/api", "/runs")) and "text/html" not in request.headers.get(
-        "accept", ""
-    ):
+# Common mistyped or guessed entry points. Landing on the app root is far more
+# useful than a 404 for someone who has just started the server.
+_ENTRY_ALIASES = {
+    "/home": "/", "/index.html": "/", "/index": "/", "/app": "/",
+    "/dashboard": "/", "/runs": "/projects", "/project": "/projects",
+    "/new": "/projects/new", "/discovery": "/projects",
+    "/knowledge": "/library", "/knowledge-library": "/library",
+}
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return RedirectResponse("/static/img/favicon.svg", status_code=308)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    path = request.url.path.rstrip("/") or "/"
+
+    if exc.status_code == 404:
+        if target := _ENTRY_ALIASES.get(path.lower()):
+            return RedirectResponse(target, status_code=307)
+        # A trailing-slash mismatch is a routing detail, not a dead end.
+        if path != request.url.path and any(
+            r.path == path for r in app.routes if hasattr(r, "path")
+        ):
+            return RedirectResponse(path, status_code=307)
+
+    wants_json = "text/html" not in request.headers.get("accept", "")
+    if wants_json and request.url.path.startswith(("/api/", "/healthz")):
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
     return templates.TemplateResponse(
-        request, "error.html",
-        {**base_ctx(request), "message": exc.detail, "detail": f"HTTP {exc.status_code}"},
+        request,
+        "error.html",
+        {
+            **base_ctx(request),
+            "message": (
+                "That page does not exist" if exc.status_code == 404 else str(exc.detail)
+            ),
+            "detail": (
+                f"No route matches {request.url.path}. Use the links below to get back "
+                f"to a working page."
+                if exc.status_code == 404
+                else f"HTTP {exc.status_code}: {exc.detail}"
+            ),
+            "status_code": exc.status_code,
+            "entry_points": [
+                {"label": "Home", "url": "/"},
+                {"label": "New project", "url": "/projects/new"},
+                {"label": "Projects", "url": "/projects"},
+                {"label": "Settings", "url": "/settings"},
+            ],
+        },
         status_code=exc.status_code,
     )

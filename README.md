@@ -99,18 +99,30 @@ are deduplicated on the claim pair so one disagreement is one decision.
 Adding an indication is a YAML edit. Adding a source is a YAML entry plus one
 adapter.
 
-## Credentials
+## LLM provider
 
-Nothing is required. Each absent key degrades one thing, visibly, and the app
-reports which in the UI.
+Pick one in `.env`. Without any of them the app still runs end to end, with
+planning, ranking, extraction and synthesis on the deterministic engine: real
+evidence and real citations, weaker prose. The UI says which mode it is in.
+
+| `LLM_PROVIDER` | For | Needs |
+|---|---|---|
+| `anthropic` | Claude via the Anthropic API | `ANTHROPIC_API_KEY` |
+| `anthropic_foundry` | Claude deployed on Microsoft Foundry | `FOUNDRY_API_KEY`, `FOUNDRY_RESOURCE` |
+| `azure_openai` | A model deployed in Azure AI Foundry / Azure OpenAI | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT` |
+
+For Azure, `AZURE_OPENAI_DEPLOYMENT` is the name you gave the deployment, not
+the underlying model name. Settings and `/healthz` report the active provider
+and name any setting it is still missing.
+
+## Other credentials
 
 | Key | Absent means |
 |---|---|
-| `ANTHROPIC_API_KEY` | planning, ranking, extraction and synthesis run on the deterministic engine. Real evidence and real citations, weaker prose. |
-| `FIRECRAWL_API_KEY` | open-web fallback uses a keyless search path |
+| `FIRECRAWL_API_KEY` | open-web fallback uses a keyless search path, which several networks block outright |
 | `NCBI_API_KEY` | E-utilities limited to 3 requests/second instead of 10 |
 | `ICD11_CLIENT_ID` / `SECRET` | ICD-11 codes unavailable; those questions report the blocker |
-| `LOINC_USERNAME` / `PASSWORD` | LOINC codes unavailable; same |
+| `LOINC_USERNAME` / `PASSWORD` | LOINC search unavailable; the free NLM tables still answer most of it |
 
 ## Known source limits
 

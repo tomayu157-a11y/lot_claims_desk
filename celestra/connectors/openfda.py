@@ -16,6 +16,7 @@ guarded.
 """
 from __future__ import annotations
 
+import re
 import time
 from typing import Any
 from urllib.parse import quote
@@ -42,6 +43,16 @@ LABEL_SECTIONS = (
     "boxed_warning",
     "contraindications",
 )
+
+def _appl_digits(application_number: str) -> str:
+    """Digits of an FDA application number, without its type prefix.
+
+    `str.lstrip("ANDABL")` strips any of those characters rather than the
+    prefix, so it only worked because application numbers are numeric after
+    the prefix. This says what it means.
+    """
+    return re.sub(r"^(?:ANDA|NDA|BLA)\s*", "", (application_number or "").strip(), flags=re.I)
+
 
 
 def or_terms_query(field: str, terms: list[str]) -> str:
@@ -236,7 +247,7 @@ class OpenFdaDrugsFdaConnector:
             source_id=self.source_id,
             source_name=self.source_name,
             tier=self.tier,
-            url=DRUGSFDA_PAGE.format(appl=appl.lstrip("ANDABL")) if appl else DRUGSFDA_URL,
+            url=DRUGSFDA_PAGE.format(appl=_appl_digits(appl)) if appl else DRUGSFDA_URL,
             title=f"Drugs@FDA {appl}: " + (clean((products or [{}])[0].get('brand_name')) or sponsor),
             organization=sponsor or "US Food and Drug Administration",
             published=_fmt_date(max([clean(s.get("submission_status_date")) for s in submissions]

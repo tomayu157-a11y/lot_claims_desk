@@ -43,6 +43,14 @@ def _extract_json(text: str) -> Any:
 
 
 class LLMClient:
+    """One interface over three providers.
+
+    Anthropic and Microsoft Foundry both speak the Messages API and use the
+    official SDK. Azure OpenAI speaks a different wire format and has no
+    Anthropic SDK, so it goes over HTTP. Callers see the same two methods and
+    the same LLMUnavailable failure in every case.
+    """
+
     def __init__(self) -> None:
         self._settings = get_settings()
         self._client: Any = None
@@ -53,36 +61,118 @@ class LLMClient:
         return self._settings.llm_enabled
 
     @property
+    def provider(self) -> str:
+        return self._settings.provider
+
+    @property
     def model(self) -> str:
-        return self._settings.llm_model
+        return self._settings.active_model
 
-    def _ensure(self) -> Any:
+    def describe(self) -> str:
         if not self.available:
-            raise LLMUnavailable("ANTHROPIC_API_KEY is not configured")
-        if self._client is None:
-            from anthropic import AsyncAnthropic
+            gaps = ", ".join(self._settings.provider_gaps())
+            return f"not configured ({self.provider}: missing {gaps})"
+        return f"{self.provider} · {self.model}"
 
-            self._client = AsyncAnthropic(
-                api_key=self._settings.anthropic_api_key,
-                base_url=self._settings.anthropic_base_url,
-                timeout=float(self._settings.llm_timeout_seconds),
-            )
+    # -- provider clients ------------------------------------------------
+    def _anthropic(self) -> Any:
+        if self._client is None:
+            s = self._settings
+            if s.provider == "anthropic_foundry":
+                from anthropic import AnthropicFoundry
+
+                self._client = AnthropicFoundry(
+                    api_key=s.foundry_api_key,
+                    resource=s.foundry_resource,
+                    timeout=float(s.llm_timeout_seconds),
+                )
+            else:
+                from anthropic import AsyncAnthropic
+
+                self._client = AsyncAnthropic(
+                    api_key=s.anthropic_api_key,
+                    base_url=s.anthropic_base_url,
+                    timeout=float(s.llm_timeout_seconds),
+                )
         return self._client
 
+    async def _complete_anthropic(
+        self, system: str, prompt: str, max_tokens: int
+    ) -> str:
+        client = self._anthropic()
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": prompt}],
+            # Synthesis and extraction are judgement work, so let the model
+            # decide how much reasoning each call needs.
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": self._settings.llm_effort},
+        }
+        result = client.messages.create(**kwargs)
+        msg = await result if hasattr(result, "__await__") else result
+        # Thinking blocks carry .thinking, not .text, so this yields the answer only.
+        return "".join(getattr(b, "text", "") or "" for b in msg.content)
+
+    async def _complete_azure(self, system: str, prompt: str, max_tokens: int) -> str:
+        """Azure AI Foundry / Azure OpenAI deployment over its REST API."""
+        import httpx
+
+        s = self._settings
+        endpoint = (s.azure_openai_endpoint or "").rstrip("/")
+        url = (
+            f"{endpoint}/openai/deployments/{s.azure_openai_deployment}"
+            f"/chat/completions?api-version={s.azure_openai_api_version}"
+        )
+        payload = {
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt},
+            ],
+            "max_completion_tokens": max_tokens,
+        }
+        async with httpx.AsyncClient(timeout=float(s.llm_timeout_seconds)) as http:
+            resp = await http.post(
+                url,
+                json=payload,
+                headers={"api-key": s.azure_openai_api_key or "", "Content-Type": "application/json"},
+            )
+            if resp.status_code == 400 and "max_completion_tokens" in resp.text:
+                # Older Azure API versions and non-reasoning deployments still
+                # take max_tokens; retry once rather than failing the run.
+                payload["max_tokens"] = payload.pop("max_completion_tokens")
+                resp = await http.post(
+                    url,
+                    json=payload,
+                    headers={"api-key": s.azure_openai_api_key or "",
+                             "Content-Type": "application/json"},
+                )
+            resp.raise_for_status()
+            data = resp.json()
+        choices = data.get("choices") or []
+        if not choices:
+            raise LLMUnavailable("azure deployment returned no choices")
+        return str((choices[0].get("message") or {}).get("content") or "")
+
+    # -- public API ------------------------------------------------------
     async def complete(self, system: str, prompt: str, *, max_tokens: int | None = None) -> str:
-        client = self._ensure()
+        if not self.available:
+            raise LLMUnavailable(
+                f"{self.provider} is not configured: missing "
+                + ", ".join(self._settings.provider_gaps())
+            )
+        budget = max_tokens or self._settings.llm_max_tokens
         async with self._sem:
             try:
-                msg = await client.messages.create(
-                    model=self._settings.llm_model,
-                    max_tokens=max_tokens or self._settings.llm_max_tokens,
-                    system=system,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-            except Exception as exc:  # provider errors must not crash a run
-                log.warning("llm call failed: %s", exc)
-                raise LLMUnavailable(str(exc)) from exc
-        return "".join(getattr(b, "text", "") for b in msg.content)
+                if self.provider == "azure_openai":
+                    return await self._complete_azure(system, prompt, budget)
+                return await self._complete_anthropic(system, prompt, budget)
+            except LLMUnavailable:
+                raise
+            except Exception as exc:  # a provider error must not kill a run
+                log.warning("llm call failed (%s): %s", self.provider, exc)
+                raise LLMUnavailable(f"{self.provider}: {exc}") from exc
 
     async def complete_json(
         self, system: str, prompt: str, *, max_tokens: int | None = None
