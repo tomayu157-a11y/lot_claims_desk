@@ -15,7 +15,8 @@ until one returns on-topic results:
   1. Bing HTML        (www.bing.com/search)
   2. DuckDuckGo HTML  (html.duckduckgo.com)
   3. DuckDuckGo Lite  (lite.duckduckgo.com)
-  4. Domain index     (the restricted domain's own sitemap; targeted search only)
+  4. Domain index     (sitemap harvest: the restricted domain for a targeted
+                     search, OPEN_WEB_DOMAIN_PANEL for the open-web source)
 
 Every keyless result passes a relevance gate before it is kept: search
 front-ends under bot pressure happily return a plausible-looking page of

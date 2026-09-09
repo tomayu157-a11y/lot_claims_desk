@@ -121,6 +121,8 @@ class Orchestrator:
         self.insights: list[Insight] = []
         self.contradictions: list[Contradiction] = []
         self.stages: list[StageReport] = []
+        # Quote fingerprints already used as an insight headline.
+        self._used_summaries: set[str] = set()
 
     # -- event helpers ---------------------------------------------------
     async def _emit(self, type_: str, **data) -> None:
@@ -342,11 +344,25 @@ class Orchestrator:
     ) -> Insight | None:
         conf = confidence_for(question, evidence, found)
         best = sorted(evidence, key=lambda e: (e.tier, -e.relevance))
-        summary = (
-            re.sub(r"\s+", " ", best[0].quote)[:260]
-            if best
-            else (question.unmet_reason or "No usable evidence was retrieved.")
-        )
+
+        # Two questions in a stage often retrieve the same document, and its
+        # strongest quote would then headline both cards. Take the best quote
+        # this run has not already used as a headline, so every card says
+        # something different. The full evidence set is unchanged.
+        summary = ""
+        for candidate in best:
+            text = re.sub(r"\s+", " ", candidate.quote).strip()
+            fingerprint = text[:120].lower()
+            if fingerprint not in self._used_summaries:
+                self._used_summaries.add(fingerprint)
+                summary = text[:260]
+                break
+        if not summary:
+            summary = (
+                re.sub(r"\s+", " ", best[0].quote)[:260]
+                if best
+                else (question.unmet_reason or "No usable evidence was retrieved.")
+            )
         source_ids: list[str] = []
         for e in best:
             if e.source_id not in source_ids:

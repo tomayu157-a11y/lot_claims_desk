@@ -715,36 +715,77 @@ async def report(request: Request, run_id: str):
 
 @app.get("/runs/{run_id}/sources", response_class=HTMLResponse)
 async def sources_panel(request: Request, run_id: str):
+    """What this run actually queried, what each source returned, and what it
+    could not reach. Three groups, because they need different actions from
+    the reader: a source that answered, one that answered nothing, and one
+    that was never usable because a credential or licence is missing."""
     run = get_run_or_404(run_id)
     evidence = store.get_evidence(run_id)
     questions = store.get_questions(run_id)
     names = _source_names()
     reg = {s["id"]: s for s in get_source_registry()["sources"]}
+    health = {row["id"]: row for row in connector_health()}
 
     used: dict[str, dict] = {}
     for e in evidence:
         row = used.setdefault(e.source_id, {
-            "id": e.source_id, "name": names.get(e.source_id, e.source_id),
-            "tier": e.tier, "origin": e.origin.label, "items": 0,
+            "id": e.source_id,
+            "name": names.get(e.source_id, e.source_id),
+            "organization": e.organization or names.get(e.source_id, e.source_id),
+            "tier": e.tier,
+            "origin": e.origin.label,
             "access_method": reg.get(e.source_id, {}).get("access_method", "api"),
+            "evidence_items": 0,
+            "url": e.url,
+            "domain": reg.get(e.source_id, {}).get("domain") or "",
+            "supplementary": e.is_supplementary,
         })
-        row["items"] += 1
+        row["evidence_items"] += 1
+        # Prefer a real document link over whatever arrived first.
+        if not row["url"] and e.url:
+            row["url"] = e.url
 
-    attempted = {s for q in questions for s in q.sources_attempted}
-    unavailable = [
-        {
-            "id": sid, "name": names.get(sid, sid),
-            "tier": reg.get(sid, {}).get("tier", 5),
-            "access_method": reg.get(sid, {}).get("access_method", "api"),
-            "notes": reg.get(sid, {}).get("notes", ""),
+    attempted = {sid for q in questions for sid in q.sources_attempted}
+    failures: dict[str, str] = {}
+    for q in questions:
+        if q.unmet_reason and "—" in q.unmet_reason:
+            for part in q.unmet_reason.split("—", 1)[1].split(";"):
+                if ":" in part:
+                    sid, _, reason = part.partition(":")
+                    failures.setdefault(sid.strip(), reason.strip())
+
+    empty: list[dict] = []
+    blocked: list[dict] = []
+    for sid in sorted(attempted - set(used)):
+        source = reg.get(sid, {})
+        row = {
+            "id": sid,
+            "name": names.get(sid, sid),
+            "tier": int(source.get("tier", 5)),
+            "access_method": source.get("access_method", "api"),
+            "notes": source.get("notes", ""),
+            "reason": failures.get(sid, "No matching documents were returned."),
         }
-        for sid in sorted(attempted - set(used))
-    ]
+        blockers = health.get(sid, {}).get("blocking") or []
+        if blockers:
+            # These never had a chance, so they belong in their own group with
+            # what is missing rather than reading as a source that came up empty.
+            row["blocked_by"] = (
+                "Licence" if source.get("access_method") == "licensed"
+                else "Reference file" if source.get("access_method") == "local_file"
+                else "Credentials"
+            )
+            row["reason"] = "; ".join(blockers)
+            blocked.append(row)
+        else:
+            empty.append(row)
+
     return templates.TemplateResponse(
         request, "sources_panel.html",
         {**base_ctx(request, "projects"), "run": run,
-         "used": sorted(used.values(), key=lambda r: (r["tier"], -r["items"])),
-         "unavailable": unavailable, "health": connector_health(),
+         "used": sorted(used.values(), key=lambda r: (r["tier"], -r["evidence_items"])),
+         "unavailable": empty + blocked,
+         "health": connector_health(),
          "web_search": web_search_status()},
     )
 
