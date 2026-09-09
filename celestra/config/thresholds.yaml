@@ -33,6 +33,12 @@ confidence:
 escalation:
   max_refinement_rounds: 2       # query rewrites against approved sources
   enable_open_web_fallback: true
+  # Last-resort harvest of a domain's own sitemap, used when every search
+  # front-end is blocked. Off by default: it costs 60-90s per domain, and the
+  # domains that matter most here (cdc.gov, who.int, lls.org, fda.gov) refuse
+  # the request or publish no usable index, so it usually buys nothing. Turn
+  # it on for a network where search is blocked but sitemaps are reachable.
+  enable_domain_index: false
   open_web_max_results: 6
   open_web_max_scrapes: 4
   # Open-web evidence is always tier 5 and always labelled SUPPLEMENTARY WEB EVIDENCE.

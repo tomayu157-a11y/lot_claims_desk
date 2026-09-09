@@ -36,7 +36,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 from selectolax.parser import HTMLParser
 
 from ..models import EvidenceOrigin, SourceRef
-from ..settings import get_settings
+from ..settings import get_settings, get_thresholds
 from ._util import clean, clip, html_text, tokens
 from .base import ConnectorResult, RetrievalContext, describe_http_error, http
 
@@ -158,6 +158,17 @@ class _SearchBreaker:
 # Shared by every domain-scoped instance, because they all use the same
 # backends and therefore all fail for the same reason.
 breaker = _SearchBreaker()
+
+# domain -> harvested sitemap URLs, or [] when the domain will not serve them.
+# Process-lifetime, because a sitemap changes far more slowly than a run.
+_SITEMAP_CACHE: dict[str, list[str]] = {}
+
+
+def _title_from_url(url: str) -> str:
+    """A readable label from a URL path, for results that carry no title."""
+    tail = urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
+    tail = re.sub(r"\.(html?|aspx|php)$", "", tail)
+    return re.sub(r"[-_]+", " ", tail).strip().title() or url
 
 
 class FirecrawlConnector:
@@ -293,6 +304,35 @@ class FirecrawlConnector:
 
     async def _sitemap_urls(self, domain: str, wanted: set[str],
                             limit: int) -> list[dict]:
+        """Harvested URLs for one domain, memoised for the process.
+
+        A sitemap describes the whole site, so it is worth fetching once and
+        reusing for every question. Without this, a domain that blocks the
+        request (cdc.gov, who.int and lls.org all do) was re-probed for every
+        question in every stage, and each failed probe costs several seconds
+        across the robots.txt and sitemap URL candidates. An empty result is
+        cached too, because "this domain will not serve us" is exactly the
+        answer worth remembering.
+        """
+        cached = _SITEMAP_CACHE.get(domain)
+        if cached is None:
+            cached = await self._harvest_sitemap(domain)
+            _SITEMAP_CACHE[domain] = cached
+        if not cached:
+            return []
+        scored = []
+        for url in cached:
+            overlap = len(tokens(url) & wanted)
+            if overlap:
+                scored.append((overlap, url))
+        scored.sort(key=lambda t: -t[0])
+        return [
+            {"url": url, "title": _title_from_url(url), "snippet": "",
+             "backend": "domain-index"}
+            for _, url in scored[: limit * 2]
+        ]
+
+    async def _harvest_sitemap(self, domain: str) -> list[str]:
         queue = [f"https://www.{domain}/sitemap.xml",
                  f"https://{domain}/sitemap.xml",
                  f"https://www.{domain}/sitemap_index.xml"]
@@ -318,17 +358,13 @@ class FirecrawlConnector:
                 continue
             found = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", xml)
             if "<sitemapindex" in xml:
-                # Follow the child sitemaps whose own URL looks topical first.
-                children = sorted(found, key=lambda u: -len(wanted & tokens(u)))
-                queue.extend(children[:8])
+                queue.extend(found[:8])
                 continue
             locs.extend(found)
 
-        scored = [(len(wanted & tokens(unquote(u))), u) for u in locs]
-        scored = [(score, u) for score, u in scored if score]
-        scored.sort(key=lambda pair: (-pair[0], len(pair[1])))
-        return [{"url": u, "title": "", "snippet": "", "backend": "domain-index"}
-                for _, u in scored[:limit * 2]]
+        # Ranking happens per query in _sitemap_urls; this returns the raw
+        # index so one harvest serves every question in the run.
+        return [unquote(u) for u in locs]
 
     async def search(self, query: str, limit: int) -> list[dict]:
         """Ranked results as {url, title, snippet, backend}. Never raises."""
@@ -347,8 +383,9 @@ class FirecrawlConnector:
             ("bing", lambda: self._bing(query, limit)),
             ("duckduckgo", lambda: self._ddg(query, limit)),
             ("duckduckgo-lite", lambda: self._ddg(query, limit, lite=True)),
-            ("domain-index", lambda: self._domain_index(query, limit)),
         ])
+        if get_thresholds()["escalation"].get("enable_domain_index"):
+            backends.append(("domain-index", lambda: self._domain_index(query, limit)))
 
         last_error = "no backend returned results"
         for name, backend in backends:
