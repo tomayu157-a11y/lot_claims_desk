@@ -1,0 +1,85 @@
+{# ---------------------------------------------------------------------------
+   One source disagreement, with the human decision controls.
+   Nothing here resolves a conflict automatically: both sides stand as stated
+   by their source until a person decides.
+   Context: contradiction, run (optional)
+   --------------------------------------------------------------------------- #}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import tier_badge, severity_chip, review_chip, ext_link, enum_value %}
+
+{%- set rid = (run.id if run is defined and run else contradiction.run_id) -%}
+{%- set decided = enum_value(contradiction.review_action) not in ['pending', ''] -%}
+
+<article class="card contra" data-contradiction-id="{{ contradiction.id }}" data-action-scope>
+  <div class="contra-head">
+    <div>
+      <div class="meta text-sm">{{ contradiction.stage }}</div>
+      <h3>{{ contradiction.topic }}</h3>
+    </div>
+    <div class="row" style="gap:8px;">
+      {{ severity_chip(contradiction.severity) }}
+      {{ review_chip(contradiction.review_action) }}
+    </div>
+  </div>
+
+  <div class="contra-sides">
+    <div class="contra-side">
+      <div class="side-label">Source A</div>
+      <div class="side-source">
+        <span class="side-name">{{ contradiction.source_a_name }}</span>
+        {{ tier_badge(contradiction.source_a_tier) }}
+      </div>
+      <p class="contra-claim">{{ contradiction.source_a_claim }}</p>
+      {% if contradiction.source_a_url %}
+      <div class="mt-1 text-sm">{{ ext_link(contradiction.source_a_url, 'Open source A') }}</div>
+      {% endif %}
+    </div>
+
+    <div class="contra-side">
+      <div class="side-label">Source B</div>
+      <div class="side-source">
+        <span class="side-name">{{ contradiction.source_b_name }}</span>
+        {{ tier_badge(contradiction.source_b_tier) }}
+      </div>
+      <p class="contra-claim">{{ contradiction.source_b_claim }}</p>
+      {% if contradiction.source_b_url %}
+      <div class="mt-1 text-sm">{{ ext_link(contradiction.source_b_url, 'Open source B') }}</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="contra-reason">
+    <strong>Possible reason:</strong> {{ contradiction.reason }}
+  </div>
+
+  <div class="contra-actions">
+    {% if contradiction.reviewer_note %}
+    <div class="review-note"><strong>Reviewer note:</strong> {{ contradiction.reviewer_note }}</div>
+    {% endif %}
+
+    <div class="field mb-0">
+      <label for="note-{{ contradiction.id }}">Reviewer note <span class="optional">(Optional)</span></label>
+      <textarea id="note-{{ contradiction.id }}" rows="2" data-field="note"
+                placeholder="Why this side, or what a subject-matter expert still needs to check."
+                >{{ contradiction.reviewer_note }}</textarea>
+    </div>
+
+    <div class="btn-row">
+      <button type="button" class="btn btn-sm btn-secondary"
+              data-action-url="/runs/{{ rid }}/contradictions/{{ contradiction.id }}/review"
+              data-payload='{"action": "prefer_a"}'
+              data-swap="[data-contradiction-id='{{ contradiction.id }}']">Prefer A</button>
+      <button type="button" class="btn btn-sm btn-secondary"
+              data-action-url="/runs/{{ rid }}/contradictions/{{ contradiction.id }}/review"
+              data-payload='{"action": "prefer_b"}'
+              data-swap="[data-contradiction-id='{{ contradiction.id }}']">Prefer B</button>
+      <button type="button" class="btn btn-sm btn-soft"
+              data-action-url="/runs/{{ rid }}/contradictions/{{ contradiction.id }}/review"
+              data-payload='{"action": "acknowledged"}'
+              data-swap="[data-contradiction-id='{{ contradiction.id }}']">Acknowledge both</button>
+      {% if decided %}
+      <span class="meta">{{ icon('check', 13) }} Decision recorded — you can change it.</span>
+      {% endif %}
+    </div>
+  </div>
+</article>

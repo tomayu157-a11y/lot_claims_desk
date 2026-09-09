@@ -336,6 +336,8 @@ class Run(BaseModel):
     finished_at: datetime | None = None
     error: str = ""
     approved_at: datetime | None = None
+    # Entities discovered by completed agents, handed to downstream agents.
+    context: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def duration_seconds(self) -> float:

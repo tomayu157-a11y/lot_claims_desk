@@ -1,0 +1,105 @@
+{# ---------------------------------------------------------------------------
+   Modify Insight dialog.
+   Context: insight, impacts (list of {agent_name, description}), evidence (list of Evidence),
+            run (optional), source_names (optional)
+   --------------------------------------------------------------------------- #}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import confidence_chip, tinted_tile, enum_value, tier_badge %}
+
+{%- set rid = (run.id if run is defined and run else insight.run_id) -%}
+{%- set conf = enum_value(insight.confidence) -%}
+{%- set cat_style = {
+  'clinical': ('leaf', 'green'), 'treatment': ('pill', 'blue'),
+  'diagnostic': ('microscope', 'purple'), 'logic': ('flow', 'indigo'),
+  'journey': ('route', 'teal'), 'synthesis': ('sparkle', 'teal')
+} -%}
+{%- set style = cat_style.get((insight.category | default('') | lower), ('sparkle', 'blue')) -%}
+
+<div class="modal-backdrop" data-modal-backdrop>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title-{{ insight.id }}"
+       data-action-scope>
+    <div class="modal-head">
+      <h2 id="modal-title-{{ insight.id }}">Modify Insight</h2>
+      <button type="button" class="icon-btn" data-modal-close aria-label="Close dialog">
+        {{ icon('x', 16) }}
+      </button>
+    </div>
+
+    <div class="modal-body">
+      <div class="insight-card-top mb-2">
+        {{ tinted_tile(style[0], style[1]) }}
+        <div class="insight-main">
+          <h3 class="insight-title">{{ insight.title }}</h3>
+          <p class="insight-summary mb-0">{{ insight.summary }}</p>
+        </div>
+        <div class="insight-aside">{{ confidence_chip(insight.confidence) }}</div>
+      </div>
+
+      <div class="field">
+        <span class="label">Celestra's Recommendation</span>
+        <div class="readonly-block">
+          {{ (insight.detail or insight.summary) | tagify }}
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="insight-input-{{ insight.id }}">Your Input</label>
+        <textarea id="insight-input-{{ insight.id }}" rows="4" maxlength="500"
+                  data-field="user_input" data-autofocus
+                  aria-describedby="counter-{{ insight.id }}"
+                  placeholder="Tell Celestra what to change, and why.">{{ insight.user_input }}</textarea>
+        <div class="counter" id="counter-{{ insight.id }}" aria-live="polite"
+             data-counter-for="insight-input-{{ insight.id }}" data-counter-max="500">0/500</div>
+      </div>
+
+      <div class="impact">
+        <h4>{{ icon('activity', 15) }} Impact Analysis</h4>
+        <p class="lead">
+          {% if impacts %}
+            Your input will update {{ impacts | length }} related
+            insight{{ '' if impacts | length == 1 else 's' }} across different areas.
+          {% else %}
+            No related insights are expected to change. Only this finding will be recalculated.
+          {% endif %}
+        </p>
+        {% for im in impacts | default([]) %}
+        <div class="impact-item">
+          {{ tinted_tile('sparkle', ['green', 'blue', 'purple', 'indigo', 'teal'][loop.index0 % 5], 'tile-sm') }}
+          <div>
+            <div class="impact-name">{{ im.agent_name }}</div>
+            <div class="impact-desc">{{ im.description }}</div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+
+      {% if evidence %}
+      <div class="subblock">
+        <h3>Supporting evidence ({{ evidence | length }})</h3>
+        <ul class="list-plain stack-sm">
+          {% for ev in evidence[:4] %}
+          <li>
+            {{ tier_badge(ev.tier) }}
+            <span class="text-sm text-muted break">
+              <strong>{{ ev.source_name }}</strong> — {{ ev.quote | truncate(150) }}
+            </span>
+          </li>
+          {% endfor %}
+        </ul>
+        <button type="button" class="btn btn-ghost btn-sm mt-1"
+                data-evidence-url="/runs/{{ rid }}/insights/{{ insight.id }}/evidence">
+          {{ icon('eye', 14) }} View all evidence
+        </button>
+      </div>
+      {% endif %}
+    </div>
+
+    <div class="modal-foot">
+      <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+      <button type="button" class="btn btn-primary"
+              data-action-url="/runs/{{ rid }}/insights/{{ insight.id }}/modify"
+              data-swap="[data-insight-id='{{ insight.id }}']"
+              data-closes-modal>Apply &amp; Recalculate</button>
+    </div>
+  </div>
+</div>

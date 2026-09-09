@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% block title %}Source conflicts — Celestra{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Source Conflicts</h1>
+  <p class="sub">
+    Where two sources disagree, Celestra reports both sides exactly as stated and stops.
+    A person decides which side stands.
+  </p>
+</div>
+
+<div class="no-autoresolve">
+  {{ icon('alert', 16) }}
+  <span>Nothing on this page has been auto-resolved. Every conflict below is waiting on a human decision.</span>
+</div>
+
+{% if contradictions %}
+<p class="meta mb-2">
+  {{ contradictions | length }} conflict{{ '' if contradictions | length == 1 else 's' }} surfaced across this run.
+</p>
+
+<div class="stack">
+  {% for contradiction in contradictions %}
+    {% include "partials/contradiction_card.html" %}
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty">
+  <h3>No source conflicts surfaced</h3>
+  <p class="mb-0">No two sources made materially different assertions about the same concept in this run.</p>
+</div>
+{% endif %}
+
+<div class="btn-row mt-3">
+  <a class="btn btn-secondary" href="/runs/{{ run.id }}/insights">Back to insights</a>
+  <a class="btn btn-primary" href="/runs/{{ run.id }}/approval">
+    Continue to approval {{ icon('arrow-right', 15) }}
+  </a>
+</div>
+{% endblock %}

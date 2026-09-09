@@ -112,6 +112,7 @@ async def retrieve(
     synonyms: list[str],
     registry: dict,
     on_source=None,
+    context: dict | None = None,
 ) -> RetrievalOutcome:
     """`on_source` is an async callback (source_id, source_name, ok, count, reason)
     used to stream live progress to the UI."""
@@ -124,7 +125,11 @@ async def retrieve(
     names = {s["id"]: s["name"] for s in approved}
     per_source = max(2, limits["max_evidence_items_per_question"] // max(len(source_ids), 1))
 
-    terms = question_terms(question.text, question.aspects, synonyms)
+    upstream_terms: list[str] = []
+    for value in (context or {}).values():
+        if isinstance(value, list):
+            upstream_terms += [str(v) for v in value[:20]]
+    terms = question_terms(question.text, question.aspects, synonyms + upstream_terms)
     query = question.text
     refs: list[SourceRef] = []
 
@@ -135,6 +140,7 @@ async def retrieve(
             synonyms=synonyms, geography=cfg.geography,
             population=cfg.target_population, stage=question.stage,
             question=query, aspects=question.aspects, cutoff=cfg.research_cutoff,
+            extra=dict(context or {}),
         )
         results = await _gather(registry, source_ids, ctx, per_source)
         for r in results:

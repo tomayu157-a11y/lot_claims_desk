@@ -1,0 +1,70 @@
+{# ---------------------------------------------------------------------------
+   Slide-over evidence panel.
+   Context: evidence (list of Evidence), insight (optional), run (optional)
+   --------------------------------------------------------------------------- #}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import tier_badge, enum_label, enum_value, ext_link, dt %}
+
+<div class="slideover-backdrop" data-slideover-backdrop>
+  <aside class="slideover" role="dialog" aria-modal="true" aria-labelledby="evidence-panel-title">
+    <div class="slideover-head">
+      <div>
+        <h2 id="evidence-panel-title">Evidence</h2>
+        <p class="meta mb-0">
+          {% if insight is defined and insight %}{{ insight.title }} · {% endif %}
+          {{ evidence | default([]) | length }} item{{ '' if evidence | default([]) | length == 1 else 's' }}
+        </p>
+      </div>
+      <button type="button" class="icon-btn" data-slideover-close aria-label="Close evidence panel">
+        {{ icon('x', 16) }}
+      </button>
+    </div>
+
+    <div class="slideover-body">
+      {% for ev in evidence | default([]) %}
+      {% set origin = enum_value(ev.origin) %}
+      <div class="evidence-item {{ 'is-supplementary' if origin == 'open_web' }}">
+        {% if origin == 'open_web' %}
+        <div class="mb-1">
+          <span class="supp-flag">{{ icon('alert', 12) }} Supplementary web evidence</span>
+        </div>
+        {% endif %}
+
+        <blockquote class="evidence-quote">{{ ev.quote }}</blockquote>
+
+        <div class="row-between wrap mb-1">
+          <div class="row wrap" style="gap:8px;">
+            <strong class="text-sm">{{ ev.organization or ev.source_name }}</strong>
+            {{ tier_badge(ev.tier) }}
+            <span class="vtag vtag-{{ enum_value(ev.tag) | lower | replace(' ', '-') }}">[{{ enum_value(ev.tag) }}]</span>
+          </div>
+        </div>
+
+        {% if ev.title %}<p class="text-sm text-muted">{{ ev.title }}</p>{% endif %}
+
+        <div class="evidence-meta">
+          <span>{{ enum_label(ev.origin) }}</span>
+          <span class="dot-sep">·</span>
+          <span>Retrieved {{ dt(ev.retrieved_at) }}</span>
+          {% if ev.published %}
+          <span class="dot-sep">·</span><span>Published {{ ev.published }}</span>
+          {% endif %}
+          {% if ev.identifiers %}
+          <span class="dot-sep">·</span>
+          <span class="mono">
+            {% for k, v in ev.identifiers.items() %}{{ k }}:{{ v }}{{ ' ' if not loop.last }}{% endfor %}
+          </span>
+          {% endif %}
+        </div>
+
+        <div class="mt-1 text-sm">{{ ext_link(ev.url, ev.source_name or 'Open source') }}</div>
+      </div>
+      {% else %}
+      <div class="empty">
+        <h3>No evidence recorded</h3>
+        <p class="mb-0">Nothing was retrieved that supports this finding directly.</p>
+      </div>
+      {% endfor %}
+    </div>
+  </aside>
+</div>

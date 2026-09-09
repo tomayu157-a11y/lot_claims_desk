@@ -415,7 +415,11 @@
     container._celestraKeydown = keydown;
 
     container.addEventListener('mousedown', function (ev) {
-      if (ev.target === container) onClose();
+      var t = ev.target;
+      if (t === container || t.hasAttribute('data-modal-backdrop') ||
+          t.hasAttribute('data-slideover-backdrop')) {
+        onClose();
+      }
     });
     initCounters(container);
   }

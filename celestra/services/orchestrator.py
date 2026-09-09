@@ -36,6 +36,7 @@ from ..models import (
 from ..settings import get_framework, get_questions, get_thresholds
 from ..store import store
 from . import contradictions as contra
+from . import handoff
 from . import planner, qa, retrieval, synthesis
 from .scoring import confidence_for
 
@@ -212,6 +213,14 @@ class Orchestrator:
             if agent_questions:
                 store.save_questions(self.run.id, agent_questions)
 
+            inbound_context = handoff.for_agent(bucket, self.run.context)
+            if inbound_context:
+                await self._agent(state, message=(
+                    "Using upstream context: "
+                    + ", ".join(f"{len(v)} {k.replace('_', ' ')}"
+                                for k, v in inbound_context.items())
+                ))
+
             agent_evidence: list[Evidence] = []
             agent_contra: list[Contradiction] = []
 
@@ -228,7 +237,8 @@ class Orchestrator:
                                      source_name=sname, ok=ok, count=count, reason=reason)
 
                 outcome = await retrieval.retrieve(
-                    question, self.cfg, self.synonyms, self.registry, on_source
+                    question, self.cfg, self.synonyms, self.registry, on_source,
+                    context=inbound_context,
                 )
                 retrieval.apply_outcome(question, outcome)
                 agent_evidence += outcome.evidence
@@ -285,6 +295,14 @@ class Orchestrator:
                                  name=report.name, evidence_count=report.evidence_count,
                                  source_count=report.source_count,
                                  tables=len(report.tables))
+
+            produced = await handoff.build(bucket, self.cfg, agent_evidence)
+            if produced:
+                self.run.context = handoff.merge(self.run.context, produced)
+                store.save_run(self.run)
+                await self._emit("context_published", agent_key=state.key,
+                                 entities={k: len(v) if isinstance(v, list) else 1
+                                           for k, v in produced.items()})
 
             state.finished_at = utcnow()
             await self._agent(
