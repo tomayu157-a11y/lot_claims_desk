@@ -173,6 +173,9 @@ class ResearchQuestion(BaseModel):
     text: str
     seed_text: str = ""              # the seed question this was expanded from
     aspects: list[str] = Field(default_factory=list)
+    # Model-written aspects name what an answer must contain. Heuristic ones
+    # are only the question's own words, so they are scored far more gently.
+    aspects_from_model: bool = False
     status: QuestionStatus = QuestionStatus.PLANNED
     coverage_score: float = 0.0
     refinement_rounds: int = 0

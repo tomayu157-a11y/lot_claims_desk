@@ -86,7 +86,29 @@ def assess(question: ResearchQuestion, evidence: list[Evidence]) -> Sufficiency:
     if usable:
         tier_component = sum(tier_weight(e.tier) for e in usable) / len(usable)
     volume = min(len(usable) / max(cfg["min_evidence_items"], 1), 1.0)
-    coverage = round(0.45 * aspect_ratio + 0.35 * tier_component + 0.20 * volume, 3)
+    diversity = min(len(sources) / max(cfg["min_distinct_sources"] * 2, 1), 1.0)
+
+    # Two weightings, because the two kinds of aspect mean different things.
+    #
+    # Model-written aspects name the concepts an answer must contain, so
+    # failing to find them is genuine evidence the question is unanswered and
+    # they carry the most weight.
+    #
+    # Heuristic aspects are only the question's own words. Sources answer in
+    # their own vocabulary: a label that fully answers "which therapies are
+    # FDA-approved" says "is indicated for the treatment of" and contains none
+    # of "FDA", "approved", "label" or "indications". Scoring those as a miss
+    # measured phrasing, not coverage, and held well-sourced answers below the
+    # threshold. They now act as an uplift that can raise a score, never as a
+    # gate that sinks one, and the weight moves to what is observable without
+    # a model: source quality, independent corroboration and volume.
+    if question.aspects_from_model:
+        coverage = (0.45 * aspect_ratio + 0.30 * tier_component
+                    + 0.15 * diversity + 0.10 * volume)
+    else:
+        coverage = (0.20 * aspect_ratio + 0.40 * tier_component
+                    + 0.25 * diversity + 0.15 * volume)
+    coverage = round(coverage, 3)
 
     checks = [
         (len(usable) >= cfg["min_evidence_items"],

@@ -14,6 +14,7 @@ and renders as SUPPLEMENTARY WEB EVIDENCE everywhere it appears.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import re
 from dataclasses import dataclass, field
@@ -39,8 +40,30 @@ class RetrievalOutcome:
     rounds: int = 0
 
 
+@functools.lru_cache(maxsize=1)
+def _unusable_source_ids() -> frozenset[str]:
+    """Sources that cannot answer today: missing licence, credential or file.
+
+    Cached for the process because it reflects configuration, not run state.
+    """
+    try:
+        from ..connectors.registry import connector_health
+
+        return frozenset(row["id"] for row in connector_health() if not row["configured"])
+    except Exception:  # noqa: BLE001 - never let health checking break retrieval
+        return frozenset()
+
+
 def sources_for(stage: str, indication_key: str) -> list[dict]:
-    """Approved sources registered for this stage and indication, best tier first."""
+    """Approved sources for this stage and indication, best first.
+
+    Ordering matters because the per-question source budget is finite. Sorting
+    by tier then id alone spent the whole budget alphabetically: a stage with
+    fourteen registered sources would call eight blocked ones and never reach
+    the working alternative further down the alphabet. Sources known to be
+    unusable are therefore ranked last, so they are attempted only if budget
+    remains and still appear in the attempted list with their blocking reason.
+    """
     out = []
     for src in get_source_registry()["sources"]:
         if not src.get("enabled", True) or src.get("fallback_only"):
@@ -51,7 +74,8 @@ def sources_for(stage: str, indication_key: str) -> list[dict]:
         if inds and indication_key not in inds and "ANY" not in inds:
             continue
         out.append(src)
-    return sorted(out, key=lambda s: (s["tier"], s["id"]))
+    blocked = _unusable_source_ids()
+    return sorted(out, key=lambda s: (s["id"] in blocked, s["tier"], s["id"]))
 
 
 def _broaden(question: str, aspects: list[str], synonyms: list[str], round_no: int) -> str:

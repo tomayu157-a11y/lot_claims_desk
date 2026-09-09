@@ -145,6 +145,7 @@ async def plan_stage(
                         run_id=run_id, stage=stage, bucket=bucket, text=text,
                         seed_text=seed or text,
                         aspects=[str(a) for a in (item.get("aspects") or [])][:6],
+                        aspects_from_model=True,
                     )
                 )
         except LLMUnavailable as exc:
