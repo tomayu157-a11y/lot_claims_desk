@@ -1,0 +1,204 @@
+stage_meta:
+  stage_1:
+    name: "Disease & Diagnostic Foundation"
+    core_question: "Who gets the disease and how is it diagnosed?"
+    framework_steps:
+      - "Disease definition and natural history"
+      - "Epidemiology, incidence, prevalence, mortality"
+      - "Subtype and molecular/cytogenetic classification"
+      - "Diagnostic criteria and confirmatory workup"
+      - "Risk stratification and key clinical variables"
+    expected_output:
+      - "Epidemiology snapshot table (Metric | Value | Source)"
+      - "Subtype / biology breakdown table (Subtype | Approximate share | Notes)"
+      - "Diagnostic criteria summary (classification, immunophenotype, cytogenetics, molecular, staging)"
+      - "Diagnostic workup table"
+      - "Key clinical variables and cohort-defining forks"
+      - "Key takeaways"
+    default_sources: [seer, nci, who, pubmed, cdc_icd10, acs]
+
+  stage_2:
+    name: "Guideline-Based Treatment Landscape & Drug/Biologic Universe"
+    core_question: "What is recommended and what is approved?"
+    framework_steps:
+      - "Identify governing guidelines and versions"
+      - "Map first-line and later-line recommendations"
+      - "Inventory FDA-approved agents and label indications"
+      - "Capture recent approvals and label expansions"
+      - "Classify therapeutic class and mechanism"
+    expected_output:
+      - "Guideline bodies and current versions table (Body | Guideline | Current version)"
+      - "Simplified treatment pathway by risk group / branch point"
+      - "FDA-approved drug and biologic inventory (Agent | Class or MOA | Typical line of use)"
+      - "Recent approvals and label expansions worth flagging for cohort logic"
+      - "Key takeaways"
+    default_sources: [nccn, fda, dailymed, esmo, nci, clinicaltrials, pubmed]
+
+  stage_3:
+    name: "Claims Code Universe: Diagnosis & Procedures"
+    core_question: "How would the clinical concepts appear in claims?"
+    framework_steps:
+      - "Diagnosis code universe (ICD-10-CM, ICD-9-CM, ICD-11)"
+      - "Procedure and service codes (CPT, HCPCS)"
+      - "Laboratory and molecular testing codes (LOINC, CPT)"
+      - "Remission / relapse coding conventions"
+      - "Observability limitations"
+    expected_output:
+      - "Three-system diagnosis code crosswalk (ICD-9-CM legacy | ICD-10-CM current | ICD-11 stem + extension | Description)"
+      - "Remission / relapse code variants"
+      - "ICD-11 extension codes for molecular subtypes, layered onto the disease stem"
+      - "Diagnostic test and procedure code universe (Category | Example codes | Purpose)"
+      - "Monitoring signal table"
+      - "Observability limitations"
+    default_sources: [cms, cdc_icd10, ama_cpt, loinc, icd11, who]
+
+  stage_4:
+    name: "Treatment Sequencing, Regimen Library & Code Mapping"
+    core_question: "How does treatment sequence appear in real-world data?"
+    framework_steps:
+      - "Define line-of-therapy (LOT) rules"
+      - "Build the regimen library by line and phase"
+      - "Map regimen components to HCPCS/J-codes and NDC"
+      - "Separate pharmacy from medical benefit claims"
+      - "Define supportive-care exclusions and ambiguity rules"
+    expected_output:
+      - "Line-of-therapy trigger rules (Trigger | Interpretation)"
+      - "Regimen library (Regimen | Setting | Components)"
+      - "Component and HCPCS/J-code mapping (Component drug | HCPCS code | Biosimilar / NDC considerations)"
+      - "NDC universe (Agent | Representative NDCs | Labeler | Coverage note) with a method note for an exhaustive pull"
+      - "Dosing and administration reference (Agent | Standard adult dosing | Route / schedule | Key administration notes)"
+      - "Supportive-care and non-therapeutic exclusion list"
+      - "Ambiguity rules (pharmacy vs medical benefit, same-drug different-intent)"
+    default_sources: [nccn, fda, dailymed, cms, pubmed, clinicaltrials]
+
+  stage_5:
+    name: "Patient Journey Signals: Discontinuation, Monitoring & Outcomes"
+    core_question: "How does a patient move through the clinical journey?"
+    framework_steps:
+      - "Treatment initiation, discontinuation and switching signals"
+      - "Adverse events and toxicity management"
+      - "Response, relapse and progression assessment"
+      - "Monitoring cadence and MRD assessment"
+      - "End states: transplant, cellular therapy, hospice, death"
+    expected_output:
+      - "Discontinuation and adverse-event signals by agent class (Agent class | Signature AE driving discontinuation or switch)"
+      - "Monitoring and response criteria (Assessment | Tool / criteria)"
+      - "Patient state model"
+      - "End-of-journey outcome states"
+      - "Claims observability table"
+      - "Key takeaways"
+    default_sources: [nccn, pubmed, dailymed, cibmtr, nci, clinicaltrials]
+
+  stage_6:
+    name: "Unmet Need Synthesis & QA Validation"
+    core_question: "Where are the gaps, conflicts and limitations?"
+    framework_steps:
+      - "Compare guidelines vs labels vs literature vs real-world evidence"
+      - "Identify unmet needs and evidence gaps"
+      - "Surface contradictions between sources"
+      - "Document assumptions and limitations"
+      - "Run QA and SME review readiness assessment"
+    expected_output:
+      - "Unmet-need synthesis (Gap area | Description)"
+      - "Contradiction table"
+      - "Assumptions"
+      - "Limitations"
+      - "QA checklist"
+      - "QA / SME sign-off checklist"
+      - "Readiness assessment"
+    default_sources: [pubmed, nccn, fda, clinicaltrials, seer, cibmtr]
+
+indications:
+
+  ALL:
+    label: "Acute Lymphoblastic Leukemia"
+    abbreviation: "ALL"
+    synonyms:
+      - "acute lymphoblastic leukemia"
+      - "acute lymphocytic leukemia"
+      - "acute lymphoid leukemia"
+      - "B-ALL"
+      - "T-ALL"
+    stage_1:
+      - "What is the disease definition and natural history of acute lymphoblastic leukemia?"
+      - "What is the incidence, prevalence, survival and mortality of ALL in the United States?"
+      - "What are the clinically important immunophenotypic and molecular subtypes of ALL?"
+      - "How is ALL diagnosed and what confirmatory workup is required?"
+      - "How is ALL risk-stratified at diagnosis?"
+    stage_2:
+      - "What are the current guideline-recommended first-line treatments for ALL?"
+      - "What are the guideline-recommended treatments for relapsed/refractory ALL?"
+      - "Which therapies are FDA-approved for ALL and what are their label indications?"
+      - "How does ALL treatment differ between Ph-positive and Ph-negative disease?"
+      - "What recent FDA approvals or label expansions have occurred in ALL?"
+    stage_3:
+      - "What ICD-10-CM diagnosis codes identify acute lymphoblastic leukemia, including remission and relapse?"
+      - "What CPT and HCPCS codes cover bone marrow biopsy, aspiration and flow cytometry in ALL?"
+      - "What CPT and LOINC codes cover cytogenetic and molecular testing relevant to ALL?"
+      - "How are ICD-9-CM and ICD-11 leukemia codes crosswalked to ICD-10-CM?"
+      - "Which ICD-11 extension codes express ALL molecular subtypes on the disease stem?"
+    stage_4:
+      - "How are lines of therapy defined for ALL in real-world claims research?"
+      - "What are the standard multi-agent induction, consolidation and maintenance regimens for ALL?"
+      - "What HCPCS J-codes and NDC identifiers map to ALL regimen components?"
+      - "Which ALL therapies are billed under the pharmacy benefit versus the medical benefit?"
+      - "What supportive care agents should be excluded from ALL regimen identification?"
+      - "What NDC identifiers and labelers correspond to the principal ALL agents, and where are biosimilars or multi-source generics involved?"
+      - "What are the standard adult dosing, route and administration considerations for the principal ALL agents?"
+    stage_5:
+      - "What are the common reasons for treatment discontinuation and dose modification in ALL?"
+      - "What adverse events are most clinically significant for ALL therapies?"
+      - "How is treatment response and measurable residual disease assessed in ALL?"
+      - "What is the role of allogeneic transplant and CAR-T as end states in ALL?"
+      - "What monitoring cadence is recommended during and after ALL therapy?"
+    stage_6:
+      - "What are the principal unmet needs in ALL treatment in the United States?"
+      - "Where do guideline recommendations and FDA labels diverge in ALL?"
+      - "What real-world evidence gaps exist for ALL treatment sequencing?"
+      - "Which ALL clinical concepts are not observable from administrative claims alone?"
+
+  CLL:
+    label: "Chronic Lymphocytic Leukemia"
+    abbreviation: "CLL"
+    synonyms:
+      - "chronic lymphocytic leukemia"
+      - "small lymphocytic lymphoma"
+      - "CLL/SLL"
+      - "B-cell chronic lymphocytic leukemia"
+    stage_1:
+      - "What is the disease definition and natural history of chronic lymphocytic leukemia?"
+      - "What is the incidence, prevalence, survival and mortality of CLL in the United States?"
+      - "How is CLL classified, staged and risk-stratified (Rai, Binet, CLL-IPI)?"
+      - "How is CLL diagnosed and what confirmatory workup is required?"
+      - "Which prognostic biomarkers (IGHV, TP53, del(17p)) matter in CLL and why?"
+    stage_2:
+      - "What are the current guideline-recommended first-line treatments for CLL?"
+      - "What are the guideline-recommended treatments for relapsed/refractory CLL?"
+      - "Which therapies are FDA-approved for CLL and what are their label indications?"
+      - "How does CLL treatment differ by TP53 aberration and IGHV mutational status?"
+      - "What recent FDA approvals or label expansions have occurred in CLL?"
+    stage_3:
+      - "What ICD-10-CM diagnosis codes identify chronic lymphocytic leukemia, including remission and relapse?"
+      - "What CPT and HCPCS codes cover flow cytometry, bone marrow and lymph node biopsy in CLL?"
+      - "What CPT and LOINC codes cover IGHV, TP53 and FISH testing relevant to CLL?"
+      - "How are ICD-9-CM and ICD-11 CLL codes crosswalked to ICD-10-CM?"
+      - "Which ICD-11 extension codes express CLL subtypes and status on the disease stem?"
+    stage_4:
+      - "How are lines of therapy defined for CLL in real-world claims research?"
+      - "What are the standard first-line and later-line regimens for CLL including targeted agents?"
+      - "What HCPCS J-codes and NDC identifiers map to CLL regimen components?"
+      - "Which CLL therapies are billed under the pharmacy benefit versus the medical benefit?"
+      - "What are the treatment-duration conventions for continuous BTK inhibitors versus fixed-duration venetoclax regimens?"
+      - "What NDC identifiers and labelers correspond to the principal CLL agents, and where are biosimilars or multi-source generics involved?"
+      - "What are the standard adult dosing, route and administration considerations for the principal CLL agents?"
+    stage_5:
+      - "What triggers treatment initiation in CLL and what defines active disease?"
+      - "What are the common reasons for treatment discontinuation and switching in CLL?"
+      - "How is response assessed in CLL and what is the role of measurable residual disease?"
+      - "What are the significant end states in CLL including Richter transformation and cellular therapy?"
+      - "What monitoring cadence is recommended for watch-and-wait and treated CLL patients?"
+    stage_6:
+      - "What are the principal unmet needs in CLL treatment in the United States?"
+      - "Where do guideline recommendations and FDA labels diverge in CLL?"
+      - "What real-world evidence gaps exist for CLL treatment sequencing after BTK inhibitor failure?"
+      - "Which CLL clinical concepts are not observable from administrative claims alone?"

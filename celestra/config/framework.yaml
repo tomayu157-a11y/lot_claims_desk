@@ -1,0 +1,143 @@
+phase: "Phase 1: Clinical Foundation Research"
+
+steps:
+  1:  {name: "Disease Understanding & Epidemiology Review", bucket: A, stage: stage_1}
+  2:
+    name: "Diagnostic Criteria & Confirmatory Workup Review"
+    bucket: A
+    stage: stage_1
+    substeps:
+      2A: "Diagnostic criteria and confirmatory-workup research"
+      2B: "Align diagnostic criteria with disease taxonomy, subtypes, stages and population"
+  3:  {name: "Guideline & SOC Treatment Review", bucket: C, stage: stage_2}
+  4:  {name: "Diagnosis Code Universe (ICD-10-CM, extended to ICD-9-CM and ICD-11)", bucket: B, stage: stage_3}
+  5:  {name: "Diagnostic Test & Procedure Code Universe", bucket: B, stage: stage_3}
+  6:  {name: "Drug & Biologic Code Universe & Label Review", bucket: C, stage: stage_2}
+  7:  {name: "LOT & Treatment-Trigger Assumptions", bucket: D, stage: stage_4}
+  8:
+    name: "Regimen & Real-World Pattern Library"
+    bucket: D
+    stage: stage_4
+    substeps:
+      8A: "Collect guideline, trial and real-world regimen evidence"
+      8B: "Finalize regimen library by line, segment, setting and evidence source"
+  9:  {name: "Regimen Definition, Component & Biosimilar Code Mapping (extended to NDC)", bucket: D, stage: stage_4}
+  10:
+    name: "Supportive-Care & Non-Therapeutic Exclusion List"
+    bucket: D
+    stage: stage_4
+    substeps:
+      10A: "Collect preliminary supportive-care and non-therapeutic candidates"
+      10B: "Classify therapeutic components versus supportive or contextual medications"
+      10C: "Finalize supportive-care exclusions and contextual exceptions"
+  11: {name: "Discontinuation, Switching & AE Signal Review", bucket: E, stage: stage_5}
+  12: {name: "Monitoring, Response & Relapse/Progression Signal Review", bucket: E, stage: stage_5}
+  13:
+    name: "End-of-Journey Outcome States"
+    bucket: E
+    stage: stage_5
+    substeps:
+      13A: "Draft remission, transplant, hospice, death, maintenance and follow-up states"
+      13B: "Finalize journey end states and observable proxies"
+  14:
+    name: "Clinical Gaps & Unmet-Need Review"
+    bucket: F
+    stage: stage_6
+    substeps:
+      14A: "Early unmet-need, treatment-gap, delayed-diagnosis, access and off-label-use evidence collection"
+      14B: "Compare disease evidence, diagnosis practice, guidelines, labels, codes, regimens, monitoring and outcomes"
+      14C: "Classify contradictions, unmet needs, evidence limitations, data-observability gaps and unresolved assumptions"
+  15:
+    name: "QA/SME Validation & Sign-Off Gate"
+    bucket: G
+    stage: stage_6
+    substeps:
+      15A: "Define QA rules, source hierarchy, schemas, version controls and acceptance thresholds"
+      15B: "Rolling QA workers active during execution"
+      15C: "Clinical SME review of assumptions, codes, regimens, conflicts and limitations"
+
+# agent_* fields drive the UI. The word "bucket" never reaches a template.
+buckets:
+  A:
+    name: "Clinical disease and diagnostic foundation"
+    agent_name: "Clinical Landscape Agent"
+    agent_tagline: "Disease context, patient journey, clinical events"
+    agent_icon: "leaf"
+    steps: [1, 2]
+    stages: [stage_1]
+    depends_on: []
+    context_from: []
+    gate: "Reconciliation gate — diagnostic definitions aligned with disease taxonomy and population"
+    output: "DiseaseDiagnosisProfile"
+  C:
+    name: "Treatment evidence foundation"
+    agent_name: "Treatment Evidence Agent"
+    agent_tagline: "Therapies, treatment settings, regulatory evidence"
+    agent_icon: "pill"
+    steps: [3, 6]
+    stages: [stage_2]
+    depends_on: []
+    context_from: [A]
+    gate: "Treatment evidence reconciliation gate — guideline recommendation vs regulatory approval"
+    output: "TreatmentEvidenceMaster"
+  B:
+    name: "Diagnostic observability and code footprint"
+    agent_name: "Diagnostic Footprint Agent"
+    agent_tagline: "Claims signals, diagnosis & procedure codes"
+    agent_icon: "microscope"
+    steps: [4, 5]
+    stages: [stage_3]
+    depends_on: [A]
+    context_from: []
+    gate: "Code reconciliation gate — each code linked to subtype, stage, purpose, specificity, geography and effective date"
+    output: "DiagnosticObservabilityCodebook"
+  D:
+    name: "Treatment logic and regimen operationalization"
+    agent_name: "Treatment Logic Agent"
+    agent_tagline: "Treatment patterns, episode logic, LOT rules"
+    agent_icon: "flow"
+    steps: [7, 8, 9, 10]
+    stages: [stage_4]
+    depends_on: [C]
+    context_from: [A]
+    gate: "Final integration gate — line rules, regimen library, code mapping and exclusions reconciled"
+    output: "RegimenAndLOTLogic"
+  E:
+    name: "Treatment journey, monitoring and outcomes"
+    agent_name: "Patient Journey Agent"
+    agent_tagline: "Discontinuation, monitoring, response and outcomes"
+    agent_icon: "route"
+    steps: [11, 12, 13]
+    stages: [stage_5]
+    depends_on: [B, C, D]
+    context_from: [A]
+    gate: "Transition reconciliation gate then end-state finalization gate"
+    output: "PatientJourneyStateModel"
+  F:
+    name: "Clinical gaps and unmet-need synthesis"
+    agent_name: "Information Synthesis Agent"
+    agent_tagline: "Cross-agent analysis, key insights and gaps"
+    agent_icon: "sparkle"
+    steps: [14]
+    stages: [stage_6]
+    depends_on: [A, B, C, D, E]
+    context_from: []
+    gate: "Synthesis inputs complete — all substantive outputs available"
+    output: "ClinicalGapMatrix"
+  G:
+    name: "QA, governance, SME validation and sign-off"
+    agent_name: "QA & Validation Agent"
+    agent_tagline: "Thresholds, contradictions, SME readiness"
+    agent_icon: "shield"
+    steps: [15]
+    stages: []
+    depends_on: [F]
+    context_from: [A, B, C, D, E, F]
+    gate: "Final review gate — QA passed and SME review complete"
+    output: "ValidatedClinicalFoundationPackage"
+    mode: "governance"
+
+governance:
+  max_rework_rounds: 1
+  rework_scope: "owning_bucket_only"
+  max_parallel_buckets: 3

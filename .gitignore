@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.env
+celestra/data/*.db
+celestra/data/*.db-wal
+celestra/data/*.db-shm
+celestra/data/cache/
+celestra/data/reference/*
+!celestra/data/reference/README.md
+.pytest_cache/

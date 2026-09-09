@@ -1,0 +1,438 @@
+# Credible Source Registry
+# access_method: api | targeted_search | local_file | licensed | firecrawl_search
+# connector: key resolved by connectors/registry.py. null => search-only source.
+
+tiers:
+  1: {label: "Tier 1 — Government, regulators, official guidelines, coding authorities, product labels", weight: 1.00, primary: true}
+  2: {label: "Tier 2 — Peer-reviewed literature, trial registries, systematic reviews", weight: 0.80, primary: true}
+  3: {label: "Tier 3 — Professional / disease organizations, high-quality secondary evidence", weight: 0.60, primary: false}
+  4: {label: "Tier 4 — Industry / contextual sources", weight: 0.40, primary: false}
+  5: {label: "Tier 5 — General web (supplementary only)", weight: 0.20, primary: false}
+
+tier_policy:
+  never_override_below_tier: 5
+  supplementary_tier_floor: 5
+  approved_max_tier: 4
+
+sources:
+
+  # ---- Literature -------------------------------------------------------
+  - id: pubmed
+    name: PubMed
+    domain: pubmed.ncbi.nlm.nih.gov
+    tier: 2
+    types: [literature]
+    indications: [ALL, CLL]
+    stages: [stage_1, stage_2, stage_4, stage_5, stage_6]
+    access_method: api
+    connector: pubmed
+    enabled: true
+
+  - id: europepmc
+    name: Europe PMC
+    domain: ebi.ac.uk
+    tier: 2
+    types: [literature]
+    indications: [ALL, CLL]
+    stages: [stage_1, stage_2, stage_4, stage_5, stage_6]
+    access_method: api
+    connector: europepmc
+    notes: "resultType=core returns title, abstract and all IDs in one call. Primary ranking surface."
+    enabled: true
+
+  - id: crossref
+    name: Crossref
+    domain: api.crossref.org
+    tier: 2
+    types: [literature]
+    indications: [ALL, CLL]
+    stages: [stage_2, stage_4, stage_5]
+    access_method: api
+    connector: crossref
+    notes: "DOI prefix 10.1200 discovers ASCO supportive-care guidance."
+    enabled: true
+
+  # ---- Epidemiology -----------------------------------------------------
+  - id: orphanet
+    name: Orphanet / Orphadata
+    domain: api.orphadata.com
+    tier: 1
+    types: [epidemiology, coding]
+    indications: [ALL, CLL]
+    stages: [stage_1, stage_3]
+    access_method: api
+    connector: orphanet
+    notes: "Name lookup resolves ORPHA code plus ICD-10/ICD-11/MeSH/UMLS crosswalk."
+    enabled: true
+
+  - id: seer
+    name: NCI SEER
+    domain: seer.cancer.gov
+    tier: 1
+    types: [epidemiology]
+    indications: [ALL, CLL]
+    stages: [stage_1, stage_5, stage_6]
+    access_method: api
+    connector: seer
+    search_hint: "SEER stat facts incidence survival"
+    notes: "Stat Facts HTML is scraped. api.seer.cancer.gov does NOT carry these statistics."
+    enabled: true
+
+  - id: nci
+    name: National Cancer Institute (NCI)
+    domain: cancer.gov
+    tier: 1
+    types: [guideline, epidemiology]
+    indications: [ALL, CLL]
+    stages: [stage_1, stage_2, stage_5]
+    access_method: api
+    connector: nci_pdq
+    search_hint: "PDQ treatment health professional version"
+    enabled: true
+
+  - id: cdc_wonder
+    name: CDC WONDER (NVSS mortality)
+    domain: wonder.cdc.gov
+    tier: 1
+    types: [epidemiology]
+    indications: [ALL, CLL]
+    stages: [stage_1, stage_5]
+    access_method: api
+    connector: cdc_wonder
+    notes: "POST only, XML request body, requires the ICD-10 family from the code stage."
+    enabled: true
+
+  - id: who_gho
+    name: WHO Global Health Observatory
+    domain: ghoapi.azureedge.net
+    tier: 1
+    types: [epidemiology]
+    indications: [ALL, CLL]
+    stages: [stage_1]
+    access_method: api
+    connector: who_gho
+    notes: "May legitimately return no_specific_indicator for a leukemia subtype."
+    enabled: true
+
+  # ---- Regulatory / labels ---------------------------------------------
+  - id: openfda_label
+    name: FDA Drug Labeling (openFDA)
+    domain: api.fda.gov
+    tier: 1
+    types: [regulatory, label]
+    indications: [ALL, CLL]
+    stages: [stage_2, stage_4, stage_5]
+    access_method: api
+    connector: openfda_label
+    notes: "Response carries set_id, so a separate DailyMed SETID lookup is unnecessary."
+    enabled: true
+
+  - id: openfda_drugsfda
+    name: FDA Drugs@FDA (openFDA)
+    domain: api.fda.gov
+    tier: 1
+    types: [regulatory]
+    indications: [ALL, CLL]
+    stages: [stage_2, stage_4]
+    access_method: api
+    connector: openfda_drugsfda
+    notes: "application_number accepts OR-batched values."
+    enabled: true
+
+  - id: openfda_ndc
+    name: FDA NDC Directory (openFDA)
+    domain: api.fda.gov
+    tier: 1
+    types: [coding, label]
+    indications: [ALL, CLL]
+    stages: [stage_3, stage_4]
+    access_method: api
+    connector: openfda_ndc
+    enabled: true
+
+  - id: faers
+    name: FDA FAERS Adverse Events (openFDA)
+    domain: api.fda.gov
+    tier: 2
+    types: [registry, safety]
+    indications: [ALL, CLL]
+    stages: [stage_5]
+    access_method: api
+    connector: faers
+    notes: "Signal frequency only. One report carries multiple drugs and reactions with no causal linkage."
+    enabled: true
+
+  - id: dailymed
+    name: DailyMed
+    domain: dailymed.nlm.nih.gov
+    tier: 1
+    types: [label]
+    indications: [ALL, CLL]
+    stages: [stage_2, stage_4, stage_5]
+    access_method: api
+    connector: dailymed
+    notes: "search_string is silently ignored by the v2 API. Use drug_name or application_number."
+    enabled: true
+
+  - id: purple_book
+    name: FDA Purple Book
+    domain: purplebooksearch.fda.gov
+    tier: 1
+    types: [regulatory, coding]
+    indications: [ALL, CLL]
+    stages: [stage_4]
+    access_method: local_file
+    connector: local_files
+    local_dataset: purple_book
+    notes: "Monthly report contains all products, not only changes. Drop the CSV in data/reference/."
+    enabled: true
+
+  # ---- Trials -----------------------------------------------------------
+  - id: clinicaltrials
+    name: ClinicalTrials.gov
+    domain: clinicaltrials.gov
+    tier: 2
+    types: [registry]
+    indications: [ALL, CLL]
+    stages: [stage_2, stage_4, stage_5, stage_6]
+    access_method: api
+    connector: clinicaltrials
+    enabled: true
+
+  # ---- Coding authorities ----------------------------------------------
+  - id: cms_icd10
+    name: CMS ICD-10-CM Release Files
+    domain: cms.gov
+    tier: 1
+    types: [coding]
+    indications: [ALL, CLL]
+    stages: [stage_3]
+    access_method: local_file
+    connector: local_files
+    local_dataset: icd10cm
+    notes: "Official release files only. Explicitly not a web search."
+    enabled: true
+
+  - id: cms_hcpcs
+    name: CMS HCPCS Release Files
+    domain: cms.gov
+    tier: 1
+    types: [coding]
+    indications: [ALL, CLL]
+    stages: [stage_3, stage_4]
+    access_method: local_file
+    connector: local_files
+    local_dataset: hcpcs
+    enabled: true
+
+  - id: cms_gems
+    name: CMS ICD-9-CM to ICD-10-CM GEMs
+    domain: cms.gov
+    tier: 1
+    types: [coding]
+    indications: [ALL, CLL]
+    stages: [stage_3]
+    access_method: local_file
+    connector: local_files
+    local_dataset: gems
+    notes: "Supplies the ICD-9 leg of the three-system crosswalk."
+    enabled: true
+
+  - id: icd11
+    name: WHO ICD-11
+    domain: id.who.int
+    tier: 1
+    types: [coding]
+    indications: [ALL, CLL]
+    stages: [stage_3]
+    access_method: api
+    connector: icd11
+    requires_credentials: [ICD11_CLIENT_ID, ICD11_CLIENT_SECRET]
+    enabled: true
+
+  - id: loinc
+    name: LOINC (Regenstrief)
+    domain: loinc.org
+    tier: 1
+    types: [coding]
+    indications: [ALL, CLL]
+    stages: [stage_3, stage_5]
+    access_method: api
+    connector: loinc
+    requires_credentials: [LOINC_USERNAME, LOINC_PASSWORD]
+    enabled: true
+
+  - id: ama_cpt
+    name: AMA CPT
+    domain: ama-assn.org
+    tier: 1
+    types: [coding]
+    indications: [ALL, CLL]
+    stages: [stage_3, stage_4]
+    access_method: licensed
+    connector: null
+    notes: "No anonymous full-code API. Licensed dataset required. Never scraped."
+    enabled: true
+
+  # ---- Guidelines -------------------------------------------------------
+  - id: nccn
+    name: NCCN
+    domain: nccn.org
+    tier: 1
+    types: [guideline]
+    indications: [ALL, CLL]
+    stages: [stage_2, stage_4, stage_5]
+    access_method: licensed
+    connector: null
+    search_hint: "clinical practice guidelines in oncology version"
+    notes: "Licensed connector required. Never scraped. Substitute NCI PDQ, iwCLL, ASH and the current European guideline."
+    enabled: true
+
+  - id: esmo
+    name: ESMO
+    domain: esmo.org
+    tier: 1
+    types: [guideline]
+    indications: [ALL, CLL]
+    stages: [stage_2, stage_4]
+    access_method: api
+    connector: guideline_discovery
+    search_hint: "clinical practice guideline"
+    notes: "Discovered through publication-type literature search. PMIDs are never pinned."
+    enabled: true
+
+  - id: eha
+    name: EHA (European Hematology Association)
+    domain: ehaweb.org
+    tier: 1
+    types: [guideline]
+    indications: [CLL]
+    stages: [stage_2]
+    access_method: api
+    connector: guideline_discovery
+    notes: "Responsible for European CLL guideline editions after ESMO."
+    enabled: true
+
+  - id: iwcll
+    name: iwCLL Guidelines (Blood)
+    domain: ashpublications.org
+    tier: 1
+    types: [guideline]
+    indications: [CLL]
+    stages: [stage_1, stage_2, stage_5]
+    access_method: api
+    connector: guideline_discovery
+    search_hint: "iwCLL guidelines diagnosis treatment response assessment"
+    enabled: true
+
+  - id: ashpublications
+    name: ASH / Blood (American Society of Hematology)
+    domain: ashpublications.org
+    tier: 2
+    types: [guideline, literature]
+    indications: [ALL, CLL]
+    stages: [stage_1, stage_2, stage_5]
+    access_method: api
+    connector: guideline_discovery
+    enabled: true
+
+  - id: asco
+    name: ASCO
+    domain: asco.org
+    tier: 3
+    types: [guideline, literature]
+    indications: [ALL, CLL]
+    stages: [stage_2, stage_5]
+    access_method: api
+    connector: crossref
+    notes: "Discovered through Crossref DOI prefix 10.1200, then firecrawl fallback."
+    enabled: true
+
+  # ---- Organizations / registries --------------------------------------
+  - id: acs
+    name: American Cancer Society
+    domain: cancer.org
+    tier: 3
+    types: [advocacy, epidemiology]
+    indications: [ALL, CLL]
+    stages: [stage_1, stage_5]
+    access_method: targeted_search
+    enabled: true
+
+  - id: lls
+    name: Leukemia & Lymphoma Society
+    domain: lls.org
+    tier: 3
+    types: [advocacy]
+    indications: [ALL, CLL]
+    stages: [stage_1, stage_5]
+    access_method: targeted_search
+    enabled: true
+
+  - id: cibmtr
+    name: CIBMTR
+    domain: cibmtr.org
+    tier: 3
+    types: [registry, real_world]
+    indications: [ALL, CLL]
+    stages: [stage_5, stage_6]
+    access_method: targeted_search
+    search_hint: "transplant cellular therapy summary slides"
+    enabled: true
+
+  - id: who
+    name: WHO
+    domain: who.int
+    tier: 1
+    types: [guideline, coding]
+    indications: [ALL, CLL]
+    stages: [stage_1, stage_3]
+    access_method: targeted_search
+    search_hint: "classification of haematolymphoid tumours ICD-11"
+    enabled: true
+
+  - id: cdc_icd10
+    name: CDC / NCHS
+    domain: cdc.gov
+    tier: 1
+    types: [coding, epidemiology]
+    indications: [ALL, CLL]
+    stages: [stage_1, stage_3]
+    access_method: targeted_search
+    search_hint: "ICD-10-CM tabular list"
+    enabled: true
+
+  - id: cms
+    name: CMS
+    domain: cms.gov
+    tier: 1
+    types: [coding, regulatory]
+    indications: [ALL, CLL]
+    stages: [stage_3, stage_4]
+    access_method: targeted_search
+    search_hint: "HCPCS ICD-10 code set"
+    enabled: true
+
+  - id: fda
+    name: FDA
+    domain: fda.gov
+    tier: 1
+    types: [regulatory, label]
+    indications: [ALL, CLL]
+    stages: [stage_2, stage_4, stage_6]
+    access_method: targeted_search
+    search_hint: "approval indication oncology"
+    enabled: true
+
+  # ---- Fallback ---------------------------------------------------------
+  - id: open_web
+    name: Open Web (Supplementary)
+    domain: null
+    tier: 5
+    types: [web]
+    indications: [ALL, CLL]
+    stages: [stage_1, stage_2, stage_3, stage_4, stage_5, stage_6]
+    access_method: firecrawl_search
+    connector: firecrawl
+    fallback_only: true
+    enabled: true

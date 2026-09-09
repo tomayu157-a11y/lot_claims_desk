@@ -1,0 +1,176 @@
+{# ---------------------------------------------------------------------------
+   Shared render helpers. Everything here is tolerant of either an enum member
+   or a plain string, so a route may hand over models or already-serialised
+   dictionaries.
+
+   NOTE ON VOCABULARY: execution units are AGENTS everywhere in the UI.
+   No macro in this file reads or prints the internal grouping letter.
+   --------------------------------------------------------------------------- #}
+{% from "partials/icons.html" import icon %}
+
+{%- macro enum_value(v) -%}{{ v.value if v.value is defined else v }}{%- endmacro -%}
+
+{%- macro enum_label(v) -%}
+{%- if v.label is defined -%}{{ v.label }}
+{%- else -%}{{ (v.value if v.value is defined else v) | string | replace('_', ' ') | title }}
+{%- endif -%}
+{%- endmacro -%}
+
+{# icon key -> pastel tint family, matching the agent order in the design #}
+{%- set TINTS = {
+  'leaf': 'green', 'pill': 'blue', 'microscope': 'purple', 'flow': 'indigo',
+  'route': 'teal', 'sparkle': 'teal', 'shield': 'slate', 'target': 'rose',
+  'users': 'green', 'activity': 'blue', 'layers': 'indigo', 'scale': 'amber'
+} -%}
+
+{%- macro tint_for(name) -%}{{ TINTS.get(name | string, 'blue') }}{%- endmacro -%}
+
+{% macro agent_tile(icon_name, size='') -%}
+<span class="tile {{ size }} tint-{{ tint_for(icon_name) }}">{{ icon(icon_name | default('sparkle', true)) }}</span>
+{%- endmacro %}
+
+{% macro tinted_tile(icon_name, tint, size='') -%}
+<span class="tile {{ size }} tint-{{ tint }}">{{ icon(icon_name | default('sparkle', true)) }}</span>
+{%- endmacro %}
+
+{% macro confidence_chip(conf, small=false) -%}
+{%- set v = (conf.value if conf.value is defined else conf) | string -%}
+<span class="chip chip-{{ v }}{{ ' chip-sm' if small else '' }}">{{ enum_label(conf) }}</span>
+{%- endmacro %}
+
+{% macro tier_badge(tier) -%}
+<span class="tier tier-{{ tier }}">Tier {{ tier }}</span>
+{%- endmacro %}
+
+{% macro severity_chip(sev) -%}
+{%- set v = (sev.value if sev.value is defined else sev) | string -%}
+<span class="chip chip-sm {{ 'chip-requires_input' if v == 'escalated' else 'chip-rejected' }}">
+  {{ 'Escalated' if v == 'escalated' else 'Noted' }}
+</span>
+{%- endmacro %}
+
+{% macro review_chip(action) -%}
+{%- set v = (action.value if action.value is defined else action) | string -%}
+{%- if v and v != 'pending' -%}
+<span class="chip chip-sm {{ 'chip-high' if v in ['approved', 'acknowledged'] else 'chip-blue' }}">
+  {{ icon('check', 12) }}{{ v | replace('_', ' ') | title }}
+</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro run_status_chip(status) -%}
+{%- set v = (status.value if status.value is defined else status) | string -%}
+{%- set cls = {'completed': 'chip-high', 'running': 'chip-blue', 'failed': 'chip-requires_input',
+               'cancelled': 'chip-rejected', 'pending': 'chip-rejected'} -%}
+<span class="chip chip-sm {{ cls.get(v, 'chip-rejected') }}">{{ v | replace('_', ' ') | title }}</span>
+{%- endmacro %}
+
+{% macro agent_status_markup(status) -%}
+{%- set v = (status.value if status.value is defined else status) | string -%}
+{%- if v in ['researching', 'synthesising'] -%}
+  <span class="spinner" aria-hidden="true"></span><span>{{ 'Researching…' if v == 'researching' else 'Synthesising…' }}</span>
+{%- elif v == 'complete' -%}
+  {{ icon('check', 15) }}<span>Complete</span>
+{%- elif v == 'failed' -%}
+  {{ icon('alert', 15) }}<span>Failed</span>
+{%- elif v == 'blocked' -%}
+  <span class="chip-dot" aria-hidden="true"></span><span>Blocked</span>
+{%- elif v == 'skipped' -%}
+  <span class="chip-dot" aria-hidden="true"></span><span>Skipped</span>
+{%- else -%}
+  <span class="chip-dot" aria-hidden="true"></span><span>Queued</span>
+{%- endif -%}
+{%- endmacro %}
+
+{# Named source chips. The UI must always say WHICH source produced a finding. #}
+{% macro source_name_chips(ids, names) -%}
+<span class="chip-row">
+  {%- for sid in ids or [] %}
+  <span class="chip chip-sm chip-source is-used" data-source-key="{{ sid }}"
+        data-source-name="{{ (names or {}).get(sid, sid) }}">{{ (names or {}).get(sid, sid) }}</span>
+  {%- endfor %}
+</span>
+{%- endmacro %}
+
+{# A styled InsightTable: columns / rows / footnote, tags rendered inline. #}
+{% macro data_table(table, compact=false) -%}
+<div class="subblock">
+  {% if table.title %}
+  <div class="table-title"><h3>{{ table.title }}</h3></div>
+  {% endif %}
+  <div class="table-wrap">
+    <table class="data{{ ' table-compact' if compact else '' }}">
+      <thead>
+        <tr>{% for col in table.columns %}<th scope="col">{{ col }}</th>{% endfor %}</tr>
+      </thead>
+      <tbody>
+        {% for row in table.rows %}
+        <tr>
+          {% for cell in row %}
+          <td>{{ cell | tagify }}</td>
+          {% endfor %}
+        </tr>
+        {% else %}
+        <tr><td colspan="{{ table.columns | length or 1 }}" class="text-faint">No rows recorded.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% if table.footnote %}<p class="table-footnote">{{ table.footnote }}</p>{% endif %}
+</div>
+{%- endmacro %}
+
+{# A table built from a list of dicts, with an explicit (heading, key) column map. #}
+{% macro dict_table(rows, columns, footnote='', empty='Nothing recorded.') -%}
+<div class="table-wrap">
+  <table class="data">
+    <thead>
+      <tr>{% for head, _key in columns %}<th scope="col">{{ head }}</th>{% endfor %}</tr>
+    </thead>
+    <tbody>
+      {% for row in rows or [] %}
+      <tr>
+        {% for _head, key in columns %}
+        <td>{{ (row.get(key, '') if row.get is defined else (row[key] if key in row else '')) | tagify }}</td>
+        {% endfor %}
+      </tr>
+      {% else %}
+      <tr><td colspan="{{ columns | length }}" class="text-faint">{{ empty }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% if footnote %}<p class="table-footnote">{{ footnote }}</p>{% endif %}
+{%- endmacro %}
+
+{% macro stat_tile(value, label, tone='slate', note='', check=false) -%}
+<div class="stat stat-{{ tone }}">
+  <div class="stat-value">
+    <span>{{ value }}</span>
+    {% if check %}<span class="stat-check">{{ icon('check', 20) }}</span>{% endif %}
+  </div>
+  <div class="stat-label">{{ label }}</div>
+  {% if note %}<div class="stat-note">{{ note }}</div>{% endif %}
+</div>
+{%- endmacro %}
+
+{% macro origin_chip(origin) -%}
+{%- set v = (origin.value if origin.value is defined else origin) | string -%}
+{%- if v == 'open_web' -%}
+<span class="supp-flag">{{ icon('alert', 12) }} Supplementary web evidence</span>
+{%- else -%}
+<span class="chip chip-sm">{{ enum_label(origin) }}</span>
+{%- endif -%}
+{%- endmacro %}
+
+{% macro ext_link(url, label='') -%}
+{%- if url -%}
+<a class="break" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ label or url }} {{ icon('external', 12) }}</a>
+{%- else -%}<span class="text-faint">Not stated</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro dt(value, fmt='%d %b %Y, %H:%M UTC') -%}
+{%- if value -%}
+{{ value.strftime(fmt) if value.strftime is defined else value }}
+{%- else -%}—{%- endif -%}
+{%- endmacro %}

@@ -1,0 +1,55 @@
+# Sufficiency thresholds and escalation limits.
+# A question is answered only when it clears sufficiency. Everything else
+# escalates: refine the query, then widen to open-web fallback, then give up
+# explicitly rather than silently.
+
+sufficiency:
+  min_evidence_items: 3          # distinct evidence items supporting the question
+  min_distinct_sources: 2        # from different source ids
+  min_primary_tier_items: 1      # at least one item at tier <= primary_tier_ceiling
+  primary_tier_ceiling: 2
+  min_coverage_score: 0.60       # weighted tier coverage, 0..1
+  min_quote_length: 40           # chars; shorter quotes do not count as support
+
+confidence:
+  # Evaluated top-down; first match wins.
+  high:
+    min_coverage_score: 0.80
+    min_evidence_items: 4
+    min_primary_tier_items: 2
+    max_open_contradictions: 0
+  medium:
+    min_coverage_score: 0.60
+    min_evidence_items: 3
+    min_primary_tier_items: 1
+    max_open_contradictions: 2
+  requires_input:
+    # Anything that reaches evidence but fails medium, or carries an escalated
+    # contradiction, or was answered only from supplementary web evidence.
+    description: "Reached evidence but not sufficiency, or carries an unresolved conflict"
+  rejected:
+    description: "No usable evidence after every retrieval strategy was exhausted"
+
+escalation:
+  max_refinement_rounds: 2       # query rewrites against approved sources
+  enable_open_web_fallback: true
+  open_web_max_results: 6
+  open_web_max_scrapes: 4
+  # Open-web evidence is always tier 5 and always labelled SUPPLEMENTARY WEB EVIDENCE.
+  open_web_never_overrides_tier: 4
+
+limits:
+  max_questions_per_stage: 12
+  max_sources_per_question: 8
+  max_evidence_items_per_question: 14
+  max_concurrent_connectors: 6
+  connector_timeout_seconds: 30
+  connector_retries: 2
+  http_cache_ttl_seconds: 86400
+  max_parallel_agents: 3
+
+contradictions:
+  # A conflict between two tiers this far apart is escalated, not merely noted.
+  escalate_on_tier_gap: 2
+  escalate_on_numeric_delta_pct: 15
+  auto_resolve: false            # never. Both sides are reported as stated.

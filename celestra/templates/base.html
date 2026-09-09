@@ -1,0 +1,150 @@
+{%- from "partials/icons.html" import icon, ring_logo -%}
+{%- from "partials/macros.html" import run_status_chip -%}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block title %}Celestra{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='9' fill='none' stroke='%232563eb' stroke-width='2'/%3E%3Ccircle cx='12' cy='12' r='3' fill='%232563eb'/%3E%3C/svg%3E">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to main content</a>
+
+<div class="app">
+  {% block sidebar %}
+  <nav class="sidebar" aria-label="Primary">
+    <a class="brand" href="/">
+      {{ ring_logo(22) }}
+      <span class="brand-word">Celestra</span>
+    </a>
+
+    <div class="nav">
+      <a class="nav-item {{ 'is-active' if active == 'home' }}" href="/"
+         {% if active == 'home' %}aria-current="page"{% endif %}>
+        {{ icon('home', 17) }}<span class="nav-label">Home</span>
+      </a>
+      <a class="nav-item {{ 'is-active' if active == 'new_project' }}" href="/projects/new"
+         {% if active == 'new_project' %}aria-current="page"{% endif %}>
+        {{ icon('plus-square', 17) }}<span class="nav-label">New Project</span>
+      </a>
+      <a class="nav-item {{ 'is-active' if active == 'projects' }}" href="/projects"
+         {% if active == 'projects' %}aria-current="page"{% endif %}>
+        {{ icon('folder', 17) }}<span class="nav-label">Projects</span>
+      </a>
+      <a class="nav-item {{ 'is-active' if active == 'library' }}" href="/library"
+         {% if active == 'library' %}aria-current="page"{% endif %}>
+        {{ icon('book', 17) }}<span class="nav-label">Knowledge Library</span>
+      </a>
+    </div>
+
+    {% if run is defined and run %}
+    <div class="nav">
+      <div class="nav-group-label">This project</div>
+      <a class="nav-item {{ 'is-active' if active == 'discovery' }}" href="/runs/{{ run.id }}"
+         {% if active == 'discovery' %}aria-current="page"{% endif %}>
+        {{ icon('activity', 17) }}<span class="nav-label">Discovery</span>
+      </a>
+      <a class="nav-item {{ 'is-active' if active == 'overview' }}" href="/runs/{{ run.id }}/overview"
+         {% if active == 'overview' %}aria-current="page"{% endif %}>
+        {{ icon('layers', 17) }}<span class="nav-label">Overview</span>
+      </a>
+      <a class="nav-item {{ 'is-active' if active == 'insights' }}" href="/runs/{{ run.id }}/insights"
+         {% if active == 'insights' %}aria-current="page"{% endif %}>
+        {{ icon('list', 17) }}<span class="nav-label">Insights</span>
+      </a>
+      <a class="nav-item {{ 'is-active' if active == 'contradictions' }}" href="/runs/{{ run.id }}/contradictions"
+         {% if active == 'contradictions' %}aria-current="page"{% endif %}>
+        {{ icon('split', 17) }}<span class="nav-label">Contradictions</span>
+      </a>
+      <a class="nav-item {{ 'is-active' if active == 'sources' }}" href="/runs/{{ run.id }}/sources"
+         {% if active == 'sources' %}aria-current="page"{% endif %}>
+        {{ icon('database', 17) }}<span class="nav-label">Sources</span>
+      </a>
+      <a class="nav-item {{ 'is-active' if active == 'report' }}" href="/runs/{{ run.id }}/report"
+         {% if active == 'report' %}aria-current="page"{% endif %}>
+        {{ icon('file-text', 17) }}<span class="nav-label">Report</span>
+      </a>
+      <a class="nav-item {{ 'is-active' if active == 'approval' }}" href="/runs/{{ run.id }}/approval"
+         {% if active == 'approval' %}aria-current="page"{% endif %}>
+        {{ icon('check-circle', 17) }}<span class="nav-label">Approval</span>
+      </a>
+    </div>
+    {% endif %}
+
+    <div class="nav-spacer"></div>
+
+    <div class="nav">
+      <a class="nav-item {{ 'is-active' if active == 'settings' }}" href="/settings"
+         {% if active == 'settings' %}aria-current="page"{% endif %}>
+        {{ icon('settings', 17) }}<span class="nav-label">Settings</span>
+      </a>
+    </div>
+  </nav>
+  {% endblock %}
+
+  <main class="main" id="main">
+    <div class="shell">
+
+      {% block banners %}
+      {% if credentials is defined and credentials %}
+        {% if not credentials.get('anthropic_api_key') %}
+        <div class="banner" role="status">
+          {{ icon('alert', 16) }}
+          <div class="banner-body">
+            <strong>Deterministic mode.</strong>
+            No Anthropic API key is configured, so synthesis is running in deterministic mode:
+            findings are assembled from retrieved evidence with rule-based templates rather than
+            model-written prose.
+          </div>
+          <button type="button" class="banner-close" data-dismiss-banner="anthropic"
+                  aria-label="Dismiss deterministic mode notice">{{ icon('x', 15) }}</button>
+        </div>
+        {% endif %}
+        {% if not credentials.get('firecrawl_api_key') %}
+        <div class="banner" role="status">
+          {{ icon('alert', 16) }}
+          <div class="banner-body">
+            <strong>Keyless web fallback.</strong>
+            No Firecrawl API key is configured, so open-web fallback is using the keyless search
+            path. Supplementary web results may be thinner and are always labelled as such.
+          </div>
+          <button type="button" class="banner-close" data-dismiss-banner="firecrawl"
+                  aria-label="Dismiss web fallback notice">{{ icon('x', 15) }}</button>
+        </div>
+        {% endif %}
+      {% endif %}
+      {% endblock %}
+
+      <div class="flash-area" data-flash-area aria-live="polite">
+        {% for message in messages | default([]) %}
+          {% if message is mapping %}
+          <div class="banner is-{{ message.get('level', 'info') }}" role="status">
+            <div class="banner-body">{{ message.get('text', '') }}</div>
+            <button type="button" class="banner-close" data-dismiss-banner
+                    aria-label="Dismiss message">{{ icon('x', 15) }}</button>
+          </div>
+          {% else %}
+          <div class="banner is-info" role="status">
+            <div class="banner-body">{{ message }}</div>
+            <button type="button" class="banner-close" data-dismiss-banner
+                    aria-label="Dismiss message">{{ icon('x', 15) }}</button>
+          </div>
+          {% endif %}
+        {% endfor %}
+      </div>
+
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+<div id="slideover-root"></div>
+
+<script src="/static/js/app.js" defer></script>
+{% block page_scripts %}{% endblock %}
+</body>
+</html>
