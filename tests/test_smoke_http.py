@@ -110,7 +110,7 @@ async def main() -> int:
               "desk-research deliverable" in report)
         check("report shows the QA checklist", "PASS" in report or "NOT APPLICABLE" in report)
         check("report shows sources referenced", "seer.cancer.gov" in report)
-        check("verification tags rendered as pills", 'class="vtag' in report)
+        check("verification marks rendered as dots", 'class="vdot' in report)
 
         insights_html = html_by_path[f"/runs/{run_id}/insights"]
         check("insights name their sources",
@@ -165,6 +165,32 @@ async def main() -> int:
               f"HTTP {r.status_code}")
         run = test_store.get_run(run_id)
         check("  approval timestamped and locked", run.approved_at is not None and run.is_locked)
+
+        print("\n== rename, export, import ==")
+        r = await c.get(f"/runs/{run_id}/rename")
+        check("rename dialog renders", r.status_code == 200 and "Rename project" in r.text)
+        r = await c.post(f"/runs/{run_id}/rename", data={"name": "CLL pilot", "next": f"/runs/{run_id}/report"})
+        check("rename persisted", test_store.get_run(run_id).display_name == "CLL pilot")
+        check("  document carries the name", "CLL pilot" in r.text)
+        r = await c.get(f"/runs/{run_id}/export")
+        check("export downloads JSON", r.status_code == 200
+              and r.headers.get("content-disposition", "").startswith("attachment"))
+        bundle = r.json()
+        check("  bundle holds every part of the run",
+              all(k in bundle for k in ("run", "questions", "evidence", "insights", "stage_reports", "qa")))
+        n_insights = len(test_store.get_insights(run_id))
+        r = await c.post("/projects/import", files={"bundle": ("p.json", r.content, "application/json")})
+        check("import accepted", r.status_code == 200, f"HTTP {r.status_code}")
+        check("  re-import overwrites, not duplicates",
+              len(test_store.get_insights(run_id)) == n_insights and test_store.get_run(run_id).name == "CLL pilot")
+        r = await c.post("/projects/import", files={"bundle": ("x.json", b"{}", "application/json")})
+        check("bad file is refused with an explanation", r.status_code == 422 and "could not be imported" in r.text)
+
+        print("\n== evidence marks ==")
+        r = await c.get(f"/runs/{run_id}/report")
+        check("report uses dots, not pills, for verified marks",
+              'class="vdot vtag-verified"' in r.text and 'class="vtag vtag-verified"' not in r.text)
+        check("  and carries the legend", "How to read the evidence marks" in r.text)
 
         print("\n== errors ==")
         r = await c.get("/runs/run_doesnotexist/overview")

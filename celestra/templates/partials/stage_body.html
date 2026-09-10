@@ -106,15 +106,15 @@
       {% endif %}
       <p class="qa-meta">
         {%- set st = row.get('status', 'not_found') -%}
-        <span class="vtag {{ 'vtag-verified' if st == 'answered' else ('vtag-inference' if st == 'partial' else 'vtag-not-verified') }}">
-          {{ 'ANSWERED' if st == 'answered' else ('PARTIAL' if st == 'partial' else 'NOT FOUND') }}
+        <span class="vdot-label"><span class="vdot {{ 'vtag-verified' if st == 'answered' else ('vtag-inference' if st == 'partial' else 'vtag-not-verified') }}"></span>
+          {{ 'Answered' if st == 'answered' else ('Partly answered' if st == 'partial' else 'Not found') }}
         </span>
         {% for c in row.get('citations') or [] %}<span class="src-chip">{{ c }}</span>{% endfor %}
         {% if row.get('supplementary') %}
-        <span class="vtag vtag-general-knowledge">INCLUDES SUPPLEMENTARY WEB EVIDENCE</span>
+        <span class="vdot-label"><span class="vdot vtag-general-knowledge"></span> includes web evidence</span>
         {% endif %}
         {% if row.get('revised') %}
-        <span class="vtag vtag-update">REVISED ON REVIEWER INSTRUCTION</span>
+        <span class="vdot-label"><span class="vdot vtag-update"></span> revised on your instruction</span>
         {% endif %}
         <span class="text-faint">{{ row.get('evidence_count', 0) }} evidence ·
           coverage {{ row.get('coverage', 0) }}</span>

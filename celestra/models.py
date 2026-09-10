@@ -461,6 +461,8 @@ class RunConfig(BaseModel):
 class Run(BaseModel):
     id: str = Field(default_factory=lambda: new_id("run"))
     reference: str = ""
+    # What the person calls this project. Defaults to the indication.
+    name: str = ""
     config: RunConfig
     status: RunStatus = RunStatus.PENDING
     agents: dict[str, AgentState] = Field(default_factory=dict)
@@ -476,6 +478,10 @@ class Run(BaseModel):
     review_after_wave: int = 1
     resume_from_wave: int = 0
     reviewed_at: datetime | None = None
+
+    @property
+    def display_name(self) -> str:
+        return self.name.strip() or self.config.indication
 
     @property
     def phase(self) -> str:

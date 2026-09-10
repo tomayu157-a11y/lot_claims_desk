@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import tag_legend %}
 {% block title %}{{ stage.name }} — Celestra{% endblock %}
 
 {% block content %}
@@ -16,6 +17,9 @@
     {% endif %}
   </div>
 </div>
+
+{{ tag_legend(compact=true) }}
+
 
 <div class="report">
   {% include "partials/stage_body.html" %}

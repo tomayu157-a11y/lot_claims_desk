@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import re
 from contextlib import asynccontextmanager
@@ -166,8 +167,23 @@ _TAG_RE = re.compile(
 _SOURCE_RE = re.compile(r"\[Source:\s*([^\]]+)\]")
 
 
+_TAG_TITLE = {
+    "VERIFIED": "Verified: quoted directly from a source retrieved in this run",
+    "ORIGINAL": "Original: an analytical construct of this workflow",
+    "INFERENCE": "Inference: concluded from several pieces of evidence",
+    "NOT VERIFIED": "Not verified: could not be confirmed in the cited source",
+    "GENERAL KNOWLEDGE": "General knowledge: standard clinical information, not individually verified",
+}
+
+
 def tagify(value: Any) -> Markup:
-    """Renders inline [VERIFIED] / [Source: x] markers as styled pills."""
+    """Renders inline [VERIFIED] / [Source: x] markers.
+
+    A tag becomes a small coloured dot with its meaning on hover, so a table
+    of forty verified cells reads as a table and not as forty green pills.
+    The legend on the page says what each colour means. A source marker
+    becomes a quiet chip with the source name.
+    """
     text = html.escape(str(value or ""))
 
     def tag_sub(m: re.Match) -> str:
@@ -175,11 +191,15 @@ def tagify(value: Any) -> Markup:
         cls = _TAG_CLASS.get(
             raw, "vtag-update" if raw.startswith("UPDATE") else "vtag-general-knowledge"
         )
-        return f'<span class="vtag {cls}">{raw}</span>'
+        title = _TAG_TITLE.get(raw, raw.title())
+        if raw.startswith("UPDATE"):
+            title = f"Update: {raw[6:].strip(' —-:') or 'recent development'}"
+        return (f'<span class="vdot {cls}" role="img" aria-label="{raw.title()}" '
+                f'title="{html.escape(title)}"></span>')
 
     text = _TAG_RE.sub(tag_sub, text)
     text = _SOURCE_RE.sub(
-        lambda m: f'<span class="vtag vtag-source">{m.group(1).strip()}</span>', text
+        lambda m: f'<span class="vsrc" title="Source">{m.group(1).strip()}</span>', text
     )
     return Markup(text)
 
@@ -401,6 +421,7 @@ async def create_project(
     additional_context: str = Form(""),
     mode: str = Form("full"),
     selected_agent: str = Form(""),
+    project_name: str = Form(""),
 ):
     # A disabled <option> cannot be submitted by a browser, but a crafted
     # request can send anything; the server holds the same line as the form.
@@ -458,7 +479,7 @@ async def create_project(
         selected_agent=bucket,
         research_cutoff=get_settings().research_cutoff or orch.default_cutoff(),
     )
-    run = Run(config=cfg, reference=orch.new_reference())
+    run = Run(config=cfg, reference=orch.new_reference(), name=project_name.strip()[:120])
     run.agents = orch.build_agent_states(
         orch.all_buckets() if run_mode is RunMode.FULL else [bucket or "A"]
     )
@@ -561,6 +582,102 @@ async def progress(request: Request, run_id: str):
          "source_chips": source_chip_names(), "last_seq": 0,
          "next_url": _step_url(run)},
     )
+
+
+@app.get("/runs/{run_id}/rename", response_class=HTMLResponse)
+async def rename_form(request: Request, run_id: str):
+    run = get_run_or_404(run_id)
+    return templates.TemplateResponse(
+        request, "partials/rename_modal.html", {**base_ctx(request), "run": run},
+    )
+
+
+@app.post("/runs/{run_id}/rename")
+async def rename_run(request: Request, run_id: str):
+    """Give the project the name the person uses for it. Nothing else about
+    the run changes; the reference stays as its permanent id."""
+    run = get_run_or_404(run_id)
+    body = await _body(request)
+    run.name = str(body.get("name", "")).strip()[:120]
+    store.save_run(run)
+    back = str(body.get("next") or request.headers.get("referer") or f"/runs/{run_id}")
+    if not back.startswith("/"):
+        back = f"/runs/{run_id}"
+    return RedirectResponse(back, status_code=303)
+
+
+_EXPORT_VERSION = 1
+
+
+def _export_bundle(run: Run) -> dict[str, Any]:
+    """Everything the store holds for one run, as plain JSON, so a project
+    can move between a laptop and a hosted instance."""
+    dump = lambda items: [i.model_dump(mode="json") for i in items]  # noqa: E731
+    qa_metrics = store.get_qa(run.id)
+    return {
+        "celestra_export": _EXPORT_VERSION,
+        "exported_at": utcnow().isoformat(),
+        "run": run.model_dump(mode="json"),
+        "questions": dump(store.get_questions(run.id)),
+        "evidence": dump(store.get_evidence(run.id)),
+        "answers": dump(store.get_answers(run.id)),
+        "insights": dump(store.get_insights(run.id)),
+        "contradictions": dump(store.get_contradictions(run.id)),
+        "stage_reports": dump(store.get_stage_reports(run.id)),
+        "qa": qa_metrics.model_dump(mode="json") if qa_metrics else None,
+    }
+
+
+@app.get("/runs/{run_id}/export")
+async def export_run(run_id: str):
+    run = get_run_or_404(run_id)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", run.display_name).strip("-")[:60] or "project"
+    return JSONResponse(
+        _export_bundle(run),
+        headers={"Content-Disposition":
+                 f'attachment; filename="celestra-{safe}-{run.reference or run.id}.json"'},
+    )
+
+
+@app.post("/projects/import")
+async def import_run(request: Request):
+    """Load a project exported from another instance. An id already present
+    is overwritten with the imported copy, so re-importing is safe."""
+    from .models import (
+        Answer, Contradiction, Evidence, QAMetrics, ResearchQuestion, StageReport,
+    )
+
+    form = await request.form()
+    upload = form.get("bundle")
+    raw = await upload.read() if hasattr(upload, "read") else b""
+    try:
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict) or "run" not in data:
+            raise ValueError("not a Celestra export")
+        run = Run.model_validate(data["run"])
+        if run.status in (RunStatus.PENDING, RunStatus.RUNNING):
+            # A run that was mid-flight elsewhere cannot continue here.
+            run.status = RunStatus.FAILED
+            run.error = run.error or "imported while still running on the source instance"
+        store.save_run(run)
+        store.save_questions(run.id, [ResearchQuestion.model_validate(x) for x in data.get("questions", [])])
+        store.save_evidence(run.id, [Evidence.model_validate(x) for x in data.get("evidence", [])])
+        store.save_answers(run.id, [Answer.model_validate(x) for x in data.get("answers", [])])
+        store.save_insights(run.id, [Insight.model_validate(x) for x in data.get("insights", [])])
+        store.save_contradictions(run.id, [Contradiction.model_validate(x) for x in data.get("contradictions", [])])
+        store.save_stage_reports(run.id, [StageReport.model_validate(x) for x in data.get("stage_reports", [])])
+        if data.get("qa"):
+            store.save_qa(run.id, QAMetrics.model_validate(data["qa"]))
+    except Exception as exc:  # noqa: BLE001 - shown to the person
+        return templates.TemplateResponse(
+            request, "error.html",
+            {**base_ctx(request), "message": "That file could not be imported",
+             "detail": f"{type(exc).__name__}: {str(exc)[:300]}. Export a project from the "
+                       "Projects page of the other instance and upload that file.",
+             "entry_points": [{"label": "Projects", "url": "/projects"}]},
+            status_code=422,
+        )
+    return RedirectResponse(f"/runs/{run.id}", status_code=303)
 
 
 @app.get("/runs/{run_id}/stages/{stage}", response_class=HTMLResponse)
@@ -1255,7 +1372,8 @@ async def report(request: Request, run_id: str):
             "qa": qa_metrics, "contradictions": store.get_contradictions(run_id),
             "sources": sources, "execution_plan": execution_plan, "params": params,
             "questions": store.get_questions(run_id),
-            "report_title": f"{cfg.indication} — Clinical Foundation Research",
+            "report_title": (f"{run.display_name} — Clinical Foundation Research"
+                             if run.name else f"{cfg.indication} — Clinical Foundation Research"),
             "executive_summary": qa_metrics.executive_summary if qa_metrics else "",
             "research_method": qa_metrics.research_method if qa_metrics else [],
             "document_limitations": qa_metrics.limitations if qa_metrics else [],

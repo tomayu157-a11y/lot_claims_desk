@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "partials/icons.html" import icon %}
-{% from "partials/macros.html" import tier_badge, severity_chip, ext_link, dict_table, pick, dt %}
+{% from "partials/macros.html" import tag_legend, tier_badge, severity_chip, ext_link, dict_table, pick, dt %}
 {% block title %}Desk research report — Celestra{% endblock %}
 
 {%- set waves = (run.agents.values() | list) if (run is defined and run and run.agents) else [] -%}
@@ -77,48 +77,10 @@
 
 {# ------------------------------------------------------- tagging key #}
 <section class="report-section">
-  <h2>Source-tagging key</h2>
-  <div class="table-wrap">
-    <table class="data table-compact">
-      <thead><tr><th scope="col">Tag</th><th scope="col">Meaning</th></tr></thead>
-      <tbody>
-        <tr><td><span class="vtag vtag-verified">[VERIFIED]</span></td>
-            <td>Directly supported by a source retrieved during this research run.</td></tr>
-        <tr><td><span class="vtag vtag-general-knowledge">[GENERAL KNOWLEDGE]</span></td>
-            <td>Standard clinical information not individually verified during this run.</td></tr>
-        <tr><td><span class="vtag vtag-original">[ORIGINAL]</span></td>
-            <td>Original analytical synthesis or claims-modelling rule created by this workflow.</td></tr>
-        <tr><td><span class="vtag vtag-inference">[INFERENCE]</span></td>
-            <td>Conclusion inferred from multiple pieces of evidence.</td></tr>
-        <tr><td><span class="vtag vtag-update">[UPDATE — DATE]</span></td>
-            <td>Recent or current development identified during this research run.</td></tr>
-        <tr><td><span class="vtag vtag-not-verified">[NOT VERIFIED]</span></td>
-            <td>Asserted value (e.g. a code) that could not be confirmed in the cited source.</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <h3>Source tier hierarchy</h3>
-  <div class="table-wrap">
-    <table class="data table-compact">
-      <thead><tr><th scope="col">Tier</th><th scope="col">Definition</th></tr></thead>
-      <tbody>
-        {% set default_tiers = {
-          1: 'Government, regulators, official guidelines, coding authorities, product labels',
-          2: 'Peer-reviewed literature, trial registries, systematic reviews',
-          3: 'Professional / disease organizations, high-quality secondary evidence',
-          4: 'Industry / contextual sources',
-          5: 'General web (supplementary only)' } %}
-        {% for t, label in (tiers | default(default_tiers, true)).items() %}
-        <tr><td>{{ tier_badge(t) }}</td><td>{{ label }}</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  <p class="table-footnote">
-    A Tier 5 (general web) source never overrides Tier 1 evidence. Evidence obtained through
-    open-web fallback is labelled SUPPLEMENTARY WEB EVIDENCE wherever it appears.
-  </p>
+  <h2>How to read the evidence marks</h2>
+  <p class="sub mb-1">Every figure, criterion or code in this document carries a small coloured dot
+    saying how it was established. Hover a dot for its meaning.</p>
+  {{ tag_legend() }}
 </section>
 
 {# ------------------------------------------------- executive summary #}
@@ -392,7 +354,7 @@
       <li>Claims codes, regimen definitions and line-of-therapy rules marked
         <span class="vtag vtag-original">[ORIGINAL]</span> are analytical constructs of this
         workflow, not source facts.</li>
-      <li>Any value marked <span class="vtag vtag-not-verified">[NOT VERIFIED]</span> could not be
+      <li>Any value marked <span class="vdot vtag-not-verified"></span> (not verified) could not be
         located in the cited source text and must be confirmed against the coding authority before use.</li>
       <li>Evidence marked SUPPLEMENTARY WEB EVIDENCE came from open-web fallback and carries lower
         evidentiary weight than approved-source evidence.</li>

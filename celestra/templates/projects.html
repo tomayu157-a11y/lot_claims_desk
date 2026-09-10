@@ -12,13 +12,25 @@
   <a class="btn btn-primary" href="/projects/new">{{ icon('plus-circle', 16) }} New project</a>
 </div>
 
+<details class="card card-pad mb-2 import-box">
+  <summary class="row" style="gap:8px; cursor:pointer;">
+    {{ icon('download', 15) }} <strong>Import a project</strong>
+    <span class="meta">from a file exported on another instance (your laptop, or the hosted version)</span>
+  </summary>
+  <form method="post" action="/projects/import" enctype="multipart/form-data" class="row wrap mt-2" style="gap:10px;">
+    <input type="file" name="bundle" accept="application/json,.json" required>
+    <button type="submit" class="btn btn-primary btn-sm">Import</button>
+    <span class="hint">Export is on each project's row. Importing the same project again overwrites it.</span>
+  </form>
+</details>
+
 {% if runs %}
 <div class="card">
   <div class="table-wrap">
     <table class="data">
       <thead>
         <tr>
-          <th scope="col">Indication</th>
+          <th scope="col">Project</th>
           <th scope="col">Reference</th>
           <th scope="col">Geography</th>
           <th scope="col">Objective</th>
@@ -32,7 +44,8 @@
         {% for r in runs %}
         <tr>
           <td>
-            <a href="/runs/{{ r.id }}"><strong>{{ r.config.indication }}</strong></a>
+            <a href="/runs/{{ r.id }}"><strong>{{ r.display_name }}</strong></a>
+            {% if r.name %}<div class="meta text-sm">{{ r.config.indication }}</div>{% endif %}
             {% if r.config.drug_brand %}<div class="text-faint text-sm">{{ r.config.drug_brand }}</div>{% endif %}
           </td>
           <td class="mono">{{ r.reference or r.id }}</td>
@@ -46,6 +59,8 @@
           <td class="nowrap">{{ dt(r.created_at, '%d %b %Y') }}</td>
           <td class="nowrap">
             <a class="btn btn-secondary btn-sm" href="/runs/{{ r.id }}">Open</a>
+            <button type="button" class="btn btn-ghost btn-sm" data-modal-url="/runs/{{ r.id }}/rename" title="Rename">{{ icon('edit', 13) }}</button>
+            <a class="btn btn-ghost btn-sm" href="/runs/{{ r.id }}/export" title="Download this project as a file you can import on another instance">{{ icon('download', 13) }} Export</a>
             <a class="btn btn-ghost btn-sm" href="/runs/{{ r.id }}/report">Report</a>
           </td>
         </tr>

@@ -68,7 +68,7 @@
       {{ tinted_tile('file-text', 'blue', 'tile-sm') }}
       <div class="run-main">
         <div class="run-title">
-          <a href="/runs/{{ r.id }}">{{ r.config.indication }}</a>
+          <a href="/runs/{{ r.id }}">{{ r.display_name }}</a>
           {% if r.config.drug_brand %}<span class="text-faint">· {{ r.config.drug_brand }}</span>{% endif %}
         </div>
         <div class="meta meta-row">

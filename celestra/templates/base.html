@@ -44,8 +44,11 @@
     <div class="nav">
       <div class="nav-group-label">This project</div>
       <div class="nav-project-meta">
-        <div class="nav-project-name">{{ run.config.indication }}</div>
-        <div class="meta">{{ run_status_chip(run.status) }}</div>
+        <div class="nav-project-name" title="{{ run.display_name }}">{{ run.display_name }}</div>
+        <div class="meta row" style="gap:6px;">{{ run_status_chip(run.status) }}
+          <button type="button" class="icon-btn icon-btn-sm" data-modal-url="/runs/{{ run.id }}/rename"
+                  title="Rename project" aria-label="Rename project">{{ icon('edit', 13) }}</button>
+        </div>
       </div>
       {{ flow_steps(run_steps(run), compact=true) }}
     </div>

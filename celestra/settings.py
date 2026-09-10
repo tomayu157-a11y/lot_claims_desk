@@ -8,9 +8,14 @@ from typing import Any
 import yaml
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+import os
+
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_DIR = BASE_DIR / "config"
-DATA_DIR = BASE_DIR / "data"
+# Where the database, cache and reference files live. On a hosted service
+# point CELESTRA_DATA_DIR at a persistent disk (Render: the disk's mount
+# path), otherwise every deploy starts with an empty project list.
+DATA_DIR = Path(os.environ.get("CELESTRA_DATA_DIR") or (BASE_DIR / "data")).expanduser()
 REFERENCE_DIR = DATA_DIR / "reference"
 
 

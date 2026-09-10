@@ -222,3 +222,21 @@
   {% endfor %}
 </div>
 {%- endmacro %}
+
+{# The colour key for evidence dots. One line; sits above any table or prose that uses them. #}
+{% macro tag_legend(compact=false) -%}
+<div class="vlegend {{ 'is-compact' if compact }}" aria-label="Evidence colour key">
+  <span><span class="vdot vtag-verified"></span> Verified from a retrieved source</span>
+  <span><span class="vdot vtag-inference"></span> Inferred from several sources</span>
+  <span><span class="vdot vtag-original"></span> Original analytical construct</span>
+  <span><span class="vdot vtag-update"></span> Recent update</span>
+  <span><span class="vdot vtag-general-knowledge"></span> General knowledge</span>
+  <span><span class="vdot vtag-not-verified"></span> Not verified</span>
+  <span><span class="vsrc">Source</span> = where it came from</span>
+</div>
+{%- endmacro %}
+
+{% macro tag_dot(tag) -%}
+{%- set v = (tag.value if tag.value is defined else tag) | string -%}
+<span class="vdot-label"><span class="vdot vtag-{{ v | lower | replace(' ', '-') }}"></span>{{ v | title }}</span>
+{%- endmacro %}

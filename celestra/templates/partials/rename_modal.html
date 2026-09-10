@@ -1,0 +1,25 @@
+{# Rename a project. Context: run #}
+{% from "partials/icons.html" import icon %}
+<div class="modal-backdrop" data-modal-backdrop>
+  <form class="modal" role="dialog" aria-modal="true" aria-labelledby="rename-title"
+        method="post" action="/runs/{{ run.id }}/rename">
+    <div class="modal-head">
+      <h2 id="rename-title">Rename project</h2>
+      <button type="button" class="icon-btn" data-modal-close aria-label="Close dialog">{{ icon('x', 16) }}</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="project-name">Project name</label>
+        <input type="text" id="project-name" name="name" maxlength="120" data-autofocus
+               value="{{ run.name }}" placeholder="{{ run.config.indication }}">
+        <p class="hint">Shown on the project list, the sidebar and the document. Leave it empty to use the
+          indication. The reference <code>{{ run.reference }}</code> never changes.</p>
+      </div>
+      <input type="hidden" name="next" value="{{ request.headers.get('referer', '/runs/' ~ run.id) if request is defined else '/runs/' ~ run.id }}">
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Save name</button>
+    </div>
+  </form>
+</div>

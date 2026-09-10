@@ -3,7 +3,7 @@
    Context: evidence (list of Evidence), insight (optional), run (optional)
    --------------------------------------------------------------------------- #}
 {% from "partials/icons.html" import icon %}
-{% from "partials/macros.html" import tier_badge, enum_label, enum_value, ext_link, dt %}
+{% from "partials/macros.html" import tag_dot, tier_badge, enum_label, enum_value, ext_link, dt %}
 
 <div class="slideover-backdrop" data-slideover-backdrop>
   <aside class="slideover" role="dialog" aria-modal="true" aria-labelledby="evidence-panel-title">
@@ -36,7 +36,7 @@
           <div class="row wrap" style="gap:8px;">
             <strong class="text-sm">{{ ev.organization or ev.source_name }}</strong>
             {{ tier_badge(ev.tier) }}
-            <span class="vtag vtag-{{ enum_value(ev.tag) | lower | replace(' ', '-') }}">[{{ enum_value(ev.tag) }}]</span>
+            {{ tag_dot(ev.tag) }}
           </div>
         </div>
 

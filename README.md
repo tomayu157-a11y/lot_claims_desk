@@ -69,6 +69,23 @@ python tests/test_smoke_http.py        # every route and interaction
 python -m pytest tests/test_templates_render.py -q
 ```
 
+## Hosting on Render, and moving projects between instances
+
+Projects live in one SQLite file under the data directory. On Render the
+filesystem is wiped on every deploy, so attach a **persistent disk** to the
+service and point the app at it:
+
+1. Render dashboard → your web service → Disks → Add disk, mount path
+   `/var/data` (1 GB is plenty).
+2. Environment → add `CELESTRA_DATA_DIR=/var/data`.
+3. Redeploy. The database, HTTP cache and reference files now survive deploys.
+
+To load projects you ran locally onto the hosted version: on your laptop open
+Projects and press **Export** on a project (a JSON file downloads), then on
+the hosted Projects page open **Import a project** and upload that file. The
+run opens at the step it was on. Importing the same file again overwrites the
+copy on the host. The reverse direction works the same way.
+
 ## Production
 
 ```bash
