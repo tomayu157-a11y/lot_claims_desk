@@ -384,8 +384,24 @@ def _enabled_values(options: list[dict]) -> set[str]:
     return {o["value"] for o in options if o.get("enabled")}
 
 
+@app.get("/projects/name", response_class=HTMLResponse)
+async def name_project_dialog(request: Request):
+    """Step one of a new project, as a dialog over whatever page the person
+    is on. Its form is a GET to /projects/new, so no JavaScript is needed."""
+    return templates.TemplateResponse(
+        request, "partials/name_project_modal.html", base_ctx(request, "new_project"),
+    )
+
+
 @app.get("/projects/new", response_class=HTMLResponse)
-async def new_project(request: Request):
+async def new_project(request: Request, name: str = Query("")):
+    """Step two: the research setup. Without a name yet, step one is shown
+    first as a page."""
+    name = name.strip()[:120]
+    if not name:
+        return templates.TemplateResponse(
+            request, "name_project.html", base_ctx(request, "new_project"),
+        )
     configured = get_questions()["indications"]
     indications = [
         {"key": k, "label": v["label"], "abbreviation": v["abbreviation"], "enabled": True}
@@ -404,6 +420,7 @@ async def new_project(request: Request):
             "geographies": GEOGRAPHIES,
             "objectives": OBJECTIVES,
             "agents": agent_catalogue(),
+            "project_name": name,
         },
     )
 

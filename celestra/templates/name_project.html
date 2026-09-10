@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% block title %}Name your project — Celestra{% endblock %}
+{% block content %}
+<div class="shell-narrow">
+  <div class="page-head">
+    <p class="eyebrow">New project · step 1 of 2</p>
+    <h1>Name your project</h1>
+    <p class="sub">Next you choose the indication, geography and objective.</p>
+  </div>
+  <form class="card card-pad" method="get" action="/projects/new">
+    <div class="field">
+      <label for="new-project-name">Project name</label>
+      <input type="text" id="new-project-name" name="name" maxlength="120" required autofocus
+             autocomplete="off" placeholder="e.g. CLL line-of-therapy, US, 2026">
+      <p class="hint">You can rename it later from the sidebar or the Projects page.</p>
+    </div>
+    <div class="btn-row btn-row-end">
+      <a class="btn btn-secondary" href="/projects">Cancel</a>
+      <button type="submit" class="btn btn-primary">Continue {{ icon('arrow-right', 14) }}</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

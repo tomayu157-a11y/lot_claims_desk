@@ -508,6 +508,7 @@ def context() -> dict:
                     "firecrawl_version": "v2"},
         "web_search": {"available": True, "reason": "Firecrawl configured", "keyed": True,
                        "error": "", "error_at": ""},
+        "project_name": "CLL pilot",
         "next_url": "/runs/run_test/approval", "reviewer_inputs": [
             {"insight_id": "ins_1", "stage": "stage_1", "title": "Epidemiology",
              "input": "Use the 2024 SEER release.", "at": "2026-09-01T00:00:00Z"}],

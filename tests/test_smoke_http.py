@@ -62,6 +62,15 @@ async def main() -> int:
         check("unsupported indication is rejected", r.status_code == 422, f"HTTP {r.status_code}")
         check("  and explains why", "research_questions.yaml" in r.text)
 
+        print("\n== naming comes first ==")
+        r = await c.get("/projects/new")
+        check("new project without a name asks for one", r.status_code == 200 and "Name your project" in r.text)
+        r = await c.get("/projects/name")
+        check("naming dialog renders", r.status_code == 200 and 'action="/projects/new"' in r.text)
+        r = await c.get("/projects/new", params={"name": "CLL pilot"})
+        check("named project reaches the setup form",
+              r.status_code == 200 and 'name="indication"' in r.text and 'value="CLL pilot"' in r.text)
+
         print("\n== create and run a project ==")
         r = await c.post("/projects", data={
             "indication": "Chronic Lymphocytic Leukemia",
@@ -71,6 +80,7 @@ async def main() -> int:
             "target_population": "Adult patients with CLL",
             "mode": "single",
             "selected_agent": "clinical-landscape-agent",
+            "project_name": "CLL pilot",
         })
         check("project created", r.status_code == 200, f"HTTP {r.status_code}")
         run_id = next(iter(test_store.list_runs(1)), None)

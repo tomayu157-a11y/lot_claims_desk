@@ -9,7 +9,7 @@
     <h1>Projects</h1>
     <p class="sub">Every discovery run, newest first.</p>
   </div>
-  <a class="btn btn-primary" href="/projects/new">{{ icon('plus-circle', 16) }} New project</a>
+  <a class="btn btn-primary" href="/projects/new" data-modal-url="/projects/name">{{ icon('plus-circle', 16) }} New project</a>
 </div>
 
 <details class="card card-pad mb-2 import-box">
@@ -73,7 +73,7 @@
 <div class="empty">
   <h3>No projects yet</h3>
   <p class="mb-2">Discovery runs will be listed here once you create one.</p>
-  <a class="btn btn-primary" href="/projects/new">Start discovery {{ icon('arrow-right', 15) }}</a>
+  <a class="btn btn-primary" href="/projects/new" data-modal-url="/projects/name">Start discovery {{ icon('arrow-right', 15) }}</a>
 </div>
 {% endif %}
 {% endblock %}

@@ -26,7 +26,7 @@
          {% if active == 'home' %}aria-current="page"{% endif %}>
         {{ icon('home', 17) }}<span class="nav-label">Home</span>
       </a>
-      <a class="nav-item {{ 'is-active' if active == 'new_project' }}" href="/projects/new"
+      <a class="nav-item {{ 'is-active' if active == 'new_project' }}" href="/projects/new" data-modal-url="/projects/name"
          {% if active == 'new_project' %}aria-current="page"{% endif %}>
         {{ icon('plus-square', 17) }}<span class="nav-label">New Project</span>
       </a>

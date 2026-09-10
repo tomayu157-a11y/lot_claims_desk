@@ -22,7 +22,7 @@
         queries approved sources first, and reports which source produced every finding.
       </p>
     </div>
-    <a class="btn btn-primary btn-lg" href="/projects/new">
+    <a class="btn btn-primary btn-lg" href="/projects/new" data-modal-url="/projects/name">
       {{ icon('plus-circle', 16) }} New project
     </a>
   </div>
@@ -90,7 +90,7 @@
   <div class="empty">
     <h3>No projects yet</h3>
     <p class="mb-2">Create your first indication project to see discovery results here.</p>
-    <a class="btn btn-primary" href="/projects/new">Start discovery {{ icon('arrow-right', 15) }}</a>
+    <a class="btn btn-primary" href="/projects/new" data-modal-url="/projects/name">Start discovery {{ icon('arrow-right', 15) }}</a>
   </div>
   {% endif %}
 </div>

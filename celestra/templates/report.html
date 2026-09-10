@@ -16,7 +16,7 @@
     {% if reviewer_inputs %}{{ reviewer_inputs | length }} reviewer input{{ '' if reviewer_inputs | length == 1 else 's' }} are printed with their findings.{% endif %}
   </span>
   <span class="spacer"></span>
-  <a class="btn btn-secondary btn-sm" href="/projects/new">Start another project</a>
+  <a class="btn btn-secondary btn-sm" href="/projects/new" data-modal-url="/projects/name">Start another project</a>
 </div>
 {% elif run.status.value == 'completed' %}
 <div class="doc-state is-draft no-print">

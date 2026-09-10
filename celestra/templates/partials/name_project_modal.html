@@ -1,0 +1,23 @@
+{# Step one of a new project: its name. Context: none #}
+{% from "partials/icons.html" import icon %}
+<div class="modal-backdrop" data-modal-backdrop>
+  <form class="modal" role="dialog" aria-modal="true" aria-labelledby="name-title"
+        method="get" action="/projects/new">
+    <div class="modal-head">
+      <h2 id="name-title">Name your project</h2>
+      <button type="button" class="icon-btn" data-modal-close aria-label="Close dialog">{{ icon('x', 16) }}</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="new-project-name">Project name</label>
+        <input type="text" id="new-project-name" name="name" maxlength="120" required data-autofocus
+               autocomplete="off" placeholder="e.g. CLL line-of-therapy, US, 2026">
+        <p class="hint">You can rename it later. Next you choose the indication, geography and objective.</p>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+      <button type="submit" class="btn btn-primary">Continue {{ icon('arrow-right', 14) }}</button>
+    </div>
+  </form>
+</div>

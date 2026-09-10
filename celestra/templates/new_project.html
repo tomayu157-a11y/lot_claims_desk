@@ -6,8 +6,10 @@
 {% block content %}
 <div class="shell-narrow">
   <form class="card" method="post" action="/projects" novalidate>
+    <input type="hidden" name="project_name" value="{{ project_name | default('') }}">
     <div class="card-body">
       <h1>Create a New Project</h1>
+      {% if project_name | default('') %}<p class="sub"><strong>{{ project_name }}</strong> · step 2 of 2</p>{% endif %}
       <p class="sub mb-3">Provide basic details to help Celestra understand your research objective.</p>
 
       <div class="field">
@@ -39,12 +41,6 @@
         <input type="text" id="drug_brand" name="drug_brand" autocomplete="off"
                placeholder="e.g. Venclexta (venetoclax)">
         <p class="hint">A drug or brand of interest within the indication. Leave blank to research the indication as a whole.</p>
-      </div>
-
-      <div class="field">
-        <label for="project_name">Project name <span class="optional">(Optional)</span></label>
-        <input type="text" id="project_name" name="project_name" maxlength="120" autocomplete="off"
-               placeholder="Defaults to the indication; you can rename it later">
       </div>
 
       <div class="field-row">
