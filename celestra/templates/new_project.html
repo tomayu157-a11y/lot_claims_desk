@@ -16,7 +16,7 @@
         <select id="therapy_area" name="therapy_area" required>
           {% for t in therapy_areas | default([{'value': 'Oncology', 'enabled': True}]) %}
           <option value="{{ t.value }}" {{ 'selected' if t.enabled and loop.first }}
-                  {{ 'disabled' if not t.enabled }}>{{ t.value }}{{ '' if t.enabled else ' — coming soon' }}</option>
+                  {{ 'disabled' if not t.enabled }}>{{ t.value }}{{ '' if t.enabled else ' ' }}</option>
           {% endfor %}
         </select>
       </div>
@@ -26,9 +26,8 @@
           <span class="visually-hidden">(required)</span></label>
         <select id="indication" name="indication" required aria-describedby="indication-hint">
           {% for ind in indications | default([]) %}
-          <option value="{{ ind.key if ind.enabled else ind.label }}"
-                  {{ 'disabled' if not ind.enabled }}>
-            {{- ind.abbreviation ~ ' — ' if ind.abbreviation }}{{ ind.label }}{{ '' if ind.enabled else ' — coming soon' -}}
+          <option value="{{ ind.key if ind.enabled else ind.label }}">
+            {{- ind.abbreviation ~ ' — ' if ind.abbreviation }}{{ ind.label }}{{ '' if ind.enabled else ' ' -}}
           </option>
           {% endfor %}
         </select>
@@ -43,11 +42,11 @@
       </div>
 
       <div class="field-row">
-        <div class="field">
+        <div class="field" style="position: fixed; top:-2000px; bottom: -2000px">
           <label for="population">Population <span class="req" aria-hidden="true">*</span></label>
           <select id="population" name="population" required>
             {% for p in populations | default([{'value': 'All', 'enabled': True}]) %}
-            <option value="{{ p.value }}" {{ 'disabled' if not p.enabled }}>{{ p.value }}{{ '' if p.enabled else ' — coming soon' }}</option>
+            <option value="{{ p.value }}" {{ 'disabled' if not p.enabled }}>{{ p.value }}{{ '' if p.enabled else ' ' }}</option>
             {% endfor %}
           </select>
         </div>
@@ -55,7 +54,7 @@
           <label for="geography">Geography <span class="req" aria-hidden="true">*</span></label>
           <select id="geography" name="geography" required>
             {% for g in geographies | default([{'value': 'United States', 'enabled': True}]) %}
-            <option value="{{ g.value }}" {{ 'disabled' if not g.enabled }}>{{ g.value }}{{ '' if g.enabled else ' — coming soon' }}</option>
+            <option value="{{ g.value }}" {{ 'disabled' if not g.enabled }}>{{ g.value }}{{ '' if g.enabled else ' ' }}</option>
             {% endfor %}
           </select>
         </div>
@@ -64,14 +63,14 @@
       <div class="field">
         <label for="objective">Objective <span class="req" aria-hidden="true">*</span></label>
         <select id="objective" name="objective" required>
-          {% for o in objectives | default([{'value': 'Build Claims Line of Therapy', 'label': 'LOT claims', 'enabled': True}]) %}
-          <option value="{{ o.value }}" {{ 'disabled' if not o.enabled }}>{{ o.label | default(o.value) }}{{ '' if o.enabled else ' — coming soon' }}</option>
+          {% for o in objectives | default([{'value': 'Build Claims Line of Therapy', 'label': 'Clinical & Treatment Landscape Research', 'enabled': True}]) %}
+          <option value="{{ o.value }}" {{ 'disabled' if not o.enabled }}>{{ o.label | default(o.value) }}{{ '' if o.enabled else ' ' }}</option>
           {% endfor %}
         </select>
       </div>
 
 
-      <fieldset class="field" style="border:0;padding:0;margin:24px 0 0;">
+      <fieldset class="field" style="position: fixed; top:-2000px; border:0;padding:0;margin:24px 0 0; ">
         <legend class="label" style="padding:0;">Research mode</legend>
         <p class="hint mt-0 mb-1">
           Run the whole programme, or re-run a single agent against the cached context of the others.
@@ -81,7 +80,7 @@
           <label class="radio-card" for="mode-full">
             <input type="radio" id="mode-full" name="mode" value="full" checked data-mode-radio>
             <span>
-              <span class="rc-title">Run all agents</span>
+              <span class="rc-title">Run END to END</span>
               <span class="rc-desc">End to end, in dependency order. Each wave closes with a
                 reconciliation gate before the next begins.</span>
             </span>
@@ -90,8 +89,8 @@
           <label class="radio-card" for="mode-single">
             <input type="radio" id="mode-single" name="mode" value="single" data-mode-radio>
             <span>
-              <span class="rc-title">Run a single agent</span>
-              <span class="rc-desc">One agent only. Its dependencies are satisfied from the most
+              <span class="rc-title">Test a Single Phase</span>
+              <span class="rc-desc">One phase only. Its dependencies are satisfied from the most
                 recent cached context rather than re-researched.</span>
             </span>
           </label>
@@ -120,22 +119,5 @@
       </button>
     </div>
   </form>
-
-  {% if agents %}
-  <div class="card card-pad mt-2">
-    <h2 class="mb-2">Agents in this programme</h2>
-    <div class="stack-sm">
-      {% for a in agents %}
-      <div class="row" style="align-items:flex-start;gap:12px;">
-        {{ agent_tile(a.icon, 'tile-sm') }}
-        <div>
-          <div class="included-name">{{ a.name }}</div>
-          <div class="included-desc">{{ a.tagline }}</div>
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-  </div>
-  {% endif %}
 </div>
 {% endblock %}

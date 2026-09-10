@@ -338,7 +338,6 @@ async def projects(request: Request):
 # so the roadmap is visible without pretending it works today.
 THERAPY_AREAS = [
     {"value": "Oncology", "enabled": True},
-    {"value": "Hematology", "enabled": False},
     {"value": "Immunology", "enabled": False},
     {"value": "Neurology", "enabled": False},
     {"value": "Cardiovascular", "enabled": False},
@@ -351,7 +350,7 @@ GEOGRAPHIES = [
     {"value": "Europe", "enabled": False},
 ]
 OBJECTIVES = [
-    {"value": "Build Claims Line of Therapy", "label": "LOT claims", "enabled": True},
+    {"value": "Build Claims Line of Therapy", "label": "Clinical & Treatment Landscape Research", "enabled": True},
     {"value": "Targeting", "label": "Targeting", "enabled": False},
     {"value": "Forecasting", "label": "Forecasting", "enabled": False},
 ]
