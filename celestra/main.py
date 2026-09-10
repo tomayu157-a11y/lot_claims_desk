@@ -1399,6 +1399,49 @@ async def report(request: Request, run_id: str):
     )
 
 
+@app.get("/runs/{run_id}/findings", response_class=HTMLResponse)
+async def findings_report(request: Request, run_id: str, phase: str = Query("all"),
+                          download: int = Query(0)):
+    """The findings only: cards, tables and answers, per phase and stage,
+    with the coloured marks and sources. No run metadata, no QA, no method.
+    The same page is viewed, printed to PDF, or downloaded as a file."""
+    run = get_run_or_404(run_id)
+    insights = store.get_insights(run_id)
+    reports = {r.stage: r for r in store.get_stage_reports(run_id)}
+    phase = phase if phase in ("discovery", "mapping") else "all"
+    groups: list[dict[str, Any]] = []
+    for spec in orch.phases_for([a.bucket for a in run.agents.values()]):
+        if phase != "all" and spec["key"] != phase:
+            continue
+        stages: list[dict[str, Any]] = []
+        for a in sorted(run.agents.values(), key=lambda x: x.wave):
+            if orch.phase_of(a.bucket) != spec["key"]:
+                continue
+            for st in a.stages or []:
+                report = reports.get(st)
+                if report is None:
+                    continue
+                cards = sorted((i for i in insights if i.stage == st),
+                               key=lambda i: (i.number or 999, i.title))
+                stages.append({"report": report, "cards": cards})
+        groups.append({**spec, "stages": stages})
+    labels = {"all": "Whole document", "discovery": "Discovery",
+              "mapping": "Mapping & Synthesis"}
+    ctx = {
+        "request": request, "run": run, "phase_key": phase, "phase_label": labels[phase],
+        "groups": groups, "download": bool(download), "source_names": _source_names(),
+        "generated": utcnow().strftime("%d %b %Y, %H:%M UTC"),
+    }
+    response = templates.TemplateResponse(request, "findings.html", ctx)
+    if download:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", run.display_name).strip("-")[:60] or "project"
+        suffix = "" if phase == "all" else f"-{phase}"
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="{safe}-findings{suffix}.html"'
+        )
+    return response
+
+
 @app.get("/runs/{run_id}/sources", response_class=HTMLResponse)
 async def sources_panel(request: Request, run_id: str):
     """What this run actually queried, what each source returned, and what it

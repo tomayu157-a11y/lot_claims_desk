@@ -196,6 +196,23 @@ async def main() -> int:
         r = await c.post("/projects/import", files={"bundle": ("x.json", b"{}", "application/json")})
         check("bad file is refused with an explanation", r.status_code == 422 and "could not be imported" in r.text)
 
+        print("\n== findings report ==")
+        r = await c.get(f"/runs/{run_id}/findings")
+        check("findings report renders", r.status_code == 200 and "Findings" in r.text)
+        check("  carries cards, tables and answers",
+              'class="card"' in r.text and "Questions and answers" in r.text)
+        check("  carries no run metadata",
+              "Execution plan" not in r.text and "QA checklist" not in r.text
+              and "Synthesis engine" not in r.text)
+        r = await c.get(f"/runs/{run_id}/findings", params={"phase": "discovery"})
+        check("phase-wise report renders", r.status_code == 200 and "Discovery phase" in r.text)
+        r = await c.get(f"/runs/{run_id}/findings", params={"phase": "mapping"})
+        check("empty phase says so", r.status_code == 200 and "Nothing has been produced" in r.text)
+        r = await c.get(f"/runs/{run_id}/findings", params={"download": 1})
+        check("download is an attachment", "attachment" in r.headers.get("content-disposition", "")
+              and "findings" in r.headers.get("content-disposition", ""))
+        check("  and self-contained", "<style>" in r.text and "/static/" not in r.text)
+
         print("\n== evidence marks ==")
         r = await c.get(f"/runs/{run_id}/report")
         check("report uses dots, not pills, for verified marks",

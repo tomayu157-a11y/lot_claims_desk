@@ -1,0 +1,157 @@
+{#- The findings report: everything that was found, nothing about how.
+    Standalone (own CSS, no sidebar) so the same page is what you view, print
+    to PDF, or download as a file that opens in a browser or Word.
+    Context: run, phase_key, phase_label, groups, generated, download, source_names -#}
+{% from "partials/macros.html" import data_table, source_name_chips, tag_legend %}
+{%- set names = source_names | default({}) -%}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ run.display_name }} — Findings{{ ' · ' ~ phase_label if phase_key != 'all' else '' }}</title>
+<style>
+  :root { --ink:#1b2130; --ink2:#4a5567; --ink3:#8a94a6; --line:#e6e8ec; --soft:#f6f7f9;
+          --ok:#157347; --warn:#b45309; --danger:#be123c; --primary:#2563eb; --purple:#6d28d9; --slate:#5b6577; }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 13.5px/1.55 -apple-system, "Segoe UI", Inter, Roboto, sans-serif; color:var(--ink); background:#fff; }
+  .doc { max-width: 960px; margin: 0 auto; padding: 32px 40px 80px; }
+  .toolbar { position: sticky; top: 0; background:#fff; border-bottom:1px solid var(--line); padding:10px 0; margin-bottom: 20px;
+             display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .toolbar a, .toolbar button { font: inherit; font-size:12.5px; font-weight:600; color:var(--primary); background:var(--soft);
+             border:1px solid var(--line); border-radius:8px; padding:6px 10px; text-decoration:none; cursor:pointer; }
+  .toolbar a.is-active { background:var(--primary); color:#fff; border-color:var(--primary); }
+  .toolbar .spacer { flex:1; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h2 { font-size: 18px; margin: 34px 0 6px; padding-top: 18px; border-top: 2px solid var(--ink); }
+  h3 { font-size: 15px; margin: 22px 0 6px; }
+  h4 { font-size: 13px; margin: 14px 0 6px; text-transform: uppercase; letter-spacing:.06em; color:var(--ink3); }
+  .meta { color: var(--ink3); font-size: 12.5px; }
+  .sub { color: var(--ink2); margin: 0 0 8px; }
+  .card { border:1px solid var(--line); border-radius:10px; padding:14px 16px; margin: 12px 0; break-inside: avoid; }
+  .card-head { display:flex; align-items:center; gap:10px; margin-bottom:6px; }
+  .num { font-family: ui-monospace, Menlo, monospace; font-weight:700; font-size:12px; color:var(--primary); background:#eaf1ff; padding:2px 7px; border-radius:6px; }
+  .card-title { font-weight:700; font-size:14.5px; }
+  .finding { margin: 0 0 8px; }
+  .interp { margin: 8px 0 0; color: var(--ink2); }
+  .label { font-size: 10.5px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--ink3); margin: 8px 0 3px; }
+  .metrics { display:grid; grid-template-columns: repeat(auto-fit, minmax(140px,1fr)); gap:8px; }
+  .metric { border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:var(--soft); }
+  .metric b { display:block; font-size:16px; }
+  .metric span { font-size:11.5px; color:var(--ink3); }
+  ol.steps { display:flex; flex-wrap:wrap; gap:6px; padding:0; margin:0; list-style:none; counter-reset:s; }
+  ol.steps li { counter-increment:s; background:#eaf1ff; color:#1e3a8a; border-radius:6px; padding:4px 9px; font-size:12px; font-weight:600; }
+  ol.steps li::before { content: counter(s) ". "; color:var(--primary); }
+  ul.points, ol.points { margin: 4px 0 0 18px; padding:0; }
+  table.data { width:100%; border-collapse:collapse; font-size:12.5px; margin: 6px 0; }
+  table.data th, table.data td { text-align:left; vertical-align:top; padding:6px 9px; border-bottom:1px solid var(--line); }
+  table.data thead th { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--ink3); background:var(--soft); }
+  .table-wrap { overflow-x:auto; }
+  .subblock { margin: 10px 0; }
+  .table-title h3 { margin: 10px 0 4px; font-size: 13.5px; }
+  .table-footnote { font-size:11.5px; color:var(--ink3); margin: 2px 0 8px; }
+  .chip-row { display:inline-flex; flex-wrap:wrap; gap:5px; }
+  .chip { display:inline-block; font-size:11px; padding:1px 8px; border-radius:999px; border:1px solid var(--line); background:var(--soft); color:var(--ink2); }
+  .chip-source.is-used { background:#eaf1ff; color:#1e3a8a; border-color:#c7d7fb; }
+  .vdot { display:inline-block; width:8px; height:8px; border-radius:50%; margin:0 5px 1px 0; vertical-align:middle; background:#dcdfe6; }
+  .vdot.vtag-verified { background:var(--ok); } .vdot.vtag-inference { background:var(--warn); }
+  .vdot.vtag-original { background:var(--primary); } .vdot.vtag-update { background:var(--purple); }
+  .vdot.vtag-not-verified { background:var(--danger); } .vdot.vtag-general-knowledge { background:var(--slate); opacity:.55; }
+  .vsrc { display:inline-block; margin-left:4px; padding:0 6px; font-size:11px; color:var(--ink3); background:var(--soft); border-radius:999px; white-space:nowrap; }
+  .vlegend { display:flex; flex-wrap:wrap; gap:6px 16px; padding:8px 12px; border:1px solid var(--line); border-radius:8px; background:var(--soft); font-size:12px; color:var(--ink2); margin: 10px 0 0; }
+  .vdot-label { display:inline-flex; align-items:center; gap:2px; font-size:12px; color:var(--ink2); }
+  .qa { margin: 8px 0 10px; padding-left: 12px; border-left: 3px solid var(--line); }
+  .qa .q { font-weight:600; margin:0 0 2px; }
+  .qa .a { margin:0; }
+  .qa .s { margin:3px 0 0; font-size:12px; color:var(--ink3); }
+  .note { margin: 6px 0 0; padding: 6px 10px; border-left: 3px solid #f6c453; background:#fff8e6; font-size:12.5px; }
+  .status { font-size:12px; color:var(--ink2); margin: 0 0 6px; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; vertical-align:middle; }
+  .dot.ready { background:var(--ok); } .dot.review { background:var(--warn); }
+  @media print { .toolbar { display:none; } .doc { padding: 0; max-width:none; } h2 { break-before: page; } h2:first-of-type { break-before: auto; } a { color:inherit; text-decoration:none; } }
+</style>
+</head>
+<body>
+<div class="doc">
+  {% if not download %}
+  <div class="toolbar">
+    <a href="/runs/{{ run.id }}" title="Back to the project">← {{ run.display_name }}</a>
+    <span class="spacer"></span>
+    <a class="{{ 'is-active' if phase_key == 'all' }}" href="/runs/{{ run.id }}/findings">Whole document</a>
+    <a class="{{ 'is-active' if phase_key == 'discovery' }}" href="/runs/{{ run.id }}/findings?phase=discovery">Discovery</a>
+    <a class="{{ 'is-active' if phase_key == 'mapping' }}" href="/runs/{{ run.id }}/findings?phase=mapping">Mapping &amp; Synthesis</a>
+    <a href="/runs/{{ run.id }}/findings?phase={{ phase_key }}&amp;download=1">Download</a>
+    <button type="button" onclick="window.print()">Print / Save as PDF</button>
+  </div>
+  {% endif %}
+
+  <h1>{{ run.display_name }}</h1>
+  <p class="sub">{{ run.config.indication }} · {{ run.config.geography }} · {{ run.config.objective }}{% if run.config.drug_brand %} · {{ run.config.drug_brand }}{% endif %}</p>
+  <p class="meta">Findings{{ ' · ' ~ phase_label if phase_key != 'all' else '' }} · {{ 'Approved' if run.status.value == 'approved' else 'Draft' }} · {{ generated }}</p>
+  {{ tag_legend() }}
+
+  {% for g in groups %}
+  <h2>{{ g.name }} phase</h2>
+  <p class="sub">{{ g.description }}</p>
+
+    {% for st in g.stages %}
+    <h3>{{ st.report.name }}</h3>
+    <p class="sub">{{ st.report.core_question }}</p>
+
+    {% for c in st.cards %}
+    <div class="card">
+      <div class="card-head">
+        {% if c.number %}<span class="num">{{ '%02d' % c.number }}</span>{% endif %}
+        <span class="card-title">{{ c.title }}</span>
+      </div>
+      <p class="finding">{{ c.summary }}</p>
+      <p class="status">
+        {% if c.review_action.value != 'pending' or c.confidence.value == 'ready' %}<span class="dot ready"></span>{{ c.review_action.label if c.review_action.value != 'pending' else 'Ready' }}
+        {% else %}<span class="dot review"></span>Needs review{% if c.input_reason %}: {{ c.input_reason }}{% endif %}{% endif %}
+      </p>
+      {% if c.evidence %}
+        {% if c.evidence_type == 'metrics' %}
+        <div class="metrics">{% for m in c.evidence %}<div class="metric"><b>{{ m.value }}</b><span>{{ m.label }}</span></div>{% endfor %}</div>
+        {% elif c.evidence_type == 'table' and c.evidence.columns is defined %}
+        <div class="table-wrap"><table class="data"><thead><tr>{% for col in c.evidence.columns %}<th>{{ col }}</th>{% endfor %}</tr></thead>
+        <tbody>{% for row in c.evidence.rows %}<tr>{% for cell in row %}<td>{{ cell | tagify }}</td>{% endfor %}</tr>{% endfor %}</tbody></table></div>
+        {% elif c.evidence_type == 'steps' %}
+        <ol class="steps">{% for s in c.evidence %}<li>{{ s }}</li>{% endfor %}</ol>
+        {% else %}
+        <ul class="points">{% for pt in c.evidence %}<li>{{ pt | tagify }}</li>{% endfor %}</ul>
+        {% endif %}
+      {% endif %}
+      {% if c.interpretation %}<p class="interp"><strong>What this means:</strong> {{ c.interpretation }}</p>{% endif %}
+      {% if c.reviewer_input %}<p class="note"><strong>Reviewer input:</strong> {{ c.reviewer_input }}</p>{% endif %}
+      {% if c.source_ids %}<div class="label">Sources</div>{{ source_name_chips(c.source_ids, names) }}{% endif %}
+    </div>
+    {% endfor %}
+
+    {% if st.report.tables %}
+    <h4>Tables</h4>
+    {% for t in st.report.tables %}{{ data_table(t, compact=true) }}{% endfor %}
+    {% endif %}
+
+    {% if st.report.answers %}
+    <h4>Questions and answers</h4>
+    {% for row in st.report.answers %}
+    <div class="qa">
+      <p class="q">{{ row.get('seed') or row.get('question') }}</p>
+      {% if row.get('answer') %}<p class="a">{{ row.get('answer') | tagify }}</p>
+      {% else %}<p class="a meta">Not answered from the sources consulted.</p>{% endif %}
+      <p class="s">
+        {%- set stt = row.get('status', 'not_found') -%}
+        <span class="vdot {{ 'vtag-verified' if stt == 'answered' else ('vtag-inference' if stt == 'partial' else 'vtag-not-verified') }}"></span>
+        {%- for cite in row.get('citations') or [] %}<span class="vsrc">{{ cite }}</span>{% endfor %}
+      </p>
+      {% if row.get('reviewer_input') %}<p class="note"><strong>Reviewer input:</strong> {{ row.get('reviewer_input') }}</p>{% endif %}
+    </div>
+    {% endfor %}
+    {% endif %}
+    {% endfor %}
+  {% else %}
+  <p class="sub">Nothing has been produced for this phase yet.</p>
+  {% endfor %}
+</div>
+</body>
+</html>

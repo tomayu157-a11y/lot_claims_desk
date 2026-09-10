@@ -70,6 +70,10 @@
          {% if active == 'sources' %}aria-current="page"{% endif %}>
         {{ icon('database', 17) }}<span class="nav-label">Sources</span>
       </a>
+      <a class="nav-item {{ 'is-active' if active == 'findings' }}" href="/runs/{{ run.id }}/findings"
+         {% if active == 'findings' %}aria-current="page"{% endif %}>
+        {{ icon('download', 17) }}<span class="nav-label">Findings report</span>
+      </a>
       <a class="nav-item {{ 'is-active' if active == 'report' }}" href="/runs/{{ run.id }}/report"
          {% if active == 'report' %}aria-current="page"{% endif %}>
         {{ icon('file-text', 17) }}<span class="nav-label">{{ 'Approved document' if run.status.value == 'approved' else 'Draft document' }}</span>

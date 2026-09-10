@@ -46,6 +46,7 @@
     </p>
   </div>
   <div class="btn-row no-print">
+    <a class="btn btn-primary" href="/runs/{{ run.id }}/findings">{{ icon('download', 15) }} Findings only</a>
     <a class="btn btn-secondary" href="/runs/{{ run.id }}/overview">Stage reports</a>
     <a class="btn btn-secondary" href="/runs/{{ run.id }}/sources">Sources</a>
     <button type="button" class="btn btn-ghost" onclick="window.print()">{{ icon('download', 15) }} Print</button>

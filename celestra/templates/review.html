@@ -41,7 +41,10 @@
         <li>{{ agent_tile(a.icon) }}<div><strong>{{ a.name }}</strong><div class="sub">{{ a.tagline }}</div></div></li>
         {% endfor %}
       </ul>
-      <a class="btn btn-ghost btn-sm mt-1" href="/runs/{{ rid }}/progress">See what the agents did</a>
+      <div class="btn-row mt-1">
+        <a class="btn btn-ghost btn-sm" href="/runs/{{ rid }}/progress">See what the agents did</a>
+        <a class="btn btn-ghost btn-sm" href="/runs/{{ rid }}/findings?phase=discovery">{{ icon('download', 13) }} Discovery findings report</a>
+      </div>
     </div>
   </section>
   <section class="card">

@@ -112,6 +112,7 @@
 {% endif %}
 
 <div class="btn-row btn-row-end mt-3">
+  <a class="btn btn-secondary" href="/runs/{{ rid }}/findings">{{ icon('download', 14) }} Findings report</a>
   <a class="btn btn-secondary" href="/runs/{{ rid }}/report">{{ 'Open the approved document' if gate.done else 'Preview the draft document' }}</a>
   {% if not gate.done %}<a class="btn btn-ghost" href="#gate">Back to the approval decision ↑</a>{% endif %}
 </div>
