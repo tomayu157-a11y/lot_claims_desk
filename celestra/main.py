@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.formparsers import MultiPartException, MultiPartParser
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -1146,6 +1147,32 @@ class _AttachBodyTooLarge(Exception):
     """A multipart stream crossed the route's total upload budget."""
 
 
+class _FilePartTooLarge(Exception):
+    """A multipart file exceeded its allowed bytes before Starlette spooled it."""
+
+    def __init__(self, filename: str) -> None:
+        self.filename = filename
+
+
+class _CappedMultipartParser(MultiPartParser):
+    """Starlette's parser with the missing file-part byte boundary."""
+    def __init__(self, *args, max_file_bytes: int, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.max_file_bytes = max_file_bytes
+        self._current_file_bytes = 0
+
+    def on_part_begin(self) -> None:
+        self._current_file_bytes = 0
+        super().on_part_begin()
+
+    def on_part_data(self, data: bytes, start: int, end: int) -> None:
+        if self._current_part.file is not None:
+            self._current_file_bytes += end - start
+            if self._current_file_bytes > self.max_file_bytes:
+                raise _FilePartTooLarge(self._current_part.file.filename or "file")
+        super().on_part_data(data, start, end)
+
+
 class _InsightLock:
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
@@ -1185,13 +1212,22 @@ async def _bounded_attach_form(request: Request):
 
     bounded = Request(request.scope, receive)
     try:
-        return await bounded.form(
+        parser = _CappedMultipartParser(
+            bounded.headers, bounded.stream(),
             max_files=MAX_FILES_PER_INSIGHT,
             max_fields=_MAX_ATTACH_FIELDS,
             max_part_size=_MAX_ATTACH_FIELD_BYTES,
+            max_file_bytes=MAX_FILE_BYTES,
         )
+        return await parser.parse()
     except _AttachBodyTooLarge:
         raise _AttachError(413, "Files can be up to 1 MB each.") from None
+    except _FilePartTooLarge as exc:
+        raise _AttachError(400, "Some files can't be attached.", [{
+            "name": exc.filename, "error": "This file is over 1 MB.",
+        }]) from None
+    except MultiPartException as exc:
+        raise _AttachError(400, exc.message) from None
     except StarletteHTTPException as exc:
         raise _AttachError(exc.status_code, str(exc.detail)) from None
 

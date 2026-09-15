@@ -13,6 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import httpx
 from reviewer_fixtures import pdf_bytes
+from starlette import formparsers
+from starlette.requests import Request
 
 import celestra.main as app_mod
 import celestra.services.orchestrator as orch_mod
@@ -92,6 +94,30 @@ async def post_raw_multipart(client: httpx.AsyncClient, url: str, body: bytes,
     return await client.send(request)
 
 
+def multipart_stream_request(body: bytes, boundary: str, chunk_size: int = 64 * 1024):
+    """A source whose unread multipart chunks remain observable after abort."""
+    chunks = [body[start:start + chunk_size] for start in range(0, len(body), chunk_size)]
+    state = {"next": 0}
+
+    async def receive() -> dict:
+        index = state["next"]
+        if index >= len(chunks):
+            return {"type": "http.request", "body": b"", "more_body": False}
+        state["next"] += 1
+        return {
+            "type": "http.request", "body": chunks[index],
+            "more_body": state["next"] < len(chunks),
+        }
+
+    scope = {
+        "type": "http", "method": "POST", "scheme": "http", "path": "/",
+        "query_string": b"", "headers": [
+            (b"content-type", f"multipart/form-data; boundary={boundary}".encode()),
+        ], "app": app_mod.app,
+    }
+    return Request(scope, receive), state, len(chunks)
+
+
 class Upload:
     """The small UploadFile surface the commit helper needs for overlap tests."""
     def __init__(self, filename: str, data: bytes) -> None:
@@ -143,6 +169,50 @@ async def main() -> int:
         check("an excessive multipart field is refused while parsing",
               r.status_code == 400 and "Part exceeded maximum size" in r.text,
               f"HTTP {r.status_code} {r.text[:160]}")
+
+        print("\n== a file over 1 MB is stopped before full spooling ==")
+        one_and_a_half_megabytes = b"x" * (1536 * 1024)
+        spooled_bytes = 0
+        original_write = formparsers.UploadFile.write
+
+        async def count_spooled_bytes(upload, data: bytes):
+            nonlocal spooled_bytes
+            spooled_bytes += len(data)
+            return await original_write(upload, data)
+
+        formparsers.UploadFile.write = count_spooled_bytes
+        try:
+            r = await c.post(url, data={"user_input": "x"}, files=[
+                ("files", ("large.txt", one_and_a_half_megabytes, "text/plain")),
+            ])
+        finally:
+            formparsers.UploadFile.write = original_write
+        check("an over-1-MB file still receives the normal 400 response", r.status_code == 400,
+              f"HTTP {r.status_code}")
+        check("an over-1-MB file is never fully spooled",
+              spooled_bytes <= app_mod.MAX_FILE_BYTES,
+              f"spooled {spooled_bytes} bytes")
+
+        boundary = "reviewer-file-stream-boundary"
+        streamed_body = b"".join([
+            f"--{boundary}\r\n".encode(),
+            b'Content-Disposition: form-data; name="files"; filename="large.txt"\r\n',
+            b"Content-Type: text/plain\r\n\r\n",
+            one_and_a_half_megabytes,
+            f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="later"\r\n\r\n'.encode(),
+            b"should-not-be-consumed",
+            f"\r\n--{boundary}--\r\n".encode(),
+        ])
+        request, stream_state, total_chunks = multipart_stream_request(streamed_body, boundary)
+        try:
+            await app_mod._bounded_attach_form(request)
+            stream_rejected = False
+        except app_mod._AttachError as exc:
+            stream_rejected = exc.status == 400
+        check("the parser aborts the streaming source at the first oversized file part", stream_rejected)
+        check("later multipart chunks are not consumed after the oversized file abort",
+              stream_state["next"] < total_chunks,
+              f"consumed {stream_state['next']} of {total_chunks} chunks")
 
         print("\n== overlapping attachments preserve both files ==")
         concurrent_run, concurrent_card = seed()
