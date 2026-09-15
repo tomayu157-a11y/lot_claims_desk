@@ -35,6 +35,7 @@ from celestra.models import (  # noqa: E402
     InsightTable,
     QAMetrics,
     ReviewAction,
+    ReviewerFile,
     Run,
     RunConfig,
     RunMode,
@@ -499,7 +500,8 @@ def context() -> dict:
                     "agents": [a for a in agents if a.bucket in ("A", "C")], "state": "complete", "done": 2},
                    {"key": "mapping", "name": "Mapping & Synthesis", "description": "The rest",
                     "agents": [a for a in agents if a.bucket not in ("A", "C")], "state": "queued", "done": 0}],
-        "mode": "modify", "downstream_agents": ["Diagnostic Footprint Agent"], "web_available": True,
+        "mode": "modify", "max_file_bytes": 1048576,
+        "downstream_agents": ["Diagnostic Footprint Agent"], "web_available": True,
         "probe": {"configured": True, "endpoint": "https://api.firecrawl.dev/v2/search", "version": "v2",
                   "ok": False, "results": 0, "detail": "TLS certificate verification failed",
                   "remedy": "Set CA_BUNDLE.", "elapsed_ms": 120},
@@ -558,7 +560,7 @@ def test_expected_templates_exist():
     assert not missing, f"missing templates: {sorted(missing)}"
 
 
-MACRO_ONLY = {"partials/icons.html", "partials/macros.html"}
+MACRO_ONLY = {"partials/icons.html", "partials/macros.html", "partials/file_pill.html"}
 
 
 @pytest.mark.parametrize("name", all_templates())
@@ -618,6 +620,40 @@ def test_agent_names_not_letters(env, context):
     out = env.get_template("progress.html").render(**context)
     for agent in make_agents():
         assert agent.name in out
+
+
+LONG_NAME = "Payer policy for CLL frontline regimens 2024 Q3 final version.pdf"
+
+
+def _rf(file_id="rf_test1", name=LONG_NAME, kind="pdf"):
+    return ReviewerFile(id=file_id, filename=name, kind=kind, size_bytes=820 * 1024,
+                        markdown="x", pages_read=10, pages_total=25)
+
+
+def _card(context, status):
+    insight = context["insight"].model_copy(update={
+        "reviewer_input": "Use the payer policy.",
+        "reviewer_files": [_rf(), _rf("rf_test2", "SOP.docx", "docx")],
+    })
+    run = context["run"].model_copy(update={"status": status})
+    return {**context, "insight": insight, "run": run}
+
+
+def test_card_shows_reviewer_file_pills(env, context):
+    ctx = _card(context, RunStatus.AWAITING_REVIEW)
+    out = env.get_template("partials/insight_card.html").render(**ctx)
+    assert LONG_NAME[:50] + "…" in out
+    assert f'title="{LONG_NAME} · PDF · 820 KB · 10 of 25 pages read"' in out
+    assert "chip-rose" in out and "chip-blue" in out
+    assert "SOP.docx" in out
+    assert f"/runs/{ctx['run'].id}/insights/{ctx['insight'].id}/files/rf_test1/remove" in out
+    assert "Research that already used it isn" in out
+
+
+def test_locked_card_pills_have_no_remove(env, context):
+    out = env.get_template("partials/insight_card.html").render(**_card(context, RunStatus.APPROVED))
+    assert "SOP.docx" in out
+    assert "chip-file-x" not in out
 
 
 # ---------------------------------------------------------------------------

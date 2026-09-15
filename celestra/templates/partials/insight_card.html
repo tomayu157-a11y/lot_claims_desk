@@ -6,6 +6,7 @@
    --------------------------------------------------------------------------- #}
 {% from "partials/icons.html" import icon %}
 {% from "partials/macros.html" import source_name_chips, review_chip, enum_value %}
+{% from "partials/file_pill.html" import file_pill %}
 
 {%- set rid = (run.id if run is defined and run else insight.run_id) -%}
 {%- set conf = enum_value(insight.confidence) -%}
@@ -114,8 +115,20 @@
     {% if insight.revision_note %}<br><strong>What Celestra did:</strong> {{ insight.revision_note }}{% endif %}
   </div>
   {% endif %}
-  {% if insight.reviewer_input %}
-  <div class="review-note is-input"><strong>Your input:</strong> {{ insight.reviewer_input }}</div>
+  {% if insight.reviewer_input or insight.reviewer_files %}
+  <div class="review-note is-input">
+    {% if insight.reviewer_input %}<strong>Your input:</strong> {{ insight.reviewer_input }}{% endif %}
+    {% if insight.reviewer_files %}
+    <div class="chip-row review-files">
+      <span class="review-files-label">Files:</span>
+      {% for f in insight.reviewer_files %}
+      {{ file_pill(f,
+                   remove_url=('' if locked else '/runs/' ~ rid ~ '/insights/' ~ insight.id ~ '/files/' ~ f.id ~ '/remove'),
+                   swap="[data-insight-id='" ~ insight.id ~ "']") }}
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
   {% endif %}
 
   {# -- 4. sources ---------------------------------------------------- #}

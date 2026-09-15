@@ -764,6 +764,8 @@
     on(document, 'click', '[data-action-url]', async function (ev, btn) {
       ev.preventDefault();
       if (btn.disabled) return;
+      var confirmText = btn.getAttribute('data-confirm');
+      if (confirmText && !window.confirm(confirmText)) return;
       var payload = payloadFor(btn);
       var required = btn.getAttribute('data-requires-field');
       if (required && !String(payload[required] || '').trim()) {
