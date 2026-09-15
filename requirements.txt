@@ -11,3 +11,4 @@ anthropic>=0.40
 # Verifies HTTPS against the operating system certificate store, so a
 # corporate proxy the browser trusts works for Python too.
 truststore>=0.10
+python-pptx

@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
+from .ppt import register_route
 
 from .events import bus
 from .models import (
@@ -1700,6 +1701,7 @@ async def healthz():
         "active_runs": len(_RUNNING),
     }
 
+register_route(app, store)
 
 # Common mistyped or guessed entry points. Landing on the app root is far more
 # useful than a 404 for someone who has just started the server.
