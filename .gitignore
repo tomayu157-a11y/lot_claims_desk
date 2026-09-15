@@ -9,3 +9,4 @@ celestra/data/reference/*
 !celestra/data/reference/README.md
 .pytest_cache/
 docs/superpowers
+celestra/data/uploads/

@@ -271,6 +271,10 @@ class ResearchQuestion(BaseModel):
     # Open-web pages consulted during fallback: {url, title, used}. Recorded
     # even when a page contributed nothing, so the trail is auditable.
     web_sites: list[dict[str, Any]] = Field(default_factory=list)
+    # Reviewer-file sections routed to this question ("{file_id}.{section_id}"),
+    # in priority order, and those the per-question ceiling left out.
+    reviewer_sections: list[str] = Field(default_factory=list)
+    reviewer_sections_dropped: list[str] = Field(default_factory=list)
 
     @property
     def is_answered(self) -> bool:
@@ -289,6 +293,35 @@ class InsightTable(BaseModel):
     # Which research questions this table answers. Links a table to the
     # insight cards derived from the same questions.
     question_ids: list[str] = Field(default_factory=list)
+
+
+class ReviewerFileSection(BaseModel):
+    """One routable piece of a reviewer file: a heading section, or a block
+    of about 2,000 characters where the file has no usable headings."""
+    id: str                          # s1, s2, ... in reading order within the file
+    heading: str
+    text: str
+    page: int | None = None          # PDF page the section starts on
+
+
+class ReviewerFile(BaseModel):
+    """A file the reviewer attached with Add Input.
+
+    Its Markdown is reviewer context for the agents that run afterwards,
+    routed to the questions it bears on. It is never evidence and never cited.
+    """
+    id: str = Field(default_factory=lambda: new_id("rf"))
+    filename: str                    # the reviewer's name for it, display only
+    kind: str                        # pdf | docx | txt | md
+    size_bytes: int
+    storage_key: str = ""
+    markdown: str
+    sections: list[ReviewerFileSection] = Field(default_factory=list)
+    pages_read: int | None = None
+    pages_total: int | None = None
+    truncated: bool = False          # the ~20k-token cap cut the text
+    token_estimate: int = 0
+    added_at: datetime = Field(default_factory=utcnow)
 
 
 class Insight(BaseModel):
@@ -329,6 +362,9 @@ class Insight(BaseModel):
     # Add Input: knowledge the reviewer attached. It is never rewritten; it is
     # printed in the document and handed to the agents that run afterwards.
     reviewer_input: str = ""
+    # Add Input files. Up to two per card; routed by section to the questions
+    # of the agents that run afterwards.
+    reviewer_files: list[ReviewerFile] = Field(default_factory=list)
     reviewed_at: datetime | None = None
     impacted_insight_ids: list[str] = Field(default_factory=list)
     # Titles of the stage-report tables built from this insight's questions.

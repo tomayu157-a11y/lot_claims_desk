@@ -83,6 +83,9 @@ limits:
   question_hard_timeout_seconds: 480
   http_cache_ttl_seconds: 86400
   max_parallel_agents: 3
+  # Reviewer-file sections one research question may receive, in characters
+  # (~6k tokens). Sections beyond it are recorded on the question as dropped.
+  reviewer_context_max_chars_per_question: 24000
 
 contradictions:
   # A conflict between two tiers this far apart is escalated, not merely noted.
