@@ -55,12 +55,168 @@ def stored() -> list[str]:
     return sorted(p.name for p in UPLOADS.rglob("*") if p.is_file()) if UPLOADS.exists() else []
 
 
+def multipart_body(fields: list[tuple[str, bytes]],
+                   files: list[tuple[str, str, bytes]]) -> tuple[str, bytes]:
+    """Build a controlled multipart body without httpx adding a length header."""
+    boundary = "reviewer-file-test-boundary"
+    chunks: list[bytes] = []
+    for name, value in fields:
+        chunks.extend([
+            f"--{boundary}\r\n".encode(),
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
+            value,
+            b"\r\n",
+        ])
+    for field, filename, data in files:
+        chunks.extend([
+            f"--{boundary}\r\n".encode(),
+            (f'Content-Disposition: form-data; name="{field}"; '
+             f'filename="{filename}"\r\nContent-Type: text/plain\r\n\r\n').encode(),
+            data,
+            b"\r\n",
+        ])
+    chunks.append(f"--{boundary}--\r\n".encode())
+    return boundary, b"".join(chunks)
+
+
+async def post_raw_multipart(client: httpx.AsyncClient, url: str, body: bytes,
+                             boundary: str, content_length: str | None = None) -> httpx.Response:
+    request = client.build_request(
+        "POST", url, content=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    if content_length is None:
+        request.headers.pop("Content-Length", None)
+    else:
+        request.headers["Content-Length"] = content_length
+    return await client.send(request)
+
+
+class Upload:
+    """The small UploadFile surface the commit helper needs for overlap tests."""
+    def __init__(self, filename: str, data: bytes) -> None:
+        self.filename, self.data = filename, data
+
+    async def read(self, size: int = -1) -> bytes:
+        return self.data if size < 0 else self.data[:size]
+
+
 async def main() -> int:
-    transport = httpx.ASGITransport(app=app_mod.app)
+    transport = httpx.ASGITransport(app=app_mod.app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://t",
                                  headers={"Accept": "application/json"}) as c:
         run, card = seed()
         url = f"/runs/{run.id}/insights/{card.id}/input"
+
+        print("\n== multipart parser limits do not trust Content-Length ==")
+        boundary, oversized = multipart_body(
+            [("user_input", b"x" * (app_mod._MAX_ATTACH_BODY + 1))], [],
+        )
+        r = await post_raw_multipart(c, url, oversized, boundary)
+        check("an oversized body without Content-Length is refused", r.status_code == 413,
+              f"HTTP {r.status_code}")
+        boundary, normal = multipart_body([("user_input", b"x")], [])
+        r = await post_raw_multipart(c, url, normal, boundary, "not-a-number")
+        check("a malformed Content-Length cannot crash the route", r.status_code == 200,
+              f"HTTP {r.status_code}")
+        boundary, too_many_files = multipart_body(
+            [("user_input", b"x")],
+            [("files", "one.txt", b"one"), ("files", "two.txt", b"two"),
+             ("files", "three.txt", b"three")],
+        )
+        r = await post_raw_multipart(c, url, too_many_files, boundary)
+        check("more than two multipart file parts are refused while parsing",
+              r.status_code == 400 and "Maximum number of files is 2" in r.text,
+              f"HTTP {r.status_code} {r.text[:160]}")
+        boundary, too_many_fields = multipart_body(
+            [("user_input", b"x"), ("keep_file_ids", b"one"),
+             ("keep_file_ids", b"two"), ("unexpected", b"x")], [],
+        )
+        r = await post_raw_multipart(c, url, too_many_fields, boundary)
+        check("more than the three allowed multipart fields are refused while parsing",
+              r.status_code == 400 and "Maximum number of fields is 3" in r.text,
+              f"HTTP {r.status_code} {r.text[:160]}")
+        boundary, oversized_field = multipart_body(
+            [("user_input", b"x" * (256 * 1024 + 1))], [],
+        )
+        r = await post_raw_multipart(c, url, oversized_field, boundary)
+        check("an excessive multipart field is refused while parsing",
+              r.status_code == 400 and "Part exceeded maximum size" in r.text,
+              f"HTTP {r.status_code} {r.text[:160]}")
+
+        print("\n== overlapping attachments preserve both files ==")
+        concurrent_run, concurrent_card = seed()
+        original_extract = app_mod.extract_async
+        started = 0
+        both_started = asyncio.Event()
+
+        async def pause_after_stale_read(kind: str, data: bytes):
+            nonlocal started
+            started += 1
+            if started == 2:
+                both_started.set()
+            await both_started.wait()
+            return await original_extract(kind, data)
+
+        app_mod.extract_async = pause_after_stale_read
+        try:
+            await asyncio.gather(
+                app_mod._apply_input_with_files(
+                    concurrent_run.id, concurrent_card.id, "first", [], [Upload("one.txt", b"one")],
+                ),
+                app_mod._apply_input_with_files(
+                    concurrent_run.id, concurrent_card.id, "second", [], [Upload("two.txt", b"two")],
+                ),
+            )
+        finally:
+            app_mod.extract_async = original_extract
+        concurrent = STORE.get_insight(concurrent_run.id, concurrent_card.id)
+        check("overlapping attachments retain both file records",
+              len(concurrent.reviewer_files) == 2,
+              str([f.filename for f in concurrent.reviewer_files]))
+        check("overlapping attachments retain both originals", len(stored()) == 2, str(stored()))
+        for path in UPLOADS.rglob("*"):
+            if path.is_file():
+                path.unlink()
+
+        print("\n== a concurrent card removal cannot be undone by an attachment ==")
+        removal_run, removal_card = seed()
+        await app_mod._apply_input_with_files(
+            removal_run.id, removal_card.id, "old", [], [Upload("old.txt", b"old")],
+        )
+        old_file = STORE.get_insight(removal_run.id, removal_card.id).reviewer_files[0]
+        original_extract = app_mod.extract_async
+        extraction_started = asyncio.Event()
+        continue_extraction = asyncio.Event()
+
+        async def wait_for_removal(kind: str, data: bytes):
+            extraction_started.set()
+            await continue_extraction.wait()
+            return await original_extract(kind, data)
+
+        app_mod.extract_async = wait_for_removal
+        try:
+            attach = asyncio.create_task(app_mod._apply_input_with_files(
+                removal_run.id, removal_card.id, "new", [old_file.id],
+                [Upload("new.txt", b"new")],
+            ))
+            await extraction_started.wait()
+            r = await c.post(
+                f"/runs/{removal_run.id}/insights/{removal_card.id}/files/{old_file.id}/remove"
+            )
+            continue_extraction.set()
+            await attach
+        finally:
+            app_mod.extract_async = original_extract
+        after_removal = STORE.get_insight(removal_run.id, removal_card.id)
+        check("a completed card removal is not reattached by overlapping input",
+              r.status_code == 200 and [f.filename for f in after_removal.reviewer_files] == ["new.txt"],
+              str([f.filename for f in after_removal.reviewer_files]))
+        check("the concurrent removal does not leave stale file metadata",
+              stored() == [after_removal.reviewer_files[0].storage_key.split("/")[-1]], str(stored()))
+        for path in UPLOADS.rglob("*"):
+            if path.is_file():
+                path.unlink()
 
         print("\n== attach two files with the input ==")
         r = await c.post(url, data={"user_input": "Use the payer policy."},

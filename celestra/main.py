@@ -1138,6 +1138,62 @@ async def _revise_insight(run_id: str, insight: Insight) -> None:
 # Two files at 1 MB plus the form fields. A larger body is refused before it
 # is parsed further.
 _MAX_ATTACH_BODY = MAX_FILES_PER_INSIGHT * MAX_FILE_BYTES + 256 * 1024
+_MAX_ATTACH_FIELDS = MAX_FILES_PER_INSIGHT + 1  # user_input plus two keep ids
+_MAX_ATTACH_FIELD_BYTES = 256 * 1024
+
+
+class _AttachBodyTooLarge(Exception):
+    """A multipart stream crossed the route's total upload budget."""
+
+
+class _InsightLock:
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0
+
+
+_INSIGHT_LOCKS: dict[tuple[str, str], _InsightLock] = {}
+
+
+@asynccontextmanager
+async def _insight_critical_section(run_id: str, insight_id: str):
+    """Serialize one card's persisted reviewer-file state in this worker."""
+    key = (run_id, insight_id)
+    entry = _INSIGHT_LOCKS.setdefault(key, _InsightLock())
+    entry.users += 1
+    try:
+        async with entry.lock:
+            yield
+    finally:
+        entry.users -= 1
+        if entry.users == 0 and _INSIGHT_LOCKS.get(key) is entry:
+            del _INSIGHT_LOCKS[key]
+
+
+async def _bounded_attach_form(request: Request):
+    """Parse one Add Input body without trusting its optional length header."""
+    received = 0
+
+    async def receive() -> dict[str, Any]:
+        nonlocal received
+        message = await request.receive()
+        if message["type"] == "http.request":
+            received += len(message.get("body", b""))
+            if received > _MAX_ATTACH_BODY:
+                raise _AttachBodyTooLarge
+        return message
+
+    bounded = Request(request.scope, receive)
+    try:
+        return await bounded.form(
+            max_files=MAX_FILES_PER_INSIGHT,
+            max_fields=_MAX_ATTACH_FIELDS,
+            max_part_size=_MAX_ATTACH_FIELD_BYTES,
+        )
+    except _AttachBodyTooLarge:
+        raise _AttachError(413, "Files can be up to 1 MB each.") from None
+    except StarletteHTTPException as exc:
+        raise _AttachError(exc.status_code, str(exc.detail)) from None
 
 
 def _card_response(request: Request, run_id: str, insight: Insight):
@@ -1154,10 +1210,10 @@ async def insight_action(request: Request, run_id: str, insight_id: str, action:
     if action not in ("approve", "modify", "input"):
         raise HTTPException(404, "Unknown insight action")
     if action == "input" and request.headers.get("content-type", "").startswith("multipart/form-data"):
-        if int(request.headers.get("content-length") or 0) > _MAX_ATTACH_BODY:
-            return JSONResponse({"detail": "Files can be up to 1 MB each.", "files": []},
-                                status_code=413)
-        form = await request.form()
+        try:
+            form = await _bounded_attach_form(request)
+        except _AttachError as exc:
+            return JSONResponse({"detail": exc.detail, "files": exc.files}, status_code=exc.status)
         uploads = [u for u in form.getlist("files")
                    if hasattr(u, "read") and getattr(u, "filename", "")]
         try:
@@ -1169,9 +1225,10 @@ async def insight_action(request: Request, run_id: str, insight_id: str, action:
             return JSONResponse({"detail": exc.detail, "files": exc.files}, status_code=exc.status)
         return _card_response(request, run_id, insight)
     body = await _body(request)
-    insight = await _apply_insight_action(
-        run_id, insight_id, action, str(body.get("user_input", ""))
-    )
+    async with _insight_critical_section(run_id, insight_id):
+        insight = await _apply_insight_action(
+            run_id, insight_id, action, str(body.get("user_input", ""))
+        )
     return _card_response(request, run_id, insight)
 
 
@@ -1190,6 +1247,8 @@ async def _apply_input_with_files(
     """Add Input with files, all or nothing. Every new file is checked and
     read before anything is stored, and nothing is saved if one fails, so an
     insight never holds a file that has not finished processing."""
+    if not text.strip():
+        raise _AttachError(400, "Write the input you want attached to this finding.")
     run = get_run_or_404(run_id)
     if run.is_locked:
         raise HTTPException(409, "This document is approved and locked. Start a new "
@@ -1197,15 +1256,20 @@ async def _apply_input_with_files(
     insight = store.get_insight(run_id, insight_id)
     if insight is None:
         raise HTTPException(404, "Insight not found")
-    if not text.strip():
-        raise _AttachError(400, "Write the input you want attached to this finding.")
-    keep = set(keep_ids)
-    kept = [f for f in insight.reviewer_files if f.id in keep]
-    removed = [f for f in insight.reviewer_files if f.id not in keep]
-    if len(kept) + len(uploads) > MAX_FILES_PER_INSIGHT:
-        raise _AttachError(400, f"A finding can hold {MAX_FILES_PER_INSIGHT} files. "
-                                "Remove one first.")
+    existing_file_ids = {file.id for file in insight.reviewer_files}
 
+    # Extraction is expensive but does not touch persisted state. The latest
+    # card is loaded again under the critical section before committing it.
+    new_files = await _prepare_reviewer_files(run_id, insight_id, uploads)
+    async with _insight_critical_section(run_id, insight_id):
+        return await _commit_input_with_files(
+            run_id, insight_id, text, keep_ids, existing_file_ids, new_files,
+        )
+
+
+async def _prepare_reviewer_files(
+    run_id: str, insight_id: str, uploads: list[Any],
+) -> list[tuple[ReviewerFile, bytes]]:
     received: list[tuple[str, str, bytes]] = []
     errors: list[dict[str, str]] = []
     for upload in uploads:
@@ -1230,6 +1294,31 @@ async def _apply_input_with_files(
         new_files.append((record, data))
     if errors:
         raise _AttachError(422, "Some files could not be read. Nothing was saved.", errors)
+    return new_files
+
+
+async def _commit_input_with_files(
+    run_id: str, insight_id: str, text: str, keep_ids: list[str], existing_file_ids: set[str],
+    new_files: list[tuple[ReviewerFile, bytes]],
+) -> Insight:
+    run = get_run_or_404(run_id)
+    if run.is_locked:
+        raise HTTPException(409, "This document is approved and locked. Start a new "
+                                 "project to research it again.")
+    insight = store.get_insight(run_id, insight_id)
+    if insight is None:
+        raise HTTPException(404, "Insight not found")
+    keep = set(keep_ids)
+    # The dialog can only remove files it displayed. A file attached after
+    # this request started is retained rather than being silently removed by
+    # a stale keep list from the concurrent dialog.
+    kept = [f for f in insight.reviewer_files
+            if f.id in keep or f.id not in existing_file_ids]
+    removed = [f for f in insight.reviewer_files
+               if f.id in existing_file_ids and f.id not in keep]
+    if len(kept) + len(new_files) > MAX_FILES_PER_INSIGHT:
+        raise _AttachError(400, f"A finding can hold {MAX_FILES_PER_INSIGHT} files. "
+                                "Remove one first.")
 
     written: list[str] = []
     try:
@@ -1260,21 +1349,22 @@ async def _apply_input_with_files(
 async def remove_reviewer_file(request: Request, run_id: str, insight_id: str, file_id: str):
     """Remove one attached file from the card. The typed input and the
     decision stay; research that already used the file is not re-run."""
-    run = get_run_or_404(run_id)
-    if run.is_locked:
-        raise HTTPException(409, "This document is approved and locked.")
-    insight = store.get_insight(run_id, insight_id)
-    if insight is None:
-        raise HTTPException(404, "Insight not found")
-    target = next((f for f in insight.reviewer_files if f.id == file_id), None)
-    if target is None:
-        raise HTTPException(404, "File not found")
-    insight.reviewer_files = [f for f in insight.reviewer_files if f.id != file_id]
-    store.save_insights(run_id, [insight])
-    try:
-        file_store.delete(target.storage_key)
-    except Exception:  # an orphaned file does no harm
-        log.warning("could not delete reviewer file %s", target.storage_key, exc_info=True)
+    async with _insight_critical_section(run_id, insight_id):
+        run = get_run_or_404(run_id)
+        if run.is_locked:
+            raise HTTPException(409, "This document is approved and locked.")
+        insight = store.get_insight(run_id, insight_id)
+        if insight is None:
+            raise HTTPException(404, "Insight not found")
+        target = next((f for f in insight.reviewer_files if f.id == file_id), None)
+        if target is None:
+            raise HTTPException(404, "File not found")
+        insight.reviewer_files = [f for f in insight.reviewer_files if f.id != file_id]
+        store.save_insights(run_id, [insight])
+        try:
+            file_store.delete(target.storage_key)
+        except Exception:  # an orphaned file does no harm
+            log.warning("could not delete reviewer file %s", target.storage_key, exc_info=True)
     return _card_response(request, run_id, insight)
 
 
