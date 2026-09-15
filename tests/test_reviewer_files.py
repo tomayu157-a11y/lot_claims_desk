@@ -12,7 +12,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from reviewer_fixtures import docx_bytes, pdf_bytes
 
 from celestra.services import reviewer_files as rf
-from celestra.services.reviewer_files import FileRejected, extract, extract_async, kind_for
+from celestra.services.reviewer_files import (
+    FileRejected,
+    extract,
+    extract_async,
+    kind_for,
+)
 
 failures: list[str] = []
 

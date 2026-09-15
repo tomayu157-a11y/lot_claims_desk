@@ -49,6 +49,10 @@ def main() -> int:
           str([s.heading for s in secs]))
     check("parts stay near the target", max(len(s.text) for s in secs) <= SECTION_TARGET_CHARS,
           str(max(len(s.text) for s in secs)))
+    secs = split_sections([(None, "# Short big\n\n" + "a" * 3001)])
+    check("a 3,001-char headed paragraph is split to the target",
+          len(secs) == 2 and all(len(s.text) <= SECTION_TARGET_CHARS for s in secs),
+          str([len(s.text) for s in secs]))
 
     print("\n== no headings: blocks ==")
     flat = "\n\n".join([para("beta", 80)] * 20)
@@ -60,6 +64,16 @@ def main() -> int:
     secs = split_sections([(None, giant)])
     check("an unbroken block is hard-split", all(len(s.text) <= SECTION_TARGET_CHARS for s in secs)
           and "".join(s.text for s in secs) == giant)
+    secs = split_sections([(None, "b" * 3001)])
+    check("a 3,001-char flat paragraph is split to the target",
+          len(secs) == 2 and all(len(s.text) <= SECTION_TARGET_CHARS for s in secs),
+          str([len(s.text) for s in secs]))
+
+    print("\n== headings do not require blank lines ==")
+    secs = split_sections([(None, "Intro text.\n# Heading\n\nBody.")])
+    check("a heading after text starts its own section",
+          [s.heading for s in secs] == ["Part 1 — Intro text.", "Heading"],
+          str([s.heading for s in secs]))
 
     print("\n== PDF pages ==")
     pages = [(1, "A" * 1500), (2, "B" * 1500), (3, "C" * 1500)]

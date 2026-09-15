@@ -222,7 +222,7 @@ def split_sections(pages: list[tuple[int | None, str]]) -> list[ReviewerFileSect
                 out.append((_label(page, text, part), page, text))
             continue
         text = "\n\n".join(p.text for p in paras)
-        if len(text) <= SECTION_SPLIT_OVER_CHARS:
+        if len(text) <= SECTION_TARGET_CHARS:
             out.append((heading, heading_page, text))
             continue
         for i, (page, block) in enumerate(_blocks(paras), start=1):
@@ -234,18 +234,19 @@ def split_sections(pages: list[tuple[int | None, str]]) -> list[ReviewerFileSect
 def _paragraphs(pages: list[tuple[int | None, str]]) -> list[_Para]:
     out: list[_Para] = []
     for page, text in pages:
-        for block in re.split(r"\n\s*\n", text):
-            block = block.strip()
-            if not block:
-                continue
-            first, _, rest = block.partition("\n")
-            match = _HEADING.match(first.strip())
-            if match:
-                out.append(_Para(page, "", _clean_heading(match.group(2))))
-                if rest.strip():
-                    out.append(_Para(page, rest.strip()))
-            else:
-                out.append(_Para(page, block))
+        for heading_block in re.split(r"(?m)(?=^#{1,3}\s+)", text):
+            for block in re.split(r"\n\s*\n", heading_block):
+                block = block.strip()
+                if not block:
+                    continue
+                first, _, rest = block.partition("\n")
+                match = _HEADING.match(first.strip())
+                if match:
+                    out.append(_Para(page, "", _clean_heading(match.group(2))))
+                    if rest.strip():
+                        out.append(_Para(page, rest.strip()))
+                else:
+                    out.append(_Para(page, block))
     return out
 
 
@@ -257,7 +258,7 @@ def _blocks(paras: list[_Para]) -> list[tuple[int | None, str]]:
     """Group paragraphs into blocks of at most ~SECTION_TARGET_CHARS."""
     pieces: list[tuple[int | None, str]] = []
     for p in paras:
-        if len(p.text) > SECTION_SPLIT_OVER_CHARS:
+        if len(p.text) > SECTION_TARGET_CHARS:
             pieces += [(p.page, chunk) for chunk in _hard_split(p.text, SECTION_TARGET_CHARS)]
         else:
             pieces.append((p.page, p.text))
