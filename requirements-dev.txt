@@ -6,3 +6,6 @@ ruff>=0.6
 
 # Only needed to capture screenshots of the running app
 playwright>=1.45
+
+# Builds DOCX fixtures for the reviewer-file tests
+python-docx>=1.1

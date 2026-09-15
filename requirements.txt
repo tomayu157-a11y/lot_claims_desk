@@ -12,3 +12,6 @@ anthropic>=0.40
 # corporate proxy the browser trusts works for Python too.
 truststore>=0.10
 python-pptx
+# Reviewer file attachments: PDF (pymupdf4llm) and DOCX (MarkItDown) to Markdown
+pymupdf4llm>=1.28
+markitdown[docx]>=0.1.7
