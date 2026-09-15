@@ -113,6 +113,24 @@ def main() -> int:
     check("a permanently locked temporary file remains visible", tmp.exists())
     original_unlink(tmp, missing_ok=True)
 
+    print("\n== control-flow interruptions bypass cleanup ==")
+
+    def write_then_interrupt(self: Path, data: bytes) -> int:
+        original_write_bytes(self, data)
+        raise KeyboardInterrupt("forced interruption")
+
+    path_type.write_bytes = write_then_interrupt
+    try:
+        fs.put(key, b"replacement")
+        interruption: KeyboardInterrupt | None = None
+    except KeyboardInterrupt as exc:
+        interruption = exc
+    finally:
+        path_type.write_bytes = original_write_bytes
+    check("an interruption is propagated", interruption is not None, repr(interruption))
+    check("an interruption does not enter temporary-file cleanup", tmp.exists())
+    original_unlink(tmp, missing_ok=True)
+
     original_replace = path_type.replace
 
     def fail_replace(self: Path, target: Path) -> Path:

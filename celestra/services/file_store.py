@@ -44,7 +44,7 @@ class LocalFileStore:
         try:
             tmp.write_bytes(data)
             tmp.replace(path)
-        except BaseException as original_error:
+        except Exception as original_error:
             cleanup_error = _cleanup_temp(tmp)
             if cleanup_error is not None:
                 original_error.add_note(
