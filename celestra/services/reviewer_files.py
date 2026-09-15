@@ -15,16 +15,21 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import PurePath, PureWindowsPath
 
+from ..models import ReviewerFile, ReviewerFileSection
+
 MAX_FILES_PER_INSIGHT = 2
 MAX_FILE_BYTES = 1024 * 1024          # 1 MB per file
 MAX_PDF_PAGES = 10
 CHARS_PER_TOKEN = 4
 MAX_CHARS = 20_000 * CHARS_PER_TOKEN  # ~20k tokens
 EXTRACT_TIMEOUT_SECONDS = 30.0
+SECTION_TARGET_CHARS = 2_000
+SECTION_SPLIT_OVER_CHARS = 4_000
 
 KINDS = {".pdf": "pdf", ".docx": "docx", ".txt": "txt", ".md": "md"}
 
 _IMAGE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_HEADING = re.compile(r"^(#{1,3})\s+(.+?)\s*#*\s*$")
 
 
 class FileRejected(ValueError):
@@ -89,7 +94,7 @@ def extract(kind: str, data: bytes) -> Extraction:
             pages, read, total = [(None, text)], None, None
     except FileRejected:
         raise
-    except Exception as exc:  # noqa: BLE001 - any parser failure means unreadable
+    except Exception as exc:  # any parser failure means unreadable
         raise FileRejected("This file could not be read.") from exc
 
     pages = [(page, text.strip()) for page, text in pages if text and text.strip()]
@@ -168,3 +173,130 @@ def _cap(pages: list[tuple[int | None, str]], limit: int) -> tuple[list[tuple[in
             kept.append((page, text[:cut].rstrip()))
         return kept, True
     return kept, False
+
+
+def build_reviewer_file(filename: str, kind: str, data: bytes, extraction: Extraction) -> ReviewerFile:
+    """The stored record for one attached file. The caller sets storage_key."""
+    return ReviewerFile(
+        filename=display_name(filename), kind=kind, size_bytes=len(data),
+        markdown=extraction.markdown, sections=split_sections(extraction.pages),
+        pages_read=extraction.pages_read, pages_total=extraction.pages_total,
+        truncated=extraction.truncated,
+        token_estimate=len(extraction.markdown) // CHARS_PER_TOKEN,
+    )
+
+
+@dataclass
+class _Para:
+    page: int | None
+    text: str
+    heading: str | None = None       # set when this paragraph is a heading line
+
+
+def split_sections(pages: list[tuple[int | None, str]]) -> list[ReviewerFileSection]:
+    """Cut extracted text into routable sections.
+
+    A file with headings splits on its #, ## and ### headings, and a section
+    longer than SECTION_SPLIT_OVER_CHARS is cut again into parts. A file with
+    no headings is cut into ~SECTION_TARGET_CHARS blocks on paragraph
+    boundaries, labelled by page (PDF) or part number and opening line. Ids
+    are s1, s2, ... in reading order, so the same file yields the same ids.
+    """
+    groups: list[tuple[str | None, int | None, list[_Para]]] = []
+    for para in _paragraphs(pages):
+        if para.heading is not None:
+            groups.append((para.heading, para.page, []))
+        else:
+            if not groups:
+                groups.append((None, para.page, []))
+            groups[-1][2].append(para)
+
+    out: list[tuple[str, int | None, str]] = []
+    part = 0
+    for heading, heading_page, paras in groups:
+        if not paras:
+            continue                 # a heading with nothing under it has nothing to route
+        if heading is None:
+            for page, text in _blocks(paras):
+                part += 1
+                out.append((_label(page, text, part), page, text))
+            continue
+        text = "\n\n".join(p.text for p in paras)
+        if len(text) <= SECTION_SPLIT_OVER_CHARS:
+            out.append((heading, heading_page, text))
+            continue
+        for i, (page, block) in enumerate(_blocks(paras), start=1):
+            out.append((f"{heading} (part {i})", page, block))
+    return [ReviewerFileSection(id=f"s{i}", heading=h, text=t, page=p)
+            for i, (h, p, t) in enumerate(out, start=1)]
+
+
+def _paragraphs(pages: list[tuple[int | None, str]]) -> list[_Para]:
+    out: list[_Para] = []
+    for page, text in pages:
+        for block in re.split(r"\n\s*\n", text):
+            block = block.strip()
+            if not block:
+                continue
+            first, _, rest = block.partition("\n")
+            match = _HEADING.match(first.strip())
+            if match:
+                out.append(_Para(page, "", _clean_heading(match.group(2))))
+                if rest.strip():
+                    out.append(_Para(page, rest.strip()))
+            else:
+                out.append(_Para(page, block))
+    return out
+
+
+def _clean_heading(text: str) -> str:
+    return " ".join(re.sub(r"[*_`]+", "", text).split())
+
+
+def _blocks(paras: list[_Para]) -> list[tuple[int | None, str]]:
+    """Group paragraphs into blocks of at most ~SECTION_TARGET_CHARS."""
+    pieces: list[tuple[int | None, str]] = []
+    for p in paras:
+        if len(p.text) > SECTION_SPLIT_OVER_CHARS:
+            pieces += [(p.page, chunk) for chunk in _hard_split(p.text, SECTION_TARGET_CHARS)]
+        else:
+            pieces.append((p.page, p.text))
+    blocks: list[tuple[int | None, str]] = []
+    page: int | None = None
+    buf: list[str] = []
+    size = 0
+    for piece_page, text in pieces:
+        if buf and size + 2 + len(text) > SECTION_TARGET_CHARS:
+            blocks.append((page, "\n\n".join(buf)))
+            buf, size = [], 0
+        if not buf:
+            page = piece_page
+        size += (2 if buf else 0) + len(text)
+        buf.append(text)
+    if buf:
+        blocks.append((page, "\n\n".join(buf)))
+    return blocks
+
+
+def _hard_split(text: str, size: int) -> list[str]:
+    out: list[str] = []
+    while len(text) > size:
+        cut = text.rfind(" ", 0, size)
+        if cut <= 0:
+            cut = size
+        out.append(text[:cut].strip())
+        text = text[cut:].strip()
+    if text:
+        out.append(text)
+    return out
+
+
+def _label(page: int | None, text: str, part: int) -> str:
+    where = f"Page {page}" if page else f"Part {part}"
+    return f"{where} — {_opening(text)}"
+
+
+def _opening(text: str) -> str:
+    line = next((ln for ln in text.splitlines() if ln.strip()), "")
+    line = " ".join(re.sub(r"[#*_`>|]+", " ", line).split())
+    return line if len(line) <= 60 else line[:60].rstrip() + "…"
