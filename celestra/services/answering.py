@@ -38,6 +38,26 @@ def _citation_of(ref: SourceRef) -> str:
     return ref.organization or ref.source_name
 
 
+def _reviewer_block(documents: list[dict] | None) -> str:
+    """Reviewer-file sections routed to this question, as framing only."""
+    if not documents:
+        return ""
+    parts = [
+        (
+            "REVIEWER-SUPPLIED FILES (context from the reviewer: use them to focus and "
+            "interpret the answer; they are NOT sources, never quote or cite them; every "
+            "claim and every support quote must come from the DOCUMENTs below):"
+        )
+    ]
+    for doc in documents:
+        parts.append(f'--- REVIEWER FILE: {doc.get("filename", "")} '
+                     f'(attached to "{doc.get("card", "")}") ---')
+        for section in doc.get("sections") or []:
+            parts.append(f'### {section.get("heading", "")}\n{section.get("text", "")}')
+    parts.append("--- END OF REVIEWER FILES ---")
+    return "\n".join(parts) + "\n"
+
+
 async def answer_batch(
     question_text: str,
     aspects: list[str],
@@ -47,12 +67,18 @@ async def answer_batch(
     batch_index: int = 0,
     round_index: int = 0,
     notes: list[str] | None = None,
+    reviewer_documents: list[dict] | None = None,
 ) -> tuple[Answer | None, list[Evidence]]:
     """Ask one batch of documents the question.
 
     `notes` are what a reviewer wrote at the review gate. They frame the
     answer (which subtype, which setting, which year matters) but are never a
     source: every claim still has to be quoted from a document.
+
+    `reviewer_documents` are the sections of the reviewer's files routed to
+    this question. They are rendered apart from the numbered DOCUMENTs, so
+    the model has nothing to cite them by, and quotes are verified against
+    the source text alone.
 
     Returns the answer (None when the batch does not answer it) and the
     verified evidence that supports it. The evidence is returned even when the
@@ -91,7 +117,8 @@ async def answer_batch(
     try:
         result = await llm.complete_json(
             _SYSTEM,
-            f"Question: {question_text}\n{aspect_line}{note_line}\n{listing}\n\n"
+            f"Question: {question_text}\n{aspect_line}{note_line}"
+            f"{_reviewer_block(reviewer_documents)}\n{listing}\n\n"
             'Return JSON: {"status": "answered"|"partial"|"not_found", "answer": str, '
             '"aspects_covered": [str], "support": [{"document": int, "quote": str, '
             '"relevance": 0..1}]}.\n'
