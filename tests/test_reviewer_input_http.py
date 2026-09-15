@@ -19,7 +19,15 @@ from starlette.requests import Request
 import celestra.main as app_mod
 import celestra.services.orchestrator as orch_mod
 import celestra.store as store_mod
-from celestra.models import Insight, ReviewAction, Run, RunConfig, RunStatus
+from celestra.models import (
+    Insight,
+    ResearchQuestion,
+    ReviewAction,
+    Run,
+    RunConfig,
+    RunStatus,
+    StageReport,
+)
 from celestra.services.file_store import LocalFileStore
 from celestra.store import Store
 
@@ -129,8 +137,12 @@ class Upload:
 
 class FailingFileStore:
     """A FileStore double that fails selected deletes but retains real bytes."""
-    def __init__(self, delegate: LocalFileStore, failing_keys: set[str]) -> None:
+    def __init__(self, delegate: LocalFileStore, failing_keys: set[str],
+                 failing_put_keys: set[str] | None = None,
+                 fail_written_deletes: bool = False) -> None:
         self.delegate, self.failing_keys = delegate, failing_keys
+        self.failing_put_keys = failing_put_keys or set()
+        self.fail_written_deletes = fail_written_deletes
         self.deleted: list[str] = []
         self.written: list[str] = []
 
@@ -138,12 +150,14 @@ class FailingFileStore:
         return self.delegate.get(key)
 
     def put(self, key: str, data: bytes) -> None:
+        if key in self.failing_put_keys:
+            raise OSError("forced restore failure")
         self.written.append(key)
         self.delegate.put(key, data)
 
     def delete(self, key: str) -> None:
         self.deleted.append(key)
-        if key in self.failing_keys:
+        if key in self.failing_keys or (self.fail_written_deletes and key in self.written):
             raise OSError("forced delete failure")
         self.delegate.delete(key)
 
@@ -467,7 +481,23 @@ async def main() -> int:
         check("a direct metadata save failure keeps prior metadata",
               [f.id for f in direct_save_after.reviewer_files] == [pdf_id])
 
+        reviewer_question = ResearchQuestion(
+            run_id=run.id, stage=card.stage, bucket=card.bucket,
+            text="Which evidence changes first-line treatment?",
+            seed_text="Which evidence changes first-line treatment?",
+        )
+        reviewer_report = StageReport(
+            run_id=run.id, stage=card.stage, bucket=card.bucket, name="Treatment",
+            core_question="Treatment", agent_name="Treatment Evidence Agent",
+            answers=[{"question": reviewer_question.text, "answer": "Original answer."}],
+        )
+        STORE.save_questions(run.id, [reviewer_question])
+        STORE.save_stage_reports(run.id, [reviewer_report])
+        current = STORE.get_insight(run.id, card.id)
+        current.question_ids = [reviewer_question.id]
+        STORE.save_insights(run.id, [current])
         before_replace_save = STORE.get_insight(run.id, card.id)
+        before_replace_run = STORE.get_run(run.id)
         replacement_save_store = FailingFileStore(original_store, set())
         replacement_save_attempts = 0
 
@@ -487,6 +517,8 @@ async def main() -> int:
             STORE.save_insights = original_save_insights
             app_mod.file_store = original_store
         replacement_save_after = STORE.get_insight(run.id, card.id)
+        replacement_save_run = STORE.get_run(run.id)
+        replacement_save_report = STORE.get_stage_reports(run.id)[0]
         check("a replacement metadata save failure returns an error", r.status_code == 500,
               f"HTTP {r.status_code}")
         check("a replacement metadata save failure restores old bytes and removes new bytes",
@@ -495,6 +527,60 @@ async def main() -> int:
               str(replacement_save_store.deleted))
         check("a replacement metadata save failure keeps prior metadata",
               [f.id for f in replacement_save_after.reviewer_files] == [pdf_id])
+        check("a failed replacement restores its prior run context",
+              replacement_save_run.context == before_replace_run.context,
+              str(replacement_save_run.context))
+        check("a failed replacement restores its affected stage report",
+              "reviewer_input" not in replacement_save_report.answers[0],
+              str(replacement_save_report.answers))
+
+        print("\n== failed replacement compensation signals unrecovered bytes ==")
+        before_compensation = STORE.get_insight(run.id, card.id)
+        await app_mod._apply_input_with_files(
+            run.id, card.id, "two originals", [pdf_id], [Upload("second.txt", b"second")],
+        )
+        two_originals = STORE.get_insight(run.id, card.id).reviewer_files
+        first_original, second_original = two_originals
+        original_bytes = {f.storage_key: original_store.get(f.storage_key) for f in two_originals}
+        failed_restore_store = FailingFileStore(
+            original_store, {second_original.storage_key}, {first_original.storage_key},
+        )
+        app_mod.file_store = failed_restore_store
+        try:
+            r = await c.post(url, data={"user_input": "replace", "keep_file_ids": []},
+                             files=[("files", ("replacement.txt", b"replacement", "text/plain"))])
+        finally:
+            app_mod.file_store = original_store
+        check("a failed old-delete restoration reports recovery attention",
+              r.status_code == 500 and "Recovery needs attention" in r.json()["detail"],
+              f"HTTP {r.status_code} {r.text}")
+        check("a failed old-delete restoration leaves prior metadata intact",
+              [f.id for f in STORE.get_insight(run.id, card.id).reviewer_files]
+              == [f.id for f in two_originals])
+        for key, data in original_bytes.items():
+            original_store.put(key, data)
+        for key in failed_restore_store.written:
+            original_store.delete(key)
+
+        failed_cleanup_store = FailingFileStore(
+            original_store, {first_original.storage_key}, fail_written_deletes=True,
+        )
+        app_mod.file_store = failed_cleanup_store
+        try:
+            r = await c.post(url, data={"user_input": "replace", "keep_file_ids": []},
+                             files=[("files", ("cleanup.txt", b"cleanup", "text/plain"))])
+        finally:
+            app_mod.file_store = original_store
+        check("a failed new-byte cleanup reports recovery attention",
+              r.status_code == 500 and "Recovery needs attention" in r.json()["detail"],
+              f"HTTP {r.status_code} {r.text}")
+        check("a failed new-byte cleanup leaves prior metadata intact",
+              [f.id for f in STORE.get_insight(run.id, card.id).reviewer_files]
+              == [f.id for f in two_originals])
+        for key in failed_cleanup_store.written:
+            original_store.delete(key)
+        STORE.save_insights(run.id, [before_compensation])
+        original_store.delete(second_original.storage_key)
 
         print("\n== remove from the card ==")
         r = await c.post(f"/runs/{run.id}/insights/{card.id}/files/{pdf_id}/remove")

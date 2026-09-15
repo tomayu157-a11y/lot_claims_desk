@@ -7,6 +7,7 @@ import json
 import logging
 import re
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
@@ -32,6 +33,7 @@ from .models import (
     RunConfig,
     RunMode,
     RunStatus,
+    StageReport,
     utcnow,
 )
 from .services import orchestrator as orch
@@ -1277,6 +1279,45 @@ class _AttachError(Exception):
         self.status, self.detail, self.files = status, detail, files or []
 
 
+@dataclass
+class _InputCommitSnapshot:
+    """Persisted reviewer-input documents that need one rollback boundary."""
+    insight: Insight
+    run: Run
+    reports: list[StageReport]
+
+
+def _snapshot_input_commit(run: Run, insight: Insight) -> _InputCommitSnapshot:
+    """Capture only the stage report this reviewer input may change."""
+    question = next(
+        (q for q in store.get_questions(run.id) if q.id in set(insight.question_ids)), None
+    )
+    reports = [] if question is None else [
+        report.model_copy(deep=True)
+        for report in store.get_stage_reports(run.id)
+        if report.stage == question.stage
+    ]
+    return _InputCommitSnapshot(
+        insight=insight.model_copy(deep=True), run=run.model_copy(deep=True), reports=reports,
+    )
+
+
+def _restore_input_commit(run_id: str, snapshot: _InputCommitSnapshot) -> bool:
+    """Best-effort restoration of every document the input action persisted."""
+    restored = True
+    for restore, label in (
+        (lambda: store.save_run(snapshot.run), "run context"),
+        (lambda: store.save_stage_reports(run_id, snapshot.reports), "stage reports"),
+        (lambda: store.save_insights(run_id, [snapshot.insight]), "reviewer file metadata"),
+    ):
+        try:
+            restore()
+        except Exception:
+            restored = False
+            log.exception("could not restore %s for %s", label, snapshot.insight.id)
+    return restored
+
+
 def _original_file_bytes(files: list[ReviewerFile]) -> dict[str, bytes]:
     """Read removable originals before changing their metadata or bytes."""
     try:
@@ -1307,6 +1348,17 @@ def _remove_new_originals(keys: list[str]) -> bool:
             removed = False
             log.exception("could not roll back reviewer file %s", key)
     return removed
+
+
+def _rollback_file_input(
+    run_id: str, deleted: list[ReviewerFile], originals: dict[str, bytes], written: list[str],
+    snapshot: _InputCommitSnapshot | None = None,
+) -> bool:
+    """Compensate attachment bytes and, after an input action, its metadata."""
+    restored = _restore_originals(deleted, originals)
+    cleaned = _remove_new_originals(written)
+    metadata_restored = snapshot is None or _restore_input_commit(run_id, snapshot)
+    return restored and cleaned and metadata_restored
 
 
 async def _apply_input_with_files(
@@ -1388,7 +1440,7 @@ async def _commit_input_with_files(
         raise _AttachError(400, f"A finding can hold {MAX_FILES_PER_INSIGHT} files. "
                                 "Remove one first.")
 
-    original_insight = insight.model_copy(deep=True)
+    snapshot = _snapshot_input_commit(run, insight)
     originals = _original_file_bytes(removed)
     written: list[str] = []
     try:
@@ -1401,24 +1453,20 @@ async def _commit_input_with_files(
                 file_store.delete(file.storage_key)
                 deleted.append(file)
         except Exception as exc:
-            _restore_originals(deleted, originals)
-            _remove_new_originals(written)
-            raise _AttachError(500, "Could not replace the attached files. Previous files remain attached.") from exc
+            recovered = _rollback_file_input(run_id, deleted, originals, written)
+            detail = "Could not replace the attached files. Previous files remain attached."
+            if not recovered:
+                detail = "Could not replace the attached files. Recovery needs attention."
+            raise _AttachError(500, detail) from exc
         try:
             return await _apply_insight_action(
                 run_id, insight_id, "input", text,
                 reviewer_files=kept + [record for record, _ in new_files],
             )
         except Exception as exc:
-            restored = _restore_originals(deleted, originals)
-            cleaned = _remove_new_originals(written)
-            try:
-                store.save_insights(run_id, [original_insight])
-            except Exception:
-                restored = False
-                log.exception("could not restore reviewer file metadata for %s", insight_id)
+            recovered = _rollback_file_input(run_id, deleted, originals, written, snapshot)
             detail = "Could not replace the attached files. Previous files remain attached."
-            if not restored or not cleaned:
+            if not recovered:
                 detail = "Could not replace the attached files. Recovery needs attention."
             raise _AttachError(500, detail) from exc
     except _AttachError:
