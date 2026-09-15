@@ -61,6 +61,58 @@ def main() -> int:
     check("a failed write keeps the original file", path.read_bytes() == b"original")
     check("a failed write leaves no temporary file", not tmp.exists())
 
+    print("\n== failed cleanup keeps the storage error ==")
+    original_unlink = path_type.unlink
+    cleanup_attempts = 0
+
+    def fail_first_cleanup(self: Path, missing_ok: bool = False) -> None:
+        nonlocal cleanup_attempts
+        cleanup_attempts += 1
+        if cleanup_attempts == 1:
+            raise PermissionError("temporary file is still locked")
+        original_unlink(self, missing_ok=missing_ok)
+
+    path_type.write_bytes = write_then_fail
+    path_type.unlink = fail_first_cleanup
+    try:
+        fs.put(key, b"replacement")
+        retry_error: OSError | None = None
+    except OSError as exc:
+        retry_error = exc
+    finally:
+        path_type.write_bytes = original_write_bytes
+        path_type.unlink = original_unlink
+    check("a transient cleanup failure keeps the write error",
+          retry_error is not None and str(retry_error) == "forced write failure", str(retry_error))
+    check("a transient cleanup failure is retried", cleanup_attempts == 2, str(cleanup_attempts))
+    check("a retried cleanup removes the temporary file", not tmp.exists())
+
+    cleanup_attempts = 0
+
+    def fail_every_cleanup(self: Path, missing_ok: bool = False) -> None:
+        nonlocal cleanup_attempts
+        cleanup_attempts += 1
+        raise PermissionError("temporary file remains locked")
+
+    path_type.write_bytes = write_then_fail
+    path_type.unlink = fail_every_cleanup
+    try:
+        fs.put(key, b"replacement")
+        permanent_error: OSError | None = None
+    except OSError as exc:
+        permanent_error = exc
+    finally:
+        path_type.write_bytes = original_write_bytes
+        path_type.unlink = original_unlink
+    check("a permanent cleanup failure keeps the write error",
+          permanent_error is not None and str(permanent_error) == "forced write failure",
+          str(permanent_error))
+    check("a permanent cleanup failure is attached for diagnostics",
+          isinstance(permanent_error.__cause__ if permanent_error else None, PermissionError),
+          repr(permanent_error.__cause__ if permanent_error else None))
+    check("a permanently locked temporary file remains visible", tmp.exists())
+    original_unlink(tmp, missing_ok=True)
+
     original_replace = path_type.replace
 
     def fail_replace(self: Path, target: Path) -> Path:

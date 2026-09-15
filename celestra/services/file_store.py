@@ -7,6 +7,7 @@ lives under CELESTRA_DATA_DIR.
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Protocol
 
@@ -43,8 +44,13 @@ class LocalFileStore:
         try:
             tmp.write_bytes(data)
             tmp.replace(path)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
+        except BaseException as original_error:
+            cleanup_error = _cleanup_temp(tmp)
+            if cleanup_error is not None:
+                original_error.add_note(
+                    f"Temporary reviewer file could not be removed: {cleanup_error!r}"
+                )
+                raise original_error from cleanup_error
             raise
 
     def delete(self, key: str) -> None:
@@ -52,3 +58,17 @@ class LocalFileStore:
 
 
 file_store: FileStore = LocalFileStore(UPLOAD_DIR)
+
+
+def _cleanup_temp(tmp: Path) -> BaseException | None:
+    """Try twice to remove a failed write's temporary file."""
+    cleanup_error: BaseException | None = None
+    for attempt in range(2):
+        try:
+            tmp.unlink(missing_ok=True)
+            return None
+        except OSError as exc:
+            cleanup_error = exc
+        if attempt == 0:
+            time.sleep(0.01)
+    return cleanup_error
