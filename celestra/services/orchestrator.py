@@ -39,7 +39,7 @@ from ..store import store
 from . import contradictions as contra
 from . import handoff
 from . import insights as insight_gen
-from . import planner, qa, retrieval, synthesis
+from . import planner, qa, retrieval, reviewer_routing, synthesis
 from .scoring import assess_confidence
 
 log = logging.getLogger("celestra.orchestrator")
@@ -172,6 +172,38 @@ class Orchestrator:
             questions_answered=state.questions_answered,
             evidence_count=state.evidence_count,
         )
+
+    async def _route_reviewer_files(
+        self, state: AgentState, bucket: str, questions: list[ResearchQuestion],
+    ) -> dict[str, list[dict]]:
+        """Route the reviewer's files to this agent's questions, once, before it
+        researches. Returns, per question id, the reviewer documents that
+        question's answering calls receive. The insights in the store are the
+        source of truth: files attached at the gate are there, not in memory."""
+        files = reviewer_routing.attached_files(store.get_insights(self.run.id))
+        if not files or not questions or not reviewer_routing.routing_available():
+            return {}
+        spec = get_framework()["buckets"][bucket]
+        routes = await reviewer_routing.route_for_agent(
+            spec["agent_name"], spec.get("name", ""), questions, files)
+        if routes is None:
+            await self._agent(state, message="Reviewer files could not be routed; "
+                                             "not used by this agent")
+            return {}
+        limit = int(get_thresholds()["limits"].get("reviewer_context_max_chars_per_question", 24000))
+        out: dict[str, list[dict]] = {}
+        used: set[str] = set()
+        for q in questions:
+            kept, dropped = reviewer_routing.apply_ceiling(routes.get(q.id, []), files, limit)
+            q.reviewer_sections, q.reviewer_sections_dropped = kept, dropped
+            if kept:
+                out[q.id] = reviewer_routing.documents_for(kept, files)
+                used |= {ref.rsplit(".", 1)[0] for ref in kept}
+        store.save_questions(self.run.id, questions)
+        await self._agent(state, message=(
+            f"Reviewer files: {len(used)} file{'' if len(used) == 1 else 's'} routed to "
+            f"{len(out)} of {len(questions)} questions"))
+        return out
 
     # -- main ------------------------------------------------------------
     async def execute(self) -> None:
@@ -385,6 +417,8 @@ class Orchestrator:
                                 for k, v in inbound_context.items())
                 ))
 
+            reviewer_docs = await self._route_reviewer_files(state, bucket, agent_questions)
+
             agent_evidence: list[Evidence] = []
             agent_answers: list[Answer] = []
             agent_contra: list[Contradiction] = []
@@ -407,7 +441,10 @@ class Orchestrator:
                     outcome = await asyncio.wait_for(
                         retrieval.retrieve(
                             question, self.cfg, self.synonyms, self.registry, on_source,
-                            context=inbound_context,
+                            context=(
+                                {**inbound_context, "reviewer_documents": reviewer_docs[question.id]}
+                                if question.id in reviewer_docs else inbound_context
+                            ),
                         ),
                         timeout=hard_limit,
                     )
