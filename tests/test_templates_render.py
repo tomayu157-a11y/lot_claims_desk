@@ -656,6 +656,31 @@ def test_locked_card_pills_have_no_remove(env, context):
     assert "chip-file-x" not in out
 
 
+def _dialog(env, context, mode):
+    insight = context["insight"].model_copy(update={"reviewer_files": [_rf()]})
+    run = context["run"].model_copy(update={"status": RunStatus.AWAITING_REVIEW})
+    return env.get_template("partials/insight_modal.html").render(
+        **{**context, "mode": mode, "insight": insight, "run": run})
+
+
+def test_add_input_dialog_has_file_block(env, context):
+    out = _dialog(env, context, "input")
+    assert "data-reviewer-files" in out
+    assert 'data-max-files="2"' in out and 'data-max-bytes="1048576"' in out
+    assert 'accept=".pdf,.docx,.txt,.md"' in out
+    assert "the first 10 pages or ~20k tokens are read" in out
+    assert "data-existing" in out and "data-file-remove" in out
+    assert 'data-file-icon="pdf"' in out and 'data-file-icon="x"' in out
+    assert "data-attach-input-url=" in out
+    assert "never cited as sources" in out
+
+
+def test_modify_dialog_has_no_file_block(env, context):
+    out = _dialog(env, context, "modify")
+    assert "data-reviewer-files" not in out
+    assert "data-attach-input-url" not in out
+
+
 # ---------------------------------------------------------------------------
 # static asset checks
 # ---------------------------------------------------------------------------

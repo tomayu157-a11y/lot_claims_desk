@@ -577,7 +577,11 @@
     if (lastFocused && typeof lastFocused.focus === 'function') lastFocused.focus();
   }
 
-  Celestra.closeModal = function () { deactivate(modalRoot); };
+  Celestra.closeModal = function () {
+    // A submission that is reading files cannot be abandoned half way.
+    if (modalRoot && modalRoot.querySelector('[data-reviewer-files].is-busy')) return;
+    deactivate(modalRoot);
+  };
   Celestra.closeSlideOver = function () { deactivate(slideRoot); };
 
   Celestra.openModal = function (html) {
@@ -619,6 +623,21 @@
   }
 
   /* ------------------------------------------------------ 5. postJSON */
+  function swapFragment(target, html) {
+    if (typeof target === 'string') target = $(target);
+    if (!html || !target) return null;
+    var holder = document.createElement('div');
+    holder.innerHTML = html.trim();
+    var fresh = holder.firstElementChild;
+    if (!fresh) return null;
+    target.replaceWith(fresh);
+    initCounters(fresh);
+    if (Celestra.refreshInsights) Celestra.refreshInsights();
+    fresh.classList.add('is-flash');
+    window.setTimeout(function () { fresh.classList.remove('is-flash'); }, 1600);
+    return fresh;
+  }
+
   Celestra.postJSON = async function (url, body, options) {
     options = options || {};
     var res = await fetch(url, {
@@ -640,21 +659,7 @@
     }
 
     var html = typeof payload === 'string' ? payload : (payload && payload.html);
-    var target = options.swap;
-    if (typeof target === 'string') target = $(target);
-
-    if (html && target) {
-      var holder = document.createElement('div');
-      holder.innerHTML = html.trim();
-      var fresh = holder.firstElementChild;
-      if (fresh) {
-        target.replaceWith(fresh);
-        initCounters(fresh);
-        if (Celestra.refreshInsights) Celestra.refreshInsights();
-        fresh.classList.add('is-flash');
-        window.setTimeout(function () { fresh.classList.remove('is-flash'); }, 1600);
-      }
-    }
+    swapFragment(options.swap, html);
     refreshGate();
 
     if (payload && payload.redirect) window.location.assign(payload.redirect);
@@ -700,6 +705,74 @@
       });
     }
     return data;
+  }
+
+  /* reviewer files in the Add Input dialog */
+  var FILE_TINTS = { pdf: 'rose', docx: 'blue', md: 'purple', txt: 'slate' };
+
+  function fileKind(name) {
+    var m = /\.([a-z0-9]+)$/i.exec(name || '');
+    var ext = m ? m[1].toLowerCase() : '';
+    return FILE_TINTS[ext] ? ext : null;
+  }
+  function shortName(name) { return name.length > 50 ? name.slice(0, 50) + '\u2026' : name; }
+  function fileCount(box) { return $$('.chip-file:not(.is-removing)', box).length; }
+  function fileErrors(box, messages) {
+    var list = $('[data-file-errors]', box);
+    if (!list) return;
+    list.innerHTML = '';
+    messages.forEach(function (m) {
+      var li = document.createElement('li');
+      li.textContent = m;
+      list.appendChild(li);
+    });
+  }
+  function iconHTML(box, kind) {
+    var tpl = $('template[data-file-icon="' + kind + '"]', box);
+    return tpl ? tpl.innerHTML : '';
+  }
+  function newFilePill(box, file, kind) {
+    var detail = file.name + ' · ' + kind.toUpperCase() + ' · ' +
+      Math.max(1, Math.ceil(file.size / 1024)) + ' KB';
+    var pill = document.createElement('span');
+    pill.className = 'chip chip-sm chip-file chip-' + FILE_TINTS[kind];
+    pill.title = detail;
+    pill.setAttribute('data-file-name', file.name);
+    pill.innerHTML = '<span class="chip-file-icon" aria-hidden="true"></span>' +
+      '<span class="chip-file-name" aria-hidden="true"></span>' +
+      '<span class="visually-hidden"></span>' +
+      '<button type="button" class="chip-file-x" data-file-remove></button>';
+    $('.chip-file-icon', pill).innerHTML = iconHTML(box, kind);
+    $('.chip-file-name', pill).textContent = shortName(file.name);
+    $('.visually-hidden', pill).textContent = detail;
+    var x = $('.chip-file-x', pill);
+    x.setAttribute('aria-label', 'Remove ' + file.name);
+    x.innerHTML = iconHTML(box, 'x') || '×';
+    pill._file = file;
+    return pill;
+  }
+  function setAttachBusy(scope, box, btn, busy, newPills) {
+    if (box) box.classList.toggle('is-busy', busy);
+    btn.disabled = busy;
+    btn.setAttribute('aria-busy', busy ? 'true' : 'false');
+    if (busy) {
+      btn._label = btn.innerHTML;
+      btn.innerHTML = '<span class="spinner" aria-hidden="true"></span> ' +
+        (btn.getAttribute('data-busy-label') || 'Working…');
+    } else if (btn._label) {
+      btn.innerHTML = btn._label;
+      btn._label = null;
+    }
+    if (scope) {
+      $$('[data-modal-close], [data-file-remove], [data-file-input]', scope)
+        .forEach(function (el) { el.disabled = busy; });
+    }
+    newPills.forEach(function (pill) {
+      var ic = $('.chip-file-icon', pill);
+      if (!ic) return;
+      if (busy) { pill._icon = ic.innerHTML; ic.innerHTML = '<span class="spinner" aria-hidden="true"></span>'; }
+      else if (pill._icon != null) { ic.innerHTML = pill._icon; pill._icon = null; }
+    });
   }
 
   function wire() {
@@ -791,6 +864,121 @@
         btn.disabled = false;
         btn.removeAttribute('aria-busy');
         if (busyLabel) btn.innerHTML = original;
+      }
+    });
+
+    /* Add Input: supporting files */
+    on(document, 'change', '[data-file-input]', function (ev, input) {
+      var box = input.closest('[data-reviewer-files]');
+      if (!box) return;
+      var max = parseInt(box.getAttribute('data-max-files'), 10) || 2;
+      var maxBytes = parseInt(box.getAttribute('data-max-bytes'), 10) || 1048576;
+      var problems = [];
+      Array.prototype.forEach.call(input.files || [], function (file) {
+        var kind = fileKind(file.name);
+        if (/\.doc$/i.test(file.name)) {
+          problems.push(file.name + ": Word 97-2003 (.doc) files can't be read. Save it as .docx or PDF and attach that.");
+        } else if (!kind) {
+          problems.push(file.name + ': only PDF, DOCX, TXT and MD files can be attached.');
+        } else if (file.size > maxBytes) {
+          problems.push(file.name + ' is over 1 MB.');
+        } else if (fileCount(box) >= max) {
+          problems.push('A finding can hold ' + max + ' files. Remove one first.');
+        } else {
+          $('[data-file-pills]', box).appendChild(newFilePill(box, file, kind));
+        }
+      });
+      fileErrors(box, problems);
+      input.value = '';
+    });
+
+    on(document, 'click', '[data-file-remove]', function (ev, btn) {
+      ev.preventDefault();
+      var pill = btn.closest('.chip-file');
+      var box = btn.closest('[data-reviewer-files]');
+      if (!pill || !box || box.classList.contains('is-busy')) return;
+      if (!pill.hasAttribute('data-existing')) { pill.remove(); fileErrors(box, []); return; }
+      var max = parseInt(box.getAttribute('data-max-files'), 10) || 2;
+      if (pill.classList.contains('is-removing')) {
+        if (fileCount(box) >= max) { fileErrors(box, ['A finding can hold ' + max + ' files. Remove one first.']); return; }
+        pill.classList.remove('is-removing');
+        var undo = $('.file-undo', pill);
+        if (undo) undo.remove();
+        var x = $('.chip-file-x', pill);
+        if (x) x.hidden = false;
+      } else {
+        pill.classList.add('is-removing');
+        btn.hidden = true;
+        var again = document.createElement('button');
+        again.type = 'button';
+        again.className = 'file-undo';
+        again.setAttribute('data-file-remove', '');
+        again.textContent = 'Will be removed · Undo';
+        pill.appendChild(again);
+      }
+      fileErrors(box, []);
+    });
+
+    on(document, 'click', '[data-attach-input-url]', async function (ev, btn) {
+      ev.preventDefault();
+      if (btn.disabled) return;
+      var scope = btn.closest('[data-action-scope]');
+      var box = scope ? $('[data-reviewer-files]', scope) : null;
+      var field = scope ? $('[data-field="user_input"]', scope) : null;
+      var text = field ? field.value : '';
+      if (!text.trim()) {
+        if (field) { field.focus(); field.classList.add('is-invalid'); }
+        flash('Write something first: this action sends your text to Celestra.', 'is-danger');
+        return;
+      }
+      var form = new FormData();
+      form.append('user_input', text);
+      var newPills = [];
+      if (box) {
+        $$('.chip-file', box).forEach(function (pill) {
+          pill.classList.remove('is-failed');
+          if (pill.hasAttribute('data-existing')) {
+            if (!pill.classList.contains('is-removing')) form.append('keep_file_ids', pill.getAttribute('data-file-id'));
+          } else if (pill._file) {
+            form.append('files', pill._file, pill._file.name);
+            newPills.push(pill);
+          }
+        });
+        fileErrors(box, []);
+      }
+      setAttachBusy(scope, box, btn, true, newPills);
+      try {
+        var res = await fetch(btn.getAttribute('data-attach-input-url'), {
+          method: 'POST', body: form, credentials: 'same-origin',
+          headers: { 'Accept': 'application/json' }
+        });
+        var type = res.headers.get('Content-Type') || '';
+        var payload = type.indexOf('application/json') !== -1 ? await res.json() : await res.text();
+        if (!res.ok) {
+          var files = (payload && payload.files) || [];
+          if (box && files.length) {
+            files.forEach(function (f) {
+              $$('.chip-file', box).forEach(function (p) {
+                if (p.getAttribute('data-file-name') === f.name) p.classList.add('is-failed');
+              });
+            });
+            fileErrors(box, files.map(function (f) {
+              return (res.status === 422 ? "Couldn't read " : '') + f.name + ': ' + f.error;
+            }));
+          } else {
+            var message = String((payload && payload.detail) || 'Could not attach your input.').slice(0, 400);
+            if (box) fileErrors(box, [message]); else flash(message, 'is-danger');
+          }
+          return;
+        }
+        swapFragment(btn.getAttribute('data-swap'), payload);
+        setAttachBusy(scope, box, btn, false, newPills);
+        Celestra.closeModal();
+        refreshGate();
+      } catch (err) {
+        flash('Could not attach your input. Check the connection and try again.', 'is-danger');
+      } finally {
+        setAttachBusy(scope, box, btn, false, newPills);
       }
     });
 

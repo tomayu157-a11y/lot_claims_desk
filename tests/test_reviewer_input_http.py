@@ -78,6 +78,13 @@ async def main() -> int:
                   for f in saved.reviewer_files))
         pdf_id, txt_id = saved.reviewer_files[0].id, saved.reviewer_files[1].id
 
+        print("\n== the dialog lists the attached files ==")
+        r = await c.get(url, headers={"Accept": "text/html"})
+        check("dialog renders with the file block", r.status_code == 200 and "data-reviewer-files" in r.text)
+        check("  existing files shown as removable pills",
+              "policy.pdf" in r.text and "data-existing" in r.text and "data-file-remove" in r.text)
+        check("  size limit handed to the browser", 'data-max-bytes="1048576"' in r.text)
+
         print("\n== a third file is refused ==")
         r = await c.post(url, data={"user_input": "More.", "keep_file_ids": [pdf_id, txt_id]},
                          files=[("files", TXT)])

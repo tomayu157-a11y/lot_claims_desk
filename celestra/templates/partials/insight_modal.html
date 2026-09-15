@@ -7,6 +7,7 @@
    --------------------------------------------------------------------------- #}
 {% from "partials/icons.html" import icon %}
 {% from "partials/macros.html" import confidence_chip, tinted_tile, enum_value, tier_badge %}
+{% from "partials/file_pill.html" import file_pill %}
 
 {%- set rid = (run.id if run is defined and run else insight.run_id) -%}
 {%- set is_input = (mode | default('modify')) == 'input' -%}
@@ -54,6 +55,8 @@
           <li>Every agent has already run, so it goes into the document only.</li>
           {% endif %}
           <li>It counts as your decision on this finding.</li>
+          <li>Attached files are read as context for the agents' research, only where they
+            are relevant. They are never cited as sources.</li>
         </ul>
       </div>
       {% else %}
@@ -84,6 +87,28 @@
         <div class="counter" id="counter-{{ insight.id }}" aria-live="polite"
              data-counter-for="insight-input-{{ insight.id }}" data-counter-max="500">0/500</div>
       </div>
+
+      {% if is_input %}
+      <div class="field reviewer-files" data-reviewer-files
+           data-max-files="2" data-max-bytes="{{ max_file_bytes }}">
+        <span class="label">Supporting files <span class="meta">(optional)</span></span>
+        <div class="chip-row" data-file-pills>
+          {% for f in insight.reviewer_files %}{{ file_pill(f, local=true) }}{% endfor %}
+        </div>
+        <input type="file" id="reviewer-files-{{ insight.id }}" class="visually-hidden"
+               multiple accept=".pdf,.docx,.txt,.md" data-file-input>
+        <label for="reviewer-files-{{ insight.id }}" class="btn btn-secondary btn-sm mt-1">
+          {{ icon('plus-circle', 14) }} Add files</label>
+        <p class="reviewer-files-hint">PDF, DOCX, TXT or MD · up to 1 MB each · 2 files per finding ·
+          the first 10 pages or ~20k tokens are read · images are ignored</p>
+        <ul class="file-errors" data-file-errors aria-live="polite"></ul>
+        <template data-file-icon="pdf">{{ icon('file-pdf', 13) }}</template>
+        <template data-file-icon="docx">{{ icon('file-word', 13) }}</template>
+        <template data-file-icon="md">{{ icon('file-markdown', 13) }}</template>
+        <template data-file-icon="txt">{{ icon('file-text', 13) }}</template>
+        <template data-file-icon="x">{{ icon('x', 11) }}</template>
+      </div>
+      {% endif %}
 
       {% if not is_input %}
       <div class="impact">
@@ -134,11 +159,9 @@
       <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
       {% if is_input %}
       <button type="button" class="btn btn-primary"
-              data-action-url="/runs/{{ rid }}/insights/{{ insight.id }}/input"
+              data-attach-input-url="/runs/{{ rid }}/insights/{{ insight.id }}/input"
               data-swap="[data-insight-id='{{ insight.id }}']"
-              data-requires-field="user_input"
-              data-busy-label="Attaching…"
-              data-closes-modal>{{ icon('plus-circle', 14) }} Attach input</button>
+              data-busy-label="Attaching and reading files…">{{ icon('plus-circle', 14) }} Attach input</button>
       {% else %}
       <button type="button" class="btn btn-primary"
               data-action-url="/runs/{{ rid }}/insights/{{ insight.id }}/modify"
