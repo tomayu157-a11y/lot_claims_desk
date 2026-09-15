@@ -39,6 +39,45 @@ def main() -> int:
     fs.delete(key)
     check("deleting a missing file is not an error", True)
 
+    print("\n== failed writes are cleaned up ==")
+    fs.put(key, b"original")
+    tmp = path.with_name(path.name + ".part")
+    path_type = type(tmp)
+    original_write_bytes = path_type.write_bytes
+
+    def write_then_fail(self: Path, data: bytes) -> int:
+        original_write_bytes(self, data)
+        raise OSError("forced write failure")
+
+    path_type.write_bytes = write_then_fail
+    try:
+        fs.put(key, b"replacement")
+        write_failed = False
+    except OSError:
+        write_failed = True
+    finally:
+        path_type.write_bytes = original_write_bytes
+    check("a failed write is raised", write_failed)
+    check("a failed write keeps the original file", path.read_bytes() == b"original")
+    check("a failed write leaves no temporary file", not tmp.exists())
+
+    original_replace = path_type.replace
+
+    def fail_replace(self: Path, target: Path) -> Path:
+        raise OSError("forced replace failure")
+
+    path_type.replace = fail_replace
+    try:
+        fs.put(key, b"replacement")
+        replace_failed = False
+    except OSError:
+        replace_failed = True
+    finally:
+        path_type.replace = original_replace
+    check("a failed replace is raised", replace_failed)
+    check("a failed replace keeps the original file", path.read_bytes() == b"original")
+    check("a failed replace leaves no temporary file", not tmp.exists())
+
     print("\n== keys cannot escape the root ==")
     for bad in ("../outside.txt", "runs/../../outside.txt", "/etc/passwd"):
         try:

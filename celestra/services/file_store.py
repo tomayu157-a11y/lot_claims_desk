@@ -40,8 +40,12 @@ class LocalFileStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Write then rename, so a reader never sees half a file.
         tmp = path.with_name(path.name + ".part")
-        tmp.write_bytes(data)
-        tmp.replace(path)
+        try:
+            tmp.write_bytes(data)
+            tmp.replace(path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
