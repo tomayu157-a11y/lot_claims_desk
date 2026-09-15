@@ -31,6 +31,11 @@ def main() -> int:
     fs.put(key, b"%PDF-1.7 hello")
     path = root / "runs" / "run_1" / "insights" / "ins_2" / "rf_3.pdf"
     check("bytes written under nested directories", path.read_bytes() == b"%PDF-1.7 hello")
+    try:
+        original = fs.get(key)
+    except AttributeError:
+        original = None
+    check("get returns the stored bytes for lifecycle compensation", original == b"%PDF-1.7 hello")
     check("no temporary file left behind", not any(p.suffix == ".part" for p in root.rglob("*")))
     fs.put(key, b"second")
     check("put overwrites", path.read_bytes() == b"second")

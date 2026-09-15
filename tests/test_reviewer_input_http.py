@@ -127,6 +127,27 @@ class Upload:
         return self.data if size < 0 else self.data[:size]
 
 
+class FailingFileStore:
+    """A FileStore double that fails selected deletes but retains real bytes."""
+    def __init__(self, delegate: LocalFileStore, failing_keys: set[str]) -> None:
+        self.delegate, self.failing_keys = delegate, failing_keys
+        self.deleted: list[str] = []
+        self.written: list[str] = []
+
+    def get(self, key: str) -> bytes:
+        return self.delegate.get(key)
+
+    def put(self, key: str, data: bytes) -> None:
+        self.written.append(key)
+        self.delegate.put(key, data)
+
+    def delete(self, key: str) -> None:
+        self.deleted.append(key)
+        if key in self.failing_keys:
+            raise OSError("forced delete failure")
+        self.delegate.delete(key)
+
+
 async def main() -> int:
     transport = httpx.ASGITransport(app=app_mod.app, raise_app_exceptions=False)
     async with httpx.AsyncClient(transport=transport, base_url="http://t",
@@ -374,6 +395,106 @@ async def main() -> int:
         check("import restores the file", r.status_code == 303
               and [f.id for f in STORE.get_insight(run.id, card.id).reviewer_files] == [pdf_id],
               f"HTTP {r.status_code}")
+
+        print("\n== failed deletion keeps the attachment recoverable ==")
+        before_direct = STORE.get_insight(run.id, card.id)
+        original_store = app_mod.file_store
+        direct_failures = FailingFileStore(original_store, {before_direct.reviewer_files[0].storage_key})
+        app_mod.file_store = direct_failures
+        try:
+            r = await c.post(f"/runs/{run.id}/insights/{card.id}/files/{pdf_id}/remove")
+        finally:
+            app_mod.file_store = original_store
+        direct_after = STORE.get_insight(run.id, card.id)
+        check("a direct delete failure returns an error instead of a card", r.status_code == 500,
+              f"HTTP {r.status_code}")
+        check("a direct delete failure keeps its file metadata",
+              [f.id for f in direct_after.reviewer_files] == [pdf_id])
+        check("a direct delete failure keeps its original bytes", stored() == [
+            before_direct.reviewer_files[0].storage_key.split("/")[-1],
+        ], str(stored()))
+        STORE.save_insights(run.id, [before_direct])
+
+        print("\n== failed replacement deletion rolls back the whole Attach ==")
+        before_replace = STORE.get_insight(run.id, card.id)
+        replacement_failures = FailingFileStore(
+            original_store, {before_replace.reviewer_files[0].storage_key},
+        )
+        app_mod.file_store = replacement_failures
+        try:
+            r = await c.post(url, data={"user_input": "replace", "keep_file_ids": []},
+                             files=[("files", ("replacement.txt", b"replacement", "text/plain"))])
+        finally:
+            app_mod.file_store = original_store
+        replacement_after = STORE.get_insight(run.id, card.id)
+        check("a replacement delete failure returns an error instead of a card", r.status_code == 500,
+              f"HTTP {r.status_code}")
+        check("a replacement delete failure keeps prior metadata",
+              [f.id for f in replacement_after.reviewer_files] == [pdf_id])
+        check("a replacement delete failure removes newly written originals",
+              stored() == [before_replace.reviewer_files[0].storage_key.split("/")[-1]], str(stored()))
+        STORE.save_insights(run.id, [before_replace])
+        for key in replacement_failures.written:
+            original_store.delete(key)
+
+        print("\n== metadata save failure restores deleted originals ==")
+        before_direct_save = STORE.get_insight(run.id, card.id)
+        direct_save_store = FailingFileStore(original_store, set())
+        original_save_insights = STORE.save_insights
+        direct_save_attempts = 0
+
+        def fail_direct_save_once(run_id: str, items) -> None:
+            nonlocal direct_save_attempts
+            direct_save_attempts += 1
+            if direct_save_attempts == 1:
+                raise OSError("forced metadata save failure")
+            original_save_insights(run_id, items)
+
+        STORE.save_insights = fail_direct_save_once
+        app_mod.file_store = direct_save_store
+        try:
+            r = await c.post(f"/runs/{run.id}/insights/{card.id}/files/{pdf_id}/remove")
+        finally:
+            STORE.save_insights = original_save_insights
+            app_mod.file_store = original_store
+        direct_save_after = STORE.get_insight(run.id, card.id)
+        check("a direct metadata save failure returns an error", r.status_code == 500,
+              f"HTTP {r.status_code}")
+        check("a direct metadata save failure restores the deleted original",
+              before_direct_save.reviewer_files[0].storage_key in direct_save_store.deleted
+              and stored() == [before_direct_save.reviewer_files[0].storage_key.split("/")[-1]],
+              str(direct_save_store.deleted))
+        check("a direct metadata save failure keeps prior metadata",
+              [f.id for f in direct_save_after.reviewer_files] == [pdf_id])
+
+        before_replace_save = STORE.get_insight(run.id, card.id)
+        replacement_save_store = FailingFileStore(original_store, set())
+        replacement_save_attempts = 0
+
+        def fail_replacement_save_once(run_id: str, items) -> None:
+            nonlocal replacement_save_attempts
+            replacement_save_attempts += 1
+            if replacement_save_attempts == 1:
+                raise OSError("forced metadata save failure")
+            original_save_insights(run_id, items)
+
+        STORE.save_insights = fail_replacement_save_once
+        app_mod.file_store = replacement_save_store
+        try:
+            r = await c.post(url, data={"user_input": "replace", "keep_file_ids": []},
+                             files=[("files", ("replacement.txt", b"replacement", "text/plain"))])
+        finally:
+            STORE.save_insights = original_save_insights
+            app_mod.file_store = original_store
+        replacement_save_after = STORE.get_insight(run.id, card.id)
+        check("a replacement metadata save failure returns an error", r.status_code == 500,
+              f"HTTP {r.status_code}")
+        check("a replacement metadata save failure restores old bytes and removes new bytes",
+              before_replace_save.reviewer_files[0].storage_key in replacement_save_store.deleted
+              and stored() == [before_replace_save.reviewer_files[0].storage_key.split("/")[-1]],
+              str(replacement_save_store.deleted))
+        check("a replacement metadata save failure keeps prior metadata",
+              [f.id for f in replacement_save_after.reviewer_files] == [pdf_id])
 
         print("\n== remove from the card ==")
         r = await c.post(f"/runs/{run.id}/insights/{card.id}/files/{pdf_id}/remove")

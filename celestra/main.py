@@ -1277,6 +1277,38 @@ class _AttachError(Exception):
         self.status, self.detail, self.files = status, detail, files or []
 
 
+def _original_file_bytes(files: list[ReviewerFile]) -> dict[str, bytes]:
+    """Read removable originals before changing their metadata or bytes."""
+    try:
+        return {file.storage_key: file_store.get(file.storage_key) for file in files}
+    except Exception as exc:
+        raise _AttachError(500, "Could not remove this file. It remains attached.") from exc
+
+
+def _restore_originals(files: list[ReviewerFile], originals: dict[str, bytes]) -> bool:
+    """Best-effort compensation for originals already deleted in this request."""
+    restored = True
+    for file in files:
+        try:
+            file_store.put(file.storage_key, originals[file.storage_key])
+        except Exception:
+            restored = False
+            log.exception("could not restore reviewer file %s", file.storage_key)
+    return restored
+
+
+def _remove_new_originals(keys: list[str]) -> bool:
+    """Best-effort rollback of new bytes written for a failed Attach."""
+    removed = True
+    for key in keys:
+        try:
+            file_store.delete(key)
+        except Exception:
+            removed = False
+            log.exception("could not roll back reviewer file %s", key)
+    return removed
+
+
 async def _apply_input_with_files(
     run_id: str, insight_id: str, text: str, keep_ids: list[str], uploads: list[Any],
 ) -> Insight:
@@ -1356,28 +1388,44 @@ async def _commit_input_with_files(
         raise _AttachError(400, f"A finding can hold {MAX_FILES_PER_INSIGHT} files. "
                                 "Remove one first.")
 
+    original_insight = insight.model_copy(deep=True)
+    originals = _original_file_bytes(removed)
     written: list[str] = []
     try:
         for record, data in new_files:
             file_store.put(record.storage_key, data)
             written.append(record.storage_key)
-        saved = await _apply_insight_action(
-            run_id, insight_id, "input", text,
-            reviewer_files=kept + [record for record, _ in new_files],
-        )
-    except BaseException:
-        for key in written:
-            try:
-                file_store.delete(key)
-            except Exception:  # the original error matters more
-                log.warning("could not roll back reviewer file %s", key, exc_info=True)
-        raise
-    for f in removed:
         try:
-            file_store.delete(f.storage_key)
-        except Exception:  # an orphaned file does no harm
-            log.warning("could not delete removed reviewer file %s", f.storage_key, exc_info=True)
-    return saved
+            deleted: list[ReviewerFile] = []
+            for file in removed:
+                file_store.delete(file.storage_key)
+                deleted.append(file)
+        except Exception as exc:
+            _restore_originals(deleted, originals)
+            _remove_new_originals(written)
+            raise _AttachError(500, "Could not replace the attached files. Previous files remain attached.") from exc
+        try:
+            return await _apply_insight_action(
+                run_id, insight_id, "input", text,
+                reviewer_files=kept + [record for record, _ in new_files],
+            )
+        except Exception as exc:
+            restored = _restore_originals(deleted, originals)
+            cleaned = _remove_new_originals(written)
+            try:
+                store.save_insights(run_id, [original_insight])
+            except Exception:
+                restored = False
+                log.exception("could not restore reviewer file metadata for %s", insight_id)
+            detail = "Could not replace the attached files. Previous files remain attached."
+            if not restored or not cleaned:
+                detail = "Could not replace the attached files. Recovery needs attention."
+            raise _AttachError(500, detail) from exc
+    except _AttachError:
+        raise
+    except Exception:
+        _remove_new_originals(written)
+        raise
 
 
 @app.post("/runs/{run_id}/insights/{insight_id}/files/{file_id}/remove",
@@ -1385,22 +1433,39 @@ async def _commit_input_with_files(
 async def remove_reviewer_file(request: Request, run_id: str, insight_id: str, file_id: str):
     """Remove one attached file from the card. The typed input and the
     decision stay; research that already used the file is not re-run."""
-    async with _insight_critical_section(run_id, insight_id):
-        run = get_run_or_404(run_id)
-        if run.is_locked:
-            raise HTTPException(409, "This document is approved and locked.")
-        insight = store.get_insight(run_id, insight_id)
-        if insight is None:
-            raise HTTPException(404, "Insight not found")
-        target = next((f for f in insight.reviewer_files if f.id == file_id), None)
-        if target is None:
-            raise HTTPException(404, "File not found")
-        insight.reviewer_files = [f for f in insight.reviewer_files if f.id != file_id]
-        store.save_insights(run_id, [insight])
-        try:
-            file_store.delete(target.storage_key)
-        except Exception:  # an orphaned file does no harm
-            log.warning("could not delete reviewer file %s", target.storage_key, exc_info=True)
+    try:
+        async with _insight_critical_section(run_id, insight_id):
+            run = get_run_or_404(run_id)
+            if run.is_locked:
+                raise HTTPException(409, "This document is approved and locked.")
+            insight = store.get_insight(run_id, insight_id)
+            if insight is None:
+                raise HTTPException(404, "Insight not found")
+            target = next((f for f in insight.reviewer_files if f.id == file_id), None)
+            if target is None:
+                raise HTTPException(404, "File not found")
+            original_insight = insight.model_copy(deep=True)
+            original = _original_file_bytes([target])
+            try:
+                file_store.delete(target.storage_key)
+            except Exception as exc:
+                raise _AttachError(500, "Could not remove this file. It remains attached.") from exc
+            insight.reviewer_files = [f for f in insight.reviewer_files if f.id != file_id]
+            try:
+                store.save_insights(run_id, [insight])
+            except Exception as exc:
+                restored = _restore_originals([target], original)
+                try:
+                    store.save_insights(run_id, [original_insight])
+                except Exception:
+                    restored = False
+                    log.exception("could not restore reviewer file metadata for %s", insight_id)
+                detail = "Could not remove this file. It remains attached."
+                if not restored:
+                    detail = "Could not remove this file. Recovery needs attention."
+                raise _AttachError(500, detail) from exc
+    except _AttachError as exc:
+        return JSONResponse({"detail": exc.detail, "files": exc.files}, status_code=exc.status)
     return _card_response(request, run_id, insight)
 
 

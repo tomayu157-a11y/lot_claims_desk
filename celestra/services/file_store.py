@@ -15,7 +15,9 @@ from ..settings import UPLOAD_DIR
 
 
 class FileStore(Protocol):
+    """Original reviewer-file bytes, including bounded rollback reads."""
     def put(self, key: str, data: bytes) -> None: ...
+    def get(self, key: str) -> bytes: ...
     def delete(self, key: str) -> None: ...
 
 
@@ -52,6 +54,9 @@ class LocalFileStore:
                 )
                 raise original_error from cleanup_error
             raise
+
+    def get(self, key: str) -> bytes:
+        return self._path(key).read_bytes()
 
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
