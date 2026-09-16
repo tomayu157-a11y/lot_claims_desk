@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Awaitable, Callable
 
 from ..models import (
     Answer,
@@ -30,6 +31,12 @@ from .llm import LLMUnavailable, llm
 
 log = logging.getLogger("celestra.revision")
 
+StatusCallback = Callable[[str], Awaitable[None]]
+
+
+async def _noop_status(_: str) -> None:
+    return None
+
 _TRIAGE_SYSTEM = (
     "You decide whether a reviewer's instruction about a research finding can be applied "
     "from the evidence already held, or whether more sources must be consulted first. You "
@@ -44,8 +51,16 @@ _APPLY_SYSTEM = (
 
 
 class RevisionResult:
-    __slots__ = ("text", "status", "citations", "evidence", "answer",
-                 "searched", "sites", "note")
+    __slots__ = (
+        "answer",
+        "citations",
+        "evidence",
+        "note",
+        "searched",
+        "sites",
+        "status",
+        "text",
+    )
 
     def __init__(self) -> None:
         self.text: str = ""
@@ -59,10 +74,10 @@ class RevisionResult:
 
 
 async def _needs_more(instruction: str, question: str, answer: str,
-                      quotes: list[str]) -> tuple[bool, str]:
+                      quotes: list[str], llm_client) -> tuple[bool, str]:
     """Ask whether the held evidence can satisfy the instruction."""
     try:
-        verdict = await llm.complete_json(
+        verdict = await llm_client.complete_json(
             _TRIAGE_SYSTEM,
             f"Question: {question}\n\nCurrent answer: {answer or '(none)'}\n\n"
             "Evidence held:\n" + "\n".join(f"- {q[:300]}" for q in quotes[:12]) + "\n\n"
@@ -88,15 +103,20 @@ async def revise(
     cfg: RunConfig,
     registry: dict,
     synonyms: list[str] | None = None,
+    on_status: StatusCallback | None = None,
+    llm_client=None,
 ) -> RevisionResult:
     """Apply the instruction, searching the web when the held evidence cannot."""
+    status = on_status or _noop_status
+    model = llm_client or llm
+    await status("checking_evidence")
     out = RevisionResult()
     out.evidence = list(evidence)
     instruction = (instruction or "").strip()
     if not instruction:
         return out
 
-    if not llm.available:
+    if not model.available:
         out.note = ("No model provider is configured, so the instruction was recorded "
                     "against the finding but not applied.")
         return out
@@ -107,7 +127,7 @@ async def revise(
 
     # 1. Can this be applied from what is already held?
     needs_more, query = await _needs_more(instruction, question.text,
-                                          question.answer_text, quotes)
+                                          question.answer_text, quotes, model)
 
     # 2. If not, fall back to the open web for the missing part.
     if needs_more:
@@ -116,6 +136,7 @@ async def revise(
             out.searched = True
             search_query = query or f"{cfg.indication} {instruction}"
             try:
+                await status("searching_web")
                 refs = await fire.search(search_query, esc["open_web_max_results"])
                 out.sites = [
                     {"url": r.url, "title": r.title or r.url, "scraped": False, "used": False}
@@ -153,7 +174,7 @@ async def revise(
         for e in out.evidence[:20]
     )
     try:
-        result = await llm.complete_json(
+        result = await model.complete_json(
             _APPLY_SYSTEM,
             f"Question: {question.text}\n\nCurrent answer: {question.answer_text or '(none)'}\n\n"
             f"Evidence available:\n{listing}\n\n"
