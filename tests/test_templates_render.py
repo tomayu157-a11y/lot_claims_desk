@@ -23,7 +23,8 @@ from markupsafe import Markup
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from celestra.models import (  # noqa: E402
+from celestra import main as app_mod
+from celestra.models import (
     AgentState,
     AgentStatus,
     Confidence,
@@ -33,6 +34,9 @@ from celestra.models import (  # noqa: E402
     EvidenceOrigin,
     Insight,
     InsightTable,
+    InsightWorkspace,
+    InsightWorkspaceMessage,
+    InsightWorkspaceSource,
     QAMetrics,
     ReviewAction,
     ReviewerFile,
@@ -42,6 +46,9 @@ from celestra.models import (  # noqa: E402
     RunStatus,
     StageReport,
     VerificationTag,
+    WorkspaceMessageRole,
+    WorkspaceMessageState,
+    workspace_id,
 )
 
 TEMPLATES = ROOT / "celestra" / "templates"
@@ -84,6 +91,7 @@ def env() -> Environment:
         lstrip_blocks=False,
     )
     environment.filters["tagify"] = tagify
+    environment.filters["chat_markdown"] = app_mod.chat_markdown
     environment.globals["url_for"] = url_for
     from celestra.main import run_steps
     environment.globals["run_steps"] = run_steps
@@ -236,6 +244,52 @@ def make_insights() -> list[Insight]:
     return out
 
 
+def make_workspace(run: Run, insight: Insight, evidence: list[Evidence]) -> InsightWorkspace:
+    source_evidence = evidence[0]
+    source = InsightWorkspaceSource(
+        id=source_evidence.id,
+        question_id=source_evidence.question_id,
+        source_id=source_evidence.source_id,
+        source_name=source_evidence.source_name,
+        organization=source_evidence.organization,
+        tier=source_evidence.tier,
+        url=source_evidence.url,
+        title=source_evidence.title,
+        published=source_evidence.published,
+        quote=source_evidence.quote,
+        context=source_evidence.context,
+        origin=source_evidence.origin,
+        tag=source_evidence.tag,
+        relevance=source_evidence.relevance,
+        identifiers=source_evidence.identifiers,
+        retrieved_at=source_evidence.retrieved_at,
+    )
+    first_message = InsightWorkspaceMessage(
+        id="wmsg_summary_boundary",
+        role=WorkspaceMessageRole.USER,
+        state=WorkspaceMessageState.COMPLETED,
+        content="Confirm the operational evidence.",
+    )
+    return InsightWorkspace(
+        id=workspace_id(run.id, insight.id),
+        run_id=run.id,
+        insight_id=insight.id,
+        messages=[
+            first_message,
+            InsightWorkspaceMessage(
+                id="wmsg_answer",
+                role=WorkspaceMessageRole.ASSISTANT,
+                state=WorkspaceMessageState.COMPLETED,
+                content="**Evidence** supports `Threshold`.",
+                source_ids=[source.id],
+            ),
+        ],
+        sources=[source],
+        continuity_summary="Earlier research confirmed the source scope.",
+        summarized_through_message_id=first_message.id,
+    )
+
+
 def make_contradictions() -> list[Contradiction]:
     return [
         Contradiction(
@@ -373,6 +427,7 @@ def context() -> dict:
     stage = make_stage()
     evidence = make_evidence()
     contradictions = make_contradictions()
+    workspace = make_workspace(run, insights[2], evidence)
 
     source_names = {
         "nci_pdq": "NCI PDQ", "seer": "NCI SEER", "acs": "American Cancer Society",
@@ -408,6 +463,9 @@ def context() -> dict:
         "takeaways": insights[:3],
         "insights": insights,
         "insight": insights[2],
+        "workspace": workspace,
+        "locked": False,
+        "available_sources": workspace.sources,
         "source_names": source_names,
         "impacts": [
             {"agent_name": "Treatment Logic Agent",
@@ -554,6 +612,8 @@ def test_expected_templates_exist():
         "insights.html", "contradictions.html", "stage_report.html", "report.html",
         "approval.html", "sources_panel.html", "projects.html", "settings.html", "error.html",
         "partials/insight_card.html", "partials/insight_modal.html",
+        "partials/insight_workspace.html", "partials/insight_workspace_message.html",
+        "partials/insight_workspace_proposal.html",
         "partials/evidence_panel.html",
     }
     missing = expected - set(all_templates())
@@ -675,10 +735,58 @@ def test_add_input_dialog_has_file_block(env, context):
     assert "never cited as sources" in out
 
 
-def test_modify_dialog_has_no_file_block(env, context):
+def test_insight_modal_is_add_input_only(env, context):
     out = _dialog(env, context, "modify")
-    assert "data-reviewer-files" not in out
-    assert "data-attach-input-url" not in out
+    assert "data-reviewer-files" in out
+    assert "data-attach-input-url" in out
+    assert "data-action-url=" not in out
+    assert "Revise finding" not in out
+
+
+def render_workspace(env, context, locked):
+    return env.get_template("partials/insight_workspace.html").render(
+        **{
+            **context,
+            "workspace": context["workspace"],
+            "locked": locked,
+            "available_sources": context["available_sources"],
+        }
+    )
+
+
+def test_insight_workspace_has_scoped_chat_and_update_controls(env, context):
+    out = render_workspace(env, context, locked=False)
+    assert "data-insight-workspace" in out
+    assert "data-workspace-messages" in out
+    assert "data-workspace-composer" in out
+    assert "data-workspace-send" in out
+    assert "data-workspace-propose" in out
+    assert "This conversation can only use this insight and its research." in out
+
+
+def test_locked_workspace_keeps_chat_but_hides_update_actions(env, context):
+    out = render_workspace(env, context, locked=True)
+    assert "data-workspace-send" in out
+    assert "data-workspace-propose" not in out
+    assert "approved document is locked" in out
+
+
+def test_chat_renderer_escapes_html_and_allows_supported_markdown():
+    rendered = str(app_mod.chat_markdown(
+        "<script>alert(1)</script>\n\n- **Evidence**\n- `Threshold`"
+    ))
+    assert "<script>" not in rendered
+    assert "&lt;script&gt;" in rendered
+    assert "<ul>" in rendered and "<strong>Evidence</strong>" in rendered
+    assert "<code>Threshold</code>" in rendered
+
+
+def test_workspace_css_contains_final_dimensions_and_breakpoint():
+    css = (STATIC / "css" / "app.css").read_text(encoding="utf-8")
+    assert "width: min(840px, calc(100vw - 48px))" in css
+    assert "grid-template-columns: 1fr 2fr" in css
+    assert "@media (max-width: 900px)" in css
+    assert ".insight-workspace-grid" in css
 
 
 # ---------------------------------------------------------------------------
@@ -707,8 +815,8 @@ def test_no_bucket_word_in_sources():
     for path in list(TEMPLATES.rglob("*.html")) + list(STATIC.rglob("*.css")) + list(STATIC.rglob("*.js")):
         text = path.read_text(encoding="utf-8").lower()
         # the word may appear only inside a Jinja comment explaining the rule
-        stripped = re.sub(r"\{#.*?#\}", "", text, flags=re.S)
-        stripped = re.sub(r"/\*.*?\*/", "", stripped, flags=re.S)
+        stripped = re.sub(r"\{#.*?#\}", "", text, flags=re.DOTALL)
+        stripped = re.sub(r"/\*.*?\*/", "", stripped, flags=re.DOTALL)
         assert "bucket" not in stripped, f"{path} mentions the internal grouping word"
 
 

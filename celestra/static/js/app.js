@@ -552,13 +552,15 @@
     container.addEventListener('keydown', keydown);
     container._celestraKeydown = keydown;
 
-    container.addEventListener('mousedown', function (ev) {
+    var mousedown = function (ev) {
       var t = ev.target;
       if (t === container || t.hasAttribute('data-modal-backdrop') ||
           t.hasAttribute('data-slideover-backdrop')) {
         onClose();
       }
-    });
+    };
+    container.addEventListener('mousedown', mousedown);
+    container._celestraMouseDown = mousedown;
     initCounters(container);
   }
 
@@ -567,6 +569,10 @@
     if (container._celestraKeydown) {
       container.removeEventListener('keydown', container._celestraKeydown);
       container._celestraKeydown = null;
+    }
+    if (container._celestraMouseDown) {
+      container.removeEventListener('mousedown', container._celestraMouseDown);
+      container._celestraMouseDown = null;
     }
     container.innerHTML = '';
     if (!$('#modal-root') || !$('#modal-root').innerHTML) {
@@ -586,6 +592,7 @@
 
   Celestra.openModal = function (html) {
     modalRoot = root('modal-root');
+    if (modalRoot.innerHTML) deactivate(modalRoot);
     modalRoot.innerHTML = html;
     activate(modalRoot, Celestra.closeModal);
     return modalRoot;
@@ -621,6 +628,53 @@
     if (!res.ok) throw new Error(text || ('Request failed: ' + res.status));
     return text;
   }
+
+  async function readSSE(response, onEvent) {
+    if (!response.ok) {
+      var errorText = await response.text();
+      throw new Error(errorText || ('Request failed: ' + response.status));
+    }
+    if (!response.body || !response.body.getReader) {
+      throw new Error('Research streaming is unavailable in this browser.');
+    }
+
+    var reader = response.body.getReader();
+    var decoder = new TextDecoder();
+    var buffer = '';
+
+    function consume(frame) {
+      var type = 'message';
+      var data = [];
+      frame.split(/\r?\n/).forEach(function (line) {
+        if (line.indexOf('event:') === 0) type = line.slice(6).trim();
+        if (line.indexOf('data:') === 0) data.push(line.slice(5).trim());
+      });
+      if (!data.length) return;
+      var payload;
+      try { payload = JSON.parse(data.join('\n')); } catch (err) {
+        throw new Error('Research returned an invalid stream.');
+      }
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        throw new Error('Research returned an invalid stream payload.');
+      }
+      onEvent(type, payload);
+    }
+
+    while (true) {
+      var read = await reader.read();
+      if (read.done) break;
+      buffer += decoder.decode(read.value, { stream: true });
+      var boundary;
+      while ((boundary = buffer.search(/\r?\n\r?\n/)) !== -1) {
+        var frame = buffer.slice(0, boundary);
+        var separator = buffer.slice(boundary).match(/^\r?\n\r?\n/)[0].length;
+        buffer = buffer.slice(boundary + separator);
+        consume(frame);
+      }
+    }
+    buffer += decoder.decode();
+  }
+  Celestra.readSSE = readSSE;
 
   /* ------------------------------------------------------ 5. postJSON */
   function swapFragment(target, html) {
@@ -775,6 +829,218 @@
     });
   }
 
+  function sameOriginUrl(value) {
+    try {
+      var url = new URL(value, window.location.origin);
+      return url.origin === window.location.origin ? url : null;
+    } catch (err) { return null; }
+  }
+
+  function safeSourceUrl(value) {
+    if (typeof value !== 'string') return null;
+    try {
+      var url = new URL(value);
+      return (url.protocol === 'http:' || url.protocol === 'https:') && url.hostname ? url.href : null;
+    } catch (err) { return null; }
+  }
+
+  function sourceLabel(source) {
+    if (!source || typeof source !== 'object') return '';
+    var label = source.organization || source.source_name;
+    return typeof label === 'string' ? label : '';
+  }
+
+  function sourceChip(source) {
+    var href = source && safeSourceUrl(source.url);
+    var label = sourceLabel(source);
+    if (!href || !label) return null;
+    var link = document.createElement('a');
+    link.className = 'source-chip';
+    link.href = href;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = label;
+    return link;
+  }
+
+  function renderWorkspaceSources(holder, sources) {
+    if (!holder || !Array.isArray(sources)) return;
+    holder.textContent = '';
+    var rendered = 0;
+    sources.forEach(function (source) {
+      var chip = sourceChip(source);
+      if (chip) { holder.appendChild(chip); rendered += 1; }
+    });
+    if (!rendered) {
+      var empty = document.createElement('span');
+      empty.className = 'meta';
+      empty.textContent = 'No sources available yet.';
+      holder.appendChild(empty);
+    }
+  }
+
+  function workspaceMessage(workspace, role, content, state) {
+    var message = document.createElement('article');
+    message.className = 'insight-workspace-message is-' + role + ' is-' + (state || 'completed');
+    message.setAttribute('data-workspace-message-id', '');
+    var head = document.createElement('div');
+    head.className = 'insight-workspace-message-head';
+    var label = document.createElement('strong');
+    label.textContent = role === 'user' ? 'User' : 'Assistant';
+    var status = document.createElement('span');
+    status.className = 'meta';
+    status.setAttribute('data-workspace-message-state', '');
+    status.textContent = state === 'pending' ? 'Researching…' : 'Complete';
+    head.appendChild(label);
+    head.appendChild(status);
+    message.appendChild(head);
+    var body = document.createElement('div');
+    body.className = 'insight-workspace-message-content';
+    body.setAttribute('data-workspace-message-content', '');
+    body.textContent = content || '';
+    message.appendChild(body);
+    var list = $('[data-workspace-messages]', workspace);
+    if (list) {
+      var empty = $('.meta', list);
+      if (empty && !empty.closest('[data-workspace-message-id]')) empty.remove();
+      list.appendChild(message);
+      list.scrollTop = list.scrollHeight;
+    }
+    return message;
+  }
+
+  function setWorkspaceMessageState(message, state, detail) {
+    if (!message) return;
+    message.classList.remove('is-pending', 'is-completed', 'is-failed');
+    message.classList.add('is-' + state);
+    var label = $('[data-workspace-message-state]', message);
+    if (label) label.textContent = detail || (state === 'failed' ? 'Research unavailable' : 'Complete');
+  }
+
+  function addWorkspaceMessageSources(message, sources) {
+    if (!message || !Array.isArray(sources)) return;
+    var chips = $('[data-workspace-message-sources]', message);
+    if (!chips) {
+      chips = document.createElement('div');
+      chips.className = 'chip-row';
+      chips.setAttribute('data-workspace-message-sources', '');
+      chips.setAttribute('aria-label', 'Message sources');
+      message.appendChild(chips);
+    }
+    chips.textContent = '';
+    sources.forEach(function (source) {
+      var chip = sourceChip(source);
+      if (chip) chips.appendChild(chip);
+    });
+  }
+
+  function workspaceError(message, detail) {
+    if (!message) return;
+    setWorkspaceMessageState(message, 'failed');
+    var error = document.createElement('p');
+    error.className = 'meta insight-workspace-error';
+    error.textContent = (detail || 'Research could not be completed.') + ' Try again.';
+    message.appendChild(error);
+  }
+
+  function setWorkspaceBusy(workspace, busy) {
+    var form = $('[data-workspace-composer]', workspace);
+    var input = $('[data-workspace-input]', workspace);
+    var send = $('[data-workspace-send]', workspace);
+    var propose = $('[data-workspace-propose]', workspace);
+    if (form) form.setAttribute('aria-busy', busy ? 'true' : 'false');
+    if (input) input.disabled = busy;
+    if (send) send.disabled = busy;
+    if (propose) propose.disabled = busy;
+  }
+
+  function workspacePath(workspace, suffix) {
+    var runId = workspace && workspace.getAttribute('data-run-id');
+    var insightId = workspace && workspace.getAttribute('data-insight-id');
+    if (!runId || !insightId) return null;
+    return '/runs/' + encodeURIComponent(runId) + '/insights/' + encodeURIComponent(insightId) + '/workspace' + suffix;
+  }
+
+  async function workspaceJSON(url) {
+    var safeUrl = sameOriginUrl(url);
+    if (!safeUrl) throw new Error('Research action is unavailable.');
+    var response = await fetch(safeUrl.href, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      credentials: 'same-origin',
+      body: '{}'
+    });
+    var type = response.headers.get('Content-Type') || '';
+    var payload = type.indexOf('application/json') !== -1 ? await response.json() : await response.text();
+    if (!response.ok) {
+      throw new Error((payload && payload.detail) || (typeof payload === 'string' ? payload : 'Request failed'));
+    }
+    return payload;
+  }
+
+  function insertWorkspaceServerHtml(target, html) {
+    if (!target || typeof html !== 'string') throw new Error('Research returned an invalid view.');
+    target.innerHTML = html;
+  }
+
+  function replaceWorkspaceServerMessage(target, html) {
+    if (!target || typeof html !== 'string') throw new Error('Research returned an invalid message.');
+    var holder = document.createElement('div');
+    holder.innerHTML = html.trim();
+    var fresh = holder.firstElementChild;
+    if (!fresh) throw new Error('Research returned an invalid message.');
+    target.replaceWith(fresh);
+    return fresh;
+  }
+
+  async function submitWorkspaceMessage(form) {
+    var workspace = form.closest('[data-insight-workspace]');
+    var input = $('[data-workspace-input]', form);
+    var text = input ? input.value.trim() : '';
+    var url = workspacePath(workspace, '/messages');
+    if (!workspace || !url || !text) {
+      if (input) input.focus();
+      flash('Write a research question first.', 'is-danger');
+      return;
+    }
+    var user = workspaceMessage(workspace, 'user', text, 'completed');
+    var assistant = workspaceMessage(workspace, 'assistant', '', 'pending');
+    input.value = '';
+    setWorkspaceBusy(workspace, true);
+    try {
+      var response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ message: text })
+      });
+      await readSSE(response, function (type, payload) {
+        var messageId = typeof payload.message_id === 'string' ? payload.message_id : '';
+        if (messageId) assistant.setAttribute('data-workspace-message-id', messageId);
+        if (type === 'research_status') {
+          setWorkspaceMessageState(assistant, 'pending', titleise(payload.detail || 'Researching'));
+        } else if (type === 'answer_delta') {
+          var content = $('[data-workspace-message-content]', assistant);
+          if (content) content.textContent = typeof payload.text === 'string' ? payload.text : '';
+        } else if (type === 'answer_completed') {
+          setWorkspaceMessageState(assistant, 'completed');
+          if (typeof payload.message_html === 'string') assistant = replaceWorkspaceServerMessage(assistant, payload.message_html);
+          renderWorkspaceSources($('[data-workspace-sources]', workspace), payload.sources);
+          addWorkspaceMessageSources(assistant, payload.sources);
+        } else if (type === 'error') {
+          workspaceError(assistant, typeof payload.detail === 'string' ? payload.detail : 'Research could not be completed.');
+        }
+      });
+    } catch (err) {
+      workspaceError(assistant, err && err.message ? err.message : 'Research could not be completed.');
+      flash('Could not complete the research. Try again.', 'is-danger');
+    } finally {
+      setWorkspaceBusy(workspace, false);
+      if (input) input.focus();
+      user.classList.remove('is-pending');
+    }
+  }
+
   function wire() {
     modalRoot = root('modal-root');
     slideRoot = root('slideover-root');
@@ -814,6 +1080,68 @@
     on(document, 'click', '[data-modal-close]', function (ev) {
       ev.preventDefault();
       Celestra.closeModal();
+    });
+
+    on(document, 'submit', '[data-workspace-composer]', function (ev, form) {
+      ev.preventDefault();
+      if (form.getAttribute('aria-busy') === 'true') return;
+      submitWorkspaceMessage(form);
+    });
+
+    on(document, 'click', '[data-workspace-propose]', async function (ev, btn) {
+      ev.preventDefault();
+      if (btn.disabled) return;
+      var workspace = btn.closest('[data-insight-workspace]');
+      var url = workspacePath(workspace, '/proposal');
+      if (!url) return;
+      setWorkspaceBusy(workspace, true);
+      try {
+        var payload = await workspaceJSON(url);
+        var preview = $('[data-workspace-preview]', workspace);
+        insertWorkspaceServerHtml(preview, payload.proposal_html);
+        preview.hidden = false;
+        var continueButton = $('[data-workspace-continue]', preview);
+        if (continueButton) continueButton.focus();
+      } catch (err) {
+        flash((err && err.message) || 'Could not prepare an update.', 'is-danger');
+      } finally {
+        setWorkspaceBusy(workspace, false);
+      }
+    });
+
+    on(document, 'click', '[data-workspace-continue]', function (ev, btn) {
+      ev.preventDefault();
+      var workspace = btn.closest('[data-insight-workspace]');
+      var preview = $('[data-workspace-preview]', workspace);
+      if (preview) preview.hidden = true;
+      var input = $('[data-workspace-input]', workspace);
+      if (input) input.focus();
+    });
+
+    on(document, 'click', '[data-workspace-apply-url]', async function (ev, btn) {
+      ev.preventDefault();
+      if (btn.disabled) return;
+      var workspace = btn.closest('[data-insight-workspace]');
+      var url = btn.getAttribute('data-workspace-apply-url');
+      setWorkspaceBusy(workspace, true);
+      try {
+        var payload = await workspaceJSON(url);
+        var card = workspace && $$('[data-insight-id]').filter(function (item) {
+          return item !== workspace && item.getAttribute('data-insight-id') === workspace.getAttribute('data-insight-id');
+        })[0];
+        var refreshedCard = swapFragment(card, payload.card_html);
+        Celestra.openModal(payload.workspace_html);
+        var returnFocus = refreshedCard ? $('[data-modal-url]', refreshedCard) : null;
+        if (returnFocus) lastFocused = returnFocus;
+        if (Celestra.refreshInsights) Celestra.refreshInsights();
+        refreshGate();
+        var composer = $('[data-workspace-input]', modalRoot);
+        if (composer) composer.focus();
+        if (refreshedCard) refreshedCard.classList.add('is-flash');
+      } catch (err) {
+        flash((err && err.message) || 'Could not apply this update.', 'is-danger');
+        setWorkspaceBusy(workspace, false);
+      }
     });
 
     /* slide-over */

@@ -1,58 +1,64 @@
 {% from "partials/icons.html" import icon %}
-{% set workspace_view = workspace | default({}, true) %}
 <div class="modal-backdrop" data-modal-backdrop>
   <section class="modal insight-workspace" role="dialog" aria-modal="true"
-           aria-label="Research finding" data-insight-workspace>
-    <header class="modal-head">
+           aria-labelledby="workspace-title-{{ insight.id }}"
+           data-insight-workspace data-run-id="{{ run.id }}" data-insight-id="{{ insight.id }}">
+    <header class="modal-head insight-workspace-head">
       <div>
-        <p class="eyebrow">Finding research</p>
-        <h2>{{ insight.title }}</h2>
+        <h2 id="workspace-title-{{ insight.id }}">Research this finding</h2>
+        <div class="meta">{{ insight.title }} · {{ insight.category }}</div>
       </div>
-      <button type="button" class="icon-btn" data-modal-close aria-label="Close">
+      <button type="button" class="icon-btn" data-modal-close aria-label="Close dialog">
         {{ icon('x', 16) }}
       </button>
     </header>
-
-    <div class="modal-body">
-      <div class="review-note">
-        <strong>Current finding</strong>
-        <p>{{ insight.summary }}</p>
-      </div>
-
-      <div class="insight-workspace-messages" data-workspace-messages>
-        {% for message in workspace_view.messages | default([], true) %}
-          {% include "partials/insight_workspace_message.html" %}
-        {% else %}
-          <p class="meta">Research this finding before proposing an update.</p>
-        {% endfor %}
-      </div>
-
-      {% if workspace_view.pending_proposal | default(none, true) %}
-        {% set proposal = workspace_view.pending_proposal %}
-        {% include "partials/insight_workspace_proposal.html" %}
-      {% endif %}
-
-      {% if available_sources | default([], true) %}
-      <div class="icard-section">
-        <div class="icard-label">Available sources</div>
-        <ul class="meta">
-          {% for source in available_sources | default([], true) %}
-          <li><a href="{{ source.url }}" target="_blank" rel="noopener">{{ source.source_name }}</a></li>
+    <div class="insight-workspace-grid">
+      <aside class="insight-workspace-context">
+        <div class="icard-label">Current finding</div>
+        <div class="readonly-block" data-workspace-current>{{ insight.summary }}</div>
+        <div class="icard-label">Research available to this chat</div>
+        <div class="chip-row" data-workspace-sources>
+          {% for source in available_sources %}
+            <a class="source-chip" href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.organization or source.source_name }}</a>
+          {% else %}
+            <span class="meta">No sources available yet.</span>
           {% endfor %}
-        </ul>
-      </div>
+        </div>
+        <div class="icard-label">Applied updates</div>
+        <div data-workspace-history>{{ workspace.applied_revisions|length }}</div>
+        {% if locked %}
+        <p class="insight-workspace-lock meta">This approved document is locked. You can still research this finding, but updates cannot be proposed or applied.</p>
+        {% endif %}
+      </aside>
+      <section class="insight-workspace-chat">
+        <div class="insight-workspace-messages" data-workspace-messages aria-live="polite">
+          {% for message in workspace.messages %}
+            {% include 'partials/insight_workspace_message.html' %}
+            {% if message.id == workspace.summarized_through_message_id %}
+            <div class="insight-workspace-summary-marker" data-workspace-summary-marker>
+              Earlier messages summarized for continuity
+            </div>
+            {% endif %}
+          {% else %}
+            <p class="meta">Research this finding before proposing an update.</p>
+          {% endfor %}
+        </div>
+        <form class="insight-workspace-composer" data-workspace-composer>
+          <textarea maxlength="4000" data-workspace-input data-autofocus
+                    placeholder="Ask about this finding or request deeper research…"></textarea>
+          <div class="insight-workspace-actions">
+            <span class="meta">This conversation can only use this insight and its research.</span>
+            {% if not locked %}<button type="button" class="btn btn-secondary" data-workspace-propose>Update finding</button>{% endif %}
+            <button type="submit" class="btn btn-primary" data-workspace-send>Send</button>
+          </div>
+        </form>
+      </section>
+    </div>
+    <div class="insight-workspace-preview" data-workspace-preview{% if not workspace.pending_proposal %} hidden{% endif %}>
+      {% if workspace.pending_proposal %}
+        {% set proposal = workspace.pending_proposal %}
+        {% include 'partials/insight_workspace_proposal.html' %}
       {% endif %}
     </div>
-
-    <footer class="modal-foot">
-      {% if locked | default(false, true) %}
-        <span class="meta">{{ icon('lock', 12) }} Final finding</span>
-      {% else %}
-        <button type="button" class="btn btn-primary"
-                data-workspace-proposal-url="/runs/{{ run.id }}/insights/{{ insight.id }}/workspace/proposal">
-          {{ icon('edit', 14) }} Update finding
-        </button>
-      {% endif %}
-    </footer>
   </section>
 </div>

@@ -1,16 +1,24 @@
 {% if message is defined and message is not string %}
   {% set workspace_message = message %}
 {% else %}
-  {% set workspace_message = {"id": "", "role": {"value": "assistant"}, "content": "", "error": "", "source_ids": []} %}
+  {% set workspace_message = {"id": "", "role": {"value": "assistant"}, "state": {"value": "completed"}, "content": "", "error": "", "source_ids": []} %}
 {% endif %}
-<article class="review-note insight-workspace-message" data-workspace-message-id="{{ workspace_message.id }}">
-  <strong>{{ workspace_message.role.value | capitalize }}</strong>
-  {% if workspace_message.content %}<p>{{ workspace_message.content }}</p>{% endif %}
-  {% if workspace_message.error %}<p class="meta">{{ workspace_message.error }}</p>{% endif %}
+<article class="insight-workspace-message is-{{ workspace_message.role.value }} is-{{ workspace_message.state.value }}"
+         data-workspace-message-id="{{ workspace_message.id }}">
+  <div class="insight-workspace-message-head">
+    <strong>{{ workspace_message.role.value | capitalize }}</strong>
+    <span class="meta" data-workspace-message-state>
+      {% if workspace_message.state.value == 'pending' %}Researching…
+      {% elif workspace_message.state.value == 'failed' %}Research unavailable
+      {% else %}Complete{% endif %}
+    </span>
+  </div>
+  {% if workspace_message.content %}<div class="insight-workspace-message-content">{{ workspace_message.content | chat_markdown }}</div>{% endif %}
+  {% if workspace_message.error %}<p class="meta insight-workspace-error">{{ workspace_message.error }} Try again.</p>{% endif %}
   {% if workspace_message.source_ids %}
-  <div class="chip-row" aria-label="Message sources">
-    {% for source in available_sources | default([], true) if source.id in workspace_message.source_ids %}
-      <a class="chip" href="{{ source.url }}" target="_blank" rel="noopener">{{ source.source_name }}</a>
+  <div class="chip-row" data-workspace-message-sources aria-label="Message sources">
+    {% for source in available_sources if source.id in workspace_message.source_ids %}
+      <a class="source-chip" href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.organization or source.source_name }}</a>
     {% endfor %}
   </div>
   {% endif %}

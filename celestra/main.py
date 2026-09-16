@@ -231,6 +231,43 @@ def tagify(value: Any) -> Markup:
     return Markup(text)
 
 
+def chat_markdown(value: Any) -> Markup:
+    """Render the deliberately small, safe chat formatting subset."""
+    escaped = html.escape(str(value or ""))
+
+    def inline(text: str) -> str:
+        text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+        return re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
+
+    rendered: list[str] = []
+    paragraph: list[str] = []
+    list_items: list[str] = []
+
+    def flush_paragraph() -> None:
+        if paragraph:
+            rendered.append("<p>" + "<br>".join(inline(line) for line in paragraph) + "</p>")
+            paragraph.clear()
+
+    def flush_list() -> None:
+        if list_items:
+            rendered.append("<ul>" + "".join("<li>" + inline(item) + "</li>" for item in list_items) + "</ul>")
+            list_items.clear()
+
+    for line in escaped.splitlines():
+        if not line.strip():
+            flush_paragraph()
+            flush_list()
+        elif line.startswith("- "):
+            flush_paragraph()
+            list_items.append(line[2:])
+        else:
+            flush_list()
+            paragraph.append(line)
+    flush_paragraph()
+    flush_list()
+    return Markup("".join(rendered))
+
+
 def pct(value: Any) -> str:
     try:
         return f"{float(value) * 100:.0f}%"
@@ -239,6 +276,7 @@ def pct(value: Any) -> str:
 
 
 templates.env.filters["tagify"] = tagify
+templates.env.filters["chat_markdown"] = chat_markdown
 templates.env.filters["pct"] = pct
 
 
