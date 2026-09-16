@@ -1,14 +1,21 @@
 import asyncio
+import hashlib
+import sqlite3
 
 import pytest
+from fastapi import HTTPException
 
 from celestra.models import (
+    AnswerStatus,
+    Confidence,
     Evidence,
     EvidenceOrigin,
     Insight,
+    InsightRevisionProposal,
     InsightWorkspaceMessage,
     InsightWorkspaceSource,
     ResearchQuestion,
+    ReviewAction,
     Run,
     RunConfig,
     RunStatus,
@@ -16,9 +23,9 @@ from celestra.models import (
     WorkspaceMessageRole,
     WorkspaceMessageState,
 )
-from celestra.services.insight_research import ResearchTurnResult
+from celestra.services.insight_research import ProposalDraft, ResearchTurnResult
 from celestra.services.insight_workspace import InsightWorkspaceService
-from celestra.store import Store
+from celestra.store import InsightRevisionCommit, Store
 
 
 def seeded_store(tmp_path):
@@ -529,3 +536,276 @@ async def test_closed_stream_marks_pending_assistant_failed_and_stops_producer(t
     workspace = service.load(run.id, selected.id)
     assert workspace.messages[-1].state is WorkspaceMessageState.FAILED
     assert workspace.messages[-1].error == "Research could not be completed. Try again."
+
+
+async def deterministic_proposal(context, registry, llm_client):
+    supplementary = Evidence(
+        id="ev_proposed",
+        question_id=context.question.id,
+        source_id="supplementary_source",
+        source_name="Supplementary source",
+        tier=3,
+        url="https://example.org/proposed",
+        quote="Supplementary evidence supports an operational update.",
+        origin=EvidenceOrigin.OPEN_WEB,
+    )
+    return ProposalDraft(
+        proposal=InsightRevisionProposal(
+            id="wprop_deterministic",
+            proposed_summary="Proposed operational finding.",
+            change_note="Updated from the scoped research conversation.",
+            basis_message_ids=[
+                message.id
+                for message in context.messages
+                if message.role is WorkspaceMessageRole.USER
+            ],
+            source_ids=[context.evidence[0].id, supplementary.id],
+            web_sites=[
+                {"url": "https://example.org/proposed", "title": "Proposed", "used": True},
+                {"url": "https://example.org/consulted", "title": "Consulted", "used": False},
+            ],
+            base_summary_digest=hashlib.sha256(context.insight.summary.encode()).hexdigest(),
+        ),
+        evidence=[*context.evidence, supplementary],
+        sites=[
+            {"url": "https://example.org/proposed", "title": "Proposed", "used": True},
+            {"url": "https://example.org/consulted", "title": "Consulted", "used": False},
+        ],
+    )
+
+
+def proposal_service(store, lock_registry=None):
+    return InsightWorkspaceService(
+        store=store,
+        registry_factory=dict,
+        answerer=fake_answer,
+        summarizer=fake_summary,
+        proposal_builder=deterministic_proposal,
+        llm_client=object(),
+        lock_registry=lock_registry if lock_registry is not None else {},
+    )
+
+
+def seeded_store_with_stage_report(tmp_path):
+    store, run, selected, other = seeded_store(tmp_path)
+    question = store.get_questions(run.id)[0]
+    from celestra.models import StageReport
+
+    store.save_stage_reports(
+        run.id,
+        [
+            StageReport(
+                id="stg_selected",
+                run_id=run.id,
+                stage=question.stage,
+                bucket=question.bucket,
+                name="Selected stage",
+                core_question=question.text,
+                agent_name="Research",
+                answers=[
+                    {
+                        "question": question.text,
+                        "seed": question.seed_text or question.text,
+                        "answer": question.answer_text,
+                        "status": question.answer_status.value,
+                        "citations": question.answer_citations,
+                    }
+                ],
+            )
+        ],
+    )
+    return store, run, selected, other
+
+
+def revision_commit(store, run, selected):
+    question = next(
+        item for item in store.get_questions(run.id) if item.id == selected.question_ids[0]
+    )
+    report = next(item for item in store.get_stage_reports(run.id) if item.stage == question.stage)
+    workspace = proposal_service(store).load(run.id, selected.id)
+    changed = selected.model_copy(deep=True)
+    changed.summary = "Committed operational finding."
+    return InsightRevisionCommit(
+        insight=changed,
+        question=question,
+        stage_reports=[report],
+        new_evidence=[],
+        workspace=workspace,
+        expected_summary_digest=hashlib.sha256(selected.summary.encode()).hexdigest(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_proposal_is_persisted_without_mutating_insight(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    service = proposal_service(store)
+    proposal = await service.propose(run.id, selected.id)
+    assert proposal.proposed_summary == "Proposed operational finding."
+    assert store.get_insight(run.id, selected.id).summary == selected.summary
+    assert service.load(run.id, selected.id).pending_proposal == proposal
+    assert all(item.id != "ev_proposed" for item in store.get_evidence(run.id))
+
+
+@pytest.mark.asyncio
+async def test_two_successive_proposals_can_be_applied(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    service = proposal_service(store)
+    first = await service.propose(run.id, selected.id)
+    first_result = await service.apply(run.id, selected.id, first.id)
+    second = await service.propose(run.id, selected.id)
+    second_result = await service.apply(run.id, selected.id, second.id)
+    workspace = service.load(run.id, selected.id)
+    assert first_result.insight.summary == "Proposed operational finding."
+    assert second_result.insight.summary == "Proposed operational finding."
+    assert len(workspace.applied_revisions) == 2
+    assert workspace.pending_proposal is None
+    assert service._research_context(run.id, selected.id, workspace).insight.summary == second_result.insight.summary
+
+
+@pytest.mark.asyncio
+async def test_stale_proposal_is_rejected_without_mutation(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    service = proposal_service(store)
+    proposal = await service.propose(run.id, selected.id)
+    changed = store.get_insight(run.id, selected.id)
+    changed.summary = "Changed outside the proposal."
+    store.save_insights(run.id, [changed])
+    with pytest.raises(HTTPException) as exc:
+        await service.apply(run.id, selected.id, proposal.id)
+    assert exc.value.status_code == 409
+    assert store.get_insight(run.id, selected.id).summary == "Changed outside the proposal."
+    assert service.load(run.id, selected.id).pending_proposal.id == proposal.id
+
+
+@pytest.mark.asyncio
+async def test_locked_run_allows_send_but_rejects_proposal_and_apply(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    run.status = RunStatus.APPROVED
+    store.save_run(run)
+    service = proposal_service(store)
+    assert [event async for event in service.send(run.id, selected.id, "Explain this")]
+    with pytest.raises(HTTPException) as exc:
+        await service.propose(run.id, selected.id)
+    assert exc.value.status_code == 409
+
+
+def test_atomic_commit_rolls_back_when_stage_report_write_fails(tmp_path):
+    store, run, selected, _ = seeded_store_with_stage_report(tmp_path)
+    before = store.get_insight(run.id, selected.id)
+    connection = store._conn()
+    connection.execute(
+        "CREATE TRIGGER reject_stage_update BEFORE UPDATE ON stage_reports "
+        "BEGIN SELECT RAISE(ABORT, 'forced rollback'); END"
+    )
+    with pytest.raises(sqlite3.DatabaseError, match="forced rollback"):
+        store.commit_insight_revision(revision_commit(store, run, selected))
+    assert store.get_insight(run.id, selected.id) == before
+    assert store.get_insight_workspace(run.id, selected.id).applied_revisions == []
+
+
+@pytest.mark.asyncio
+async def test_apply_promotes_proposal_sources_and_audited_sites_only_after_apply(tmp_path):
+    store, run, selected, _ = seeded_store_with_stage_report(tmp_path)
+    service = proposal_service(store)
+    proposal = await service.propose(run.id, selected.id)
+    before_question = store.get_questions(run.id)[0]
+    assert before_question.web_sites == []
+    assert all(item.id != "ev_proposed" for item in store.get_evidence_for(run.id, before_question.id))
+
+    result = await service.apply(run.id, selected.id, proposal.id)
+    question = store.get_questions(run.id)[0]
+    report = store.get_stage_reports(run.id)[0]
+    assert result.insight.source_ids == ["ev_selected", "ev_proposed"]
+    assert {item.id for item in store.get_evidence_for(run.id, question.id)} == {
+        "ev_selected", "ev_proposed"
+    }
+    assert question.answer_text == "Proposed operational finding."
+    assert question.answer_status is AnswerStatus.ANSWERED
+    assert question.web_sites == [
+        {"url": "https://example.org/proposed", "title": "Proposed", "used": True},
+        {"url": "https://example.org/consulted", "title": "Consulted", "used": False},
+    ]
+    assert report.answers[0]["answer"] == "Proposed operational finding."
+    assert result.insight.review_action is ReviewAction.MODIFIED
+    assert result.insight.confidence is Confidence.READY
+
+
+@pytest.mark.asyncio
+async def test_apply_updates_only_the_matching_stage_report_answer_row(tmp_path):
+    store, run, selected, _ = seeded_store_with_stage_report(tmp_path)
+    report = store.get_stage_reports(run.id)[0]
+    report.answers.insert(
+        0,
+        {
+            "question": "An unrelated question in the same stage",
+            "seed": "",
+            "answer": "Unchanged answer.",
+            "status": "not_found",
+            "citations": [],
+        },
+    )
+    store.save_stage_reports(run.id, [report])
+    service = proposal_service(store)
+    proposal = await service.propose(run.id, selected.id)
+
+    await service.apply(run.id, selected.id, proposal.id)
+
+    rows = store.get_stage_reports(run.id)[0].answers
+    assert rows[0]["answer"] == "Unchanged answer."
+    assert rows[1]["answer"] == "Proposed operational finding."
+
+
+@pytest.mark.asyncio
+async def test_apply_promotes_assistant_site_audits_after_the_basis_message(tmp_path):
+    store, run, selected, _ = seeded_store_with_stage_report(tmp_path)
+    service = proposal_service(store)
+    workspace = service.load(run.id, selected.id)
+    workspace.messages = [
+        InsightWorkspaceMessage(
+            role=WorkspaceMessageRole.ASSISTANT,
+            content="Earlier research.",
+            web_sites=[{"url": "https://example.org/before", "used": False}],
+        ),
+        InsightWorkspaceMessage(
+            id="wmsg_basis",
+            role=WorkspaceMessageRole.USER,
+            content="Revise this finding with the latest research.",
+        ),
+        InsightWorkspaceMessage(
+            role=WorkspaceMessageRole.ASSISTANT,
+            content="Later research consulted a page without a quote.",
+            web_sites=[{"url": "https://example.org/after", "used": False}],
+        ),
+    ]
+    store.save_insight_workspace(workspace)
+    proposal = await service.propose(run.id, selected.id)
+
+    await service.apply(run.id, selected.id, proposal.id)
+
+    sites = store.get_questions(run.id)[0].web_sites
+    assert {site["url"] for site in sites} >= {"https://example.org/after"}
+    assert "https://example.org/before" not in {site["url"] for site in sites}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_apply_serializes_shared_workspace_lock(tmp_path):
+    store, run, selected, _ = seeded_store_with_stage_report(tmp_path)
+    shared_locks = {}
+    proposer = proposal_service(store, shared_locks)
+    proposal = await proposer.propose(run.id, selected.id)
+    first = proposal_service(store, shared_locks)
+    second = proposal_service(store, shared_locks)
+
+    results = await asyncio.gather(
+        first.apply(run.id, selected.id, proposal.id),
+        second.apply(run.id, selected.id, proposal.id),
+        return_exceptions=True,
+    )
+
+    assert sum(not isinstance(result, Exception) for result in results) == 1
+    conflict = next(result for result in results if isinstance(result, Exception))
+    assert isinstance(conflict, HTTPException)
+    assert conflict.status_code == 409
+    workspace = proposer.load(run.id, selected.id)
+    assert len(workspace.applied_revisions) == 1
+    assert workspace.pending_proposal is None
