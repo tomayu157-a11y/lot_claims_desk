@@ -1,10 +1,12 @@
 import asyncio
 import hashlib
+import json
 import sqlite3
 
 import pytest
 from fastapi import HTTPException
 
+import celestra.main as main_mod
 from celestra.models import (
     AnswerStatus,
     Confidence,
@@ -22,6 +24,7 @@ from celestra.models import (
     WorkspaceEventType,
     WorkspaceMessageRole,
     WorkspaceMessageState,
+    workspace_id,
 )
 from celestra.services.insight_research import ProposalDraft, ResearchTurnResult
 from celestra.services.insight_workspace import InsightWorkspaceService
@@ -173,6 +176,121 @@ async def test_send_persists_turn_and_never_loads_other_insight(tmp_path):
     assert "OTHER_INSIGHT_SECRET" not in captured["prompt_text"]
     assert "OTHER_EVIDENCE_SECRET" not in captured["prompt_text"]
     assert service.load(run.id, other.id).messages == []
+
+
+@pytest.mark.asyncio
+async def test_twenty_four_insights_keep_workspace_context_and_transcripts_isolated(tmp_path):
+    """A selected workspace must never expose another insight's private context."""
+    store, run, selected, other = seeded_store(tmp_path)
+    insights = [selected, other]
+    for index in range(3, 25):
+        insight_id = f"ins_{index:02d}"
+        question_id = f"q_{index:02d}"
+        evidence_id = f"ev_{index:02d}"
+        private_marker = (
+            "INSIGHT_24_PRIVATE_TEXT: do not leak this content."
+            if index == 24
+            else f"Insight {index} private content."
+        )
+        insights.append(
+            Insight(
+                id=insight_id,
+                run_id=run.id,
+                stage="stage_2",
+                bucket="C",
+                category="Logic",
+                title=f"Insight {index}",
+                summary=private_marker,
+                question_ids=[question_id],
+                evidence_ids=[evidence_id],
+            )
+        )
+        store.save_questions(
+            run.id,
+            [
+                ResearchQuestion(
+                    id=question_id,
+                    run_id=run.id,
+                    stage="stage_2",
+                    bucket="C",
+                    text=f"Question for insight {index}",
+                )
+            ],
+        )
+        store.save_evidence(
+            run.id,
+            [
+                Evidence(
+                    id=evidence_id,
+                    question_id=question_id,
+                    source_id=f"source_{index}",
+                    source_name=f"Source {index}",
+                    tier=1,
+                    url=f"https://example.org/{index}",
+                    quote=f"Evidence for insight {index}",
+                )
+            ],
+        )
+    store.save_insights(run.id, insights)
+    captured_contexts = {}
+
+    async def capture_context(context, user_text, registry, on_status, llm_client):
+        captured_contexts[user_text] = " ".join(
+            [context.insight.summary, context.question.text]
+            + [message.content for message in context.messages]
+            + [evidence.quote for evidence in context.evidence]
+        )
+        await on_status("checking_evidence")
+        return ResearchTurnResult(
+            text="Workspace response.",
+            evidence=context.evidence,
+            citations=["Selected source"],
+            source_evidence_ids=[item.id for item in context.evidence],
+            searched=False,
+            note="",
+            sites=[],
+        )
+
+    service = InsightWorkspaceService(
+        store=store,
+        registry_factory=dict,
+        answerer=capture_context,
+        summarizer=fake_summary,
+        llm_client=object(),
+    )
+    first_stream = service.send(run.id, insights[0].id, "Research the first finding.")
+    second_stream = service.send(run.id, insights[1].id, "Research the second finding.")
+    _ = [event async for event in first_stream]
+    _ = [event async for event in second_stream]
+
+    assert len({workspace_id(run.id, insight.id) for insight in insights}) == 24
+    assert service.load(run.id, insights[0].id).messages != []
+    assert service.load(run.id, insights[1].id).messages != []
+    assert all(service.load(run.id, insight.id).messages == [] for insight in insights[2:])
+    assert "INSIGHT_24_PRIVATE_TEXT" not in captured_contexts["Research the first finding."]
+
+
+@pytest.mark.asyncio
+async def test_workspace_transcripts_are_not_exported_and_are_deleted_with_the_run(tmp_path, monkeypatch):
+    """Supporting chat state stays local and is removed with its project."""
+    store, run, selected, _ = seeded_store(tmp_path)
+    service = InsightWorkspaceService(
+        store=store,
+        registry_factory=dict,
+        answerer=fake_answer,
+        summarizer=fake_summary,
+        llm_client=object(),
+    )
+    _ = [event async for event in service.send(run.id, selected.id, "Keep this transcript local.")]
+    monkeypatch.setattr(main_mod, "store", store)
+
+    exported = main_mod._export_bundle(run)
+
+    assert "insight_workspaces" not in exported
+    assert "Keep this transcript local." not in json.dumps(exported)
+    store.delete_run(run.id)
+    assert store.get_insight_workspace(run.id, selected.id) is None
+    assert store.get_run(run.id) is None
 
 
 @pytest.mark.asyncio
