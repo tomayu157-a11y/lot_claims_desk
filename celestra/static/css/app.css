@@ -1428,6 +1428,7 @@ textarea.is-invalid { border-color: var(--danger); }
 .insight-workspace-message-content p + p, .insight-workspace-message-content ul { margin: 8px 0 0; }
 .insight-workspace-message-content ul { padding-left: 18px; }
 .insight-workspace-message-content code { padding: 1px 4px; border-radius: 4px; background: var(--surface-3); }
+.source-chip-toggle { cursor: pointer; font: inherit; }
 .insight-workspace-error { margin: 8px 0 0; color: var(--danger); }
 .source-chip { display: inline-flex; align-items: center; min-height: 24px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text-2); font-size: 11.5px; text-decoration: none; }
 .source-chip:hover { border-color: var(--primary-border); color: var(--text); }

@@ -61,13 +61,64 @@ def _completed_transcript(messages: list[InsightWorkspaceMessage]) -> str:
 
 def _instruction(context: ResearchContext, user_text: str) -> str:
     transcript = _completed_transcript(context.messages)
+    insight = context.insight
+    config = context.config
+    aspects = ", ".join(context.question.aspects) or "(none)"
     return (
-        "Continue the insight-scoped research conversation. Answer the latest request; "
-        "do not use or infer content from other insights. If the latest request is "
-        "unrelated to this insight-scoped research, briefly refuse it.\n\n"
+        "Continue the selected insight's research conversation and answer the latest request. "
+        "The held evidence is a starting point, not a reason to stop: when the user asks for "
+        "more evidence, a definition, verification, or a relevant missing detail, research it "
+        "with the available sources. Do not use or infer content from other insights. If the "
+        "latest request is unrelated to this insight-scoped research, briefly refuse it and "
+        "invite a relevant question. Be concise, friendly, and direct.\n\n"
+        "Selected insight metadata:\n"
+        f"Title: {insight.title}\n"
+        f"Category: {insight.category}\n"
+        f"Stage: {insight.stage}\n"
+        f"Current finding: {insight.summary}\n"
+        f"Detail: {insight.detail or '(none)'}\n"
+        f"Interpretation: {insight.interpretation or '(none)'}\n"
+        f"Review note: {insight.review_note or '(none)'}\n\n"
+        "Project context:\n"
+        f"Indication: {config.indication}\n"
+        f"Objective: {config.objective}\n"
+        f"Population: {config.population}\n"
+        f"Target population: {config.target_population or '(not specified)'}\n"
+        f"Geography: {config.geography}\n"
+        f"Research cutoff: {config.research_cutoff or '(not specified)'}\n"
+        f"Additional context: {config.additional_context or '(none)'}\n\n"
+        "Linked research question:\n"
+        f"Question: {context.question.text}\n"
+        f"Aspects: {aspects}\n"
+        f"Current answer: {context.question.answer_text or '(none)'}\n\n"
         f"Continuity summary:\n{context.continuity_summary or '(none)'}\n\n"
         f"Recent conversation:\n{transcript or '(none)'}\n\n"
         f"Latest user request:\n{user_text}"
+    )
+
+
+def _requires_evidence(user_text: str) -> bool:
+    text = " ".join((user_text or "").lower().split())
+    if not text:
+        return True
+    if text in {"hi", "hello", "hey", "thanks", "thank you"}:
+        return False
+    if any(phrase in text for phrase in ("what can you", "how can you help", "what did i ask")):
+        return False
+    grounding_terms = (
+        "evidence", "source", "citation", "study", "literature", "web", "definition",
+    )
+    if any(term in text for term in grounding_terms):
+        return True
+    metadata_terms = (
+        "title", "category", "stage", "indication", "objective", "population",
+        "geography", "research cutoff", "cutoff date", "additional context", "review note",
+    )
+    if any(term in text for term in metadata_terms):
+        return False
+    return not (
+        any(term in text for term in ("card", "insight", "finding", "project"))
+        and any(term in text for term in ("what", "which", "tell me", "describe", "summarize"))
     )
 
 
@@ -88,12 +139,14 @@ async def answer_turn(
         context.synonyms,
         on_status=on_status,
         llm_client=llm_client or llm,
+        latest_user_request=user_text,
+        evidence_required=_requires_evidence(user_text),
     )
     return ResearchTurnResult(
         text=result.text or result.note,
         evidence=result.evidence,
         citations=result.citations,
-        source_evidence_ids=[item.id for item in result.evidence],
+        source_evidence_ids=result.support_evidence_ids,
         searched=result.searched,
         note=result.note,
         sites=result.sites,
@@ -129,6 +182,7 @@ async def build_proposal(
         registry,
         context.synonyms,
         llm_client=model,
+        evidence_required=True,
     )
     if not result.text:
         if result.provider_unavailable:
@@ -142,7 +196,7 @@ async def build_proposal(
         proposed_summary=result.text[:400],
         change_note=(result.note or "Finding rewritten from the conversation.")[:400],
         basis_message_ids=[message.id for message in basis],
-        source_ids=[item.id for item in result.evidence],
+        source_ids=result.support_evidence_ids,
         web_sites=result.sites,
         base_summary_digest=digest,
     )

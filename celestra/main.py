@@ -1176,7 +1176,7 @@ async def _apply_insight_action(
     elif action == "modify":
         raise HTTPException(
             409,
-            "Direct modification is no longer available. Open Edit, review the proposal, "
+            "Direct modification is no longer available. Open Chat & edit, review the proposal, "
             "and apply it.",
         )
     elif action == "input":

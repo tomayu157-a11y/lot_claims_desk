@@ -374,7 +374,7 @@ async def test_direct_modify_post_is_rejected_without_mutation(client, seeded):
     )
     assert response.status_code == 409
     assert (
-        "Direct modification is no longer available. Open Edit, review the proposal, and apply it."
+        "Direct modification is no longer available. Open Chat &amp; edit, review the proposal, and apply it."
         in response.text
     )
     assert app_mod.store.get_insight(run_id, insight_id).summary == before

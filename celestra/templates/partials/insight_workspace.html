@@ -17,12 +17,17 @@
         <div class="icard-label">Current finding</div>
         <div class="readonly-block" data-workspace-current>{{ insight.summary }}</div>
         <div class="icard-label">Research available to this chat</div>
-        <div class="chip-row" data-workspace-sources>
+        <div class="chip-row workspace-source-list" data-workspace-sources data-source-list>
           {% for source in available_sources %}
-            <a class="source-chip" href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.organization or source.source_name }}</a>
+            <a class="source-chip" data-source-item data-source-id="{{ source.id }}"{% if loop.index > 4 %} hidden{% endif %}
+               href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.organization or source.source_name }}</a>
           {% else %}
-            <span class="meta">No sources available yet.</span>
+            <span class="meta" data-source-empty>No sources available yet.</span>
           {% endfor %}
+          {% if available_sources|length > 4 %}
+            <button type="button" class="source-chip source-chip-toggle" data-source-toggle
+                    aria-expanded="false">+{{ available_sources|length - 4 }} more</button>
+          {% endif %}
         </div>
         <div class="icard-label">Applied updates</div>
         <div data-workspace-history>{{ workspace.applied_revisions|length }}</div>

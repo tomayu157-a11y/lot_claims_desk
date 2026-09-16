@@ -711,6 +711,14 @@ def test_card_shows_reviewer_file_pills(env, context):
     assert "Research that already used it isn" in out
 
 
+def test_card_names_the_research_workspace_action_chat_and_edit(env, context):
+    out = env.get_template("partials/insight_card.html").render(
+        **_card(context, RunStatus.AWAITING_REVIEW)
+    )
+    assert ">Chat &amp; edit</button>" in out
+    assert 'title="Research this finding, ask questions, and propose an update"' in out
+
+
 def test_locked_card_pills_have_no_remove(env, context):
     out = env.get_template("partials/insight_card.html").render(**_card(context, RunStatus.APPROVED))
     assert "SOP.docx" in out
@@ -763,6 +771,41 @@ def test_insight_workspace_has_scoped_chat_and_update_controls(env, context):
     assert "data-workspace-send" in out
     assert "data-workspace-propose" in out
     assert "This conversation can only use this insight and its research." in out
+
+
+def test_insight_workspace_collapses_source_pills_after_the_first_four(env, context):
+    first = context["workspace"].sources[0]
+    sources = [
+        first.model_copy(update={
+            "id": f"ev_source_{index}",
+            "url": f"https://example.org/source-{index}",
+            "organization": f"Source {index}",
+        })
+        for index in range(1, 7)
+    ]
+    message = context["workspace"].messages[-1].model_copy(
+        update={"source_ids": [source.id for source in sources]}
+    )
+    workspace = context["workspace"].model_copy(
+        update={"sources": sources, "messages": [message]}
+    )
+    out = render_workspace(
+        env,
+        {**context, "workspace": workspace, "available_sources": sources},
+        locked=False,
+    )
+    lists = re.findall(
+        r'<div class="chip-row workspace-source-list"[^>]*>(.*?)</div>',
+        out,
+        re.DOTALL,
+    )
+    assert len(lists) == 2
+    for source_list in lists:
+        assert source_list.count("data-source-item") == 6
+        assert len(re.findall(r"data-source-item[^>]* hidden", source_list)) == 2
+        assert 'data-source-toggle' in source_list
+        assert 'aria-expanded="false"' in source_list
+        assert "+2 more" in source_list
 
 
 def test_locked_workspace_keeps_chat_but_hides_update_actions(env, context):

@@ -857,6 +857,8 @@
     if (!href || !label) return null;
     var link = document.createElement('a');
     link.className = 'source-chip';
+    link.setAttribute('data-source-item', '');
+    if (source.id) link.setAttribute('data-source-id', String(source.id));
     link.href = href;
     link.target = '_blank';
     link.rel = 'noopener noreferrer';
@@ -864,20 +866,65 @@
     return link;
   }
 
+  var WORKSPACE_SOURCE_LIMIT = 4;
+
+  function setSourceListExpanded(holder, expanded) {
+    if (!holder) return;
+    var items = $$('[data-source-item]', holder);
+    items.forEach(function (item, index) {
+      item.hidden = !expanded && index >= WORKSPACE_SOURCE_LIMIT;
+    });
+    var toggle = $('[data-source-toggle]', holder);
+    if (items.length <= WORKSPACE_SOURCE_LIMIT) {
+      if (toggle) toggle.hidden = true;
+      return;
+    }
+    if (!toggle) {
+      toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'source-chip source-chip-toggle';
+      toggle.setAttribute('data-source-toggle', '');
+      holder.appendChild(toggle);
+    }
+    toggle.hidden = false;
+    toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    toggle.textContent = expanded ? 'Show less' : '+' + (items.length - WORKSPACE_SOURCE_LIMIT) + ' more';
+  }
+
+  function prepareSourceList(holder) {
+    if (!holder) return;
+    holder.classList.add('workspace-source-list');
+    holder.setAttribute('data-source-list', '');
+    setSourceListExpanded(holder, false);
+  }
+
   function renderWorkspaceSources(holder, sources) {
     if (!holder || !Array.isArray(sources)) return;
-    holder.textContent = '';
-    var rendered = 0;
+    var existing = $$('[data-source-item]', holder);
+    var seen = {};
+    existing.forEach(function (chip) {
+      var key = chip.getAttribute('data-source-id') || chip.href;
+      if (key) seen[key] = true;
+    });
+    var rendered = existing.length;
     sources.forEach(function (source) {
       var chip = sourceChip(source);
-      if (chip) { holder.appendChild(chip); rendered += 1; }
+      if (!chip) return;
+      var key = chip.getAttribute('data-source-id') || chip.href;
+      if (key && seen[key]) return;
+      holder.appendChild(chip);
+      if (key) seen[key] = true;
+      rendered += 1;
     });
+    $$('[data-source-empty]', holder).forEach(function (empty) { empty.remove(); });
     if (!rendered) {
       var empty = document.createElement('span');
       empty.className = 'meta';
+      empty.setAttribute('data-source-empty', '');
       empty.textContent = 'No sources available yet.';
       holder.appendChild(empty);
     }
+    prepareSourceList(holder);
   }
 
   function workspaceMessage(workspace, role, content, state) {
@@ -923,8 +970,9 @@
     var chips = $('[data-workspace-message-sources]', message);
     if (!chips) {
       chips = document.createElement('div');
-      chips.className = 'chip-row';
+      chips.className = 'chip-row workspace-source-list';
       chips.setAttribute('data-workspace-message-sources', '');
+      chips.setAttribute('data-source-list', '');
       chips.setAttribute('aria-label', 'Message sources');
       message.appendChild(chips);
     }
@@ -932,6 +980,27 @@
     sources.forEach(function (source) {
       var chip = sourceChip(source);
       if (chip) chips.appendChild(chip);
+    });
+    prepareSourceList(chips);
+  }
+
+  function typeWorkspaceAnswer(message, text) {
+    var content = $('[data-workspace-message-content]', message);
+    var chunks = String(text || '').match(/\S+\s*/g) || [];
+    if (!content || !chunks.length) return Promise.resolve();
+    setWorkspaceMessageState(message, 'pending', 'Answering…');
+    content.textContent = '';
+    return new Promise(function (resolve) {
+      var index = 0;
+      function step() {
+        content.textContent += chunks[index];
+        index += 1;
+        var list = message.closest('[data-workspace-messages]');
+        if (list) list.scrollTop = list.scrollHeight;
+        if (index >= chunks.length) { resolve(); return; }
+        window.setTimeout(step, 18);
+      }
+      step();
     });
   }
 
@@ -1012,6 +1081,8 @@
     input.value = '';
     setWorkspaceBusy(workspace, true);
     try {
+      var typing = Promise.resolve();
+      var completion = null;
       var response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
@@ -1024,17 +1095,25 @@
         if (type === 'research_status') {
           setWorkspaceMessageState(assistant, 'pending', titleise(payload.detail || 'Researching'));
         } else if (type === 'answer_delta') {
-          var content = $('[data-workspace-message-content]', assistant);
-          if (content) content.textContent = typeof payload.text === 'string' ? payload.text : '';
+          var answerText = typeof payload.text === 'string' ? payload.text : '';
+          typing = typing.then(function () {
+            return typeWorkspaceAnswer(assistant, answerText);
+          });
         } else if (type === 'answer_completed') {
-          setWorkspaceMessageState(assistant, 'completed');
-          if (typeof payload.message_html === 'string') assistant = replaceWorkspaceServerMessage(assistant, payload.message_html);
-          renderWorkspaceSources($('[data-workspace-sources]', workspace), payload.sources);
-          addWorkspaceMessageSources(assistant, payload.sources);
+          completion = payload;
         } else if (type === 'error') {
           workspaceError(assistant, typeof payload.detail === 'string' ? payload.detail : 'Research could not be completed.');
         }
       });
+      await typing;
+      if (completion) {
+        setWorkspaceMessageState(assistant, 'completed');
+        if (typeof completion.message_html === 'string') {
+          assistant = replaceWorkspaceServerMessage(assistant, completion.message_html);
+        }
+        renderWorkspaceSources($('[data-workspace-sources]', workspace), completion.sources);
+        addWorkspaceMessageSources(assistant, completion.sources);
+      }
     } catch (err) {
       workspaceError(assistant, err && err.message ? err.message : 'Research could not be completed.');
       flash('Could not complete the research. Try again.', 'is-danger');
@@ -1090,6 +1169,21 @@
       ev.preventDefault();
       if (form.getAttribute('aria-busy') === 'true') return;
       submitWorkspaceMessage(form);
+    });
+
+    on(document, 'keydown', '[data-workspace-input]', function (ev, input) {
+      if (ev.key !== 'Enter' || ev.shiftKey || ev.isComposing || ev.keyCode === 229) return;
+      ev.preventDefault();
+      var form = input.closest('[data-workspace-composer]');
+      if (!form || form.getAttribute('aria-busy') === 'true') return;
+      submitWorkspaceMessage(form);
+    });
+
+    on(document, 'click', '[data-source-toggle]', function (ev, toggle) {
+      ev.preventDefault();
+      var holder = toggle.closest('[data-source-list]');
+      if (!holder) return;
+      setSourceListExpanded(holder, toggle.getAttribute('aria-expanded') !== 'true');
     });
 
     on(document, 'click', '[data-workspace-propose]', async function (ev, btn) {

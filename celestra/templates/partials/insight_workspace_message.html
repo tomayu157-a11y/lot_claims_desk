@@ -16,10 +16,16 @@
   {% if workspace_message.content %}<div class="insight-workspace-message-content">{{ workspace_message.content | chat_markdown }}</div>{% endif %}
   {% if workspace_message.error %}<p class="meta insight-workspace-error">{{ workspace_message.error }} Try again.</p>{% endif %}
   {% if workspace_message.source_ids %}
-  <div class="chip-row" data-workspace-message-sources aria-label="Message sources">
-    {% for source in available_sources if source.id in workspace_message.source_ids %}
-      <a class="source-chip" href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.organization or source.source_name }}</a>
+  {% set message_sources = available_sources | selectattr('id', 'in', workspace_message.source_ids) | list %}
+  <div class="chip-row workspace-source-list" data-workspace-message-sources data-source-list aria-label="Message sources">
+    {% for source in message_sources %}
+      <a class="source-chip" data-source-item data-source-id="{{ source.id }}"{% if loop.index > 4 %} hidden{% endif %}
+         href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.organization or source.source_name }}</a>
     {% endfor %}
+    {% if message_sources|length > 4 %}
+      <button type="button" class="source-chip source-chip-toggle" data-source-toggle
+              aria-expanded="false">+{{ message_sources|length - 4 }} more</button>
+    {% endif %}
   </div>
   {% endif %}
 </article>

@@ -38,7 +38,22 @@ function element() {
       };
       return find(this);
     },
-    querySelectorAll() { return []; },
+    querySelectorAll(selector) {
+      const matches = (node) => {
+        if (selector[0] === '.') return node.classList.contains(selector.slice(1));
+        const attribute = selector.match(/^\[([^=\]]+)/);
+        return attribute ? node.hasAttribute(attribute[1]) : false;
+      };
+      const found = [];
+      const collect = (node) => {
+        for (const child of node.children) {
+          if (matches(child)) found.push(child);
+          collect(child);
+        }
+      };
+      collect(this);
+      return found;
+    },
     setAttribute(name, content) { attributes.set(name, String(content)); },
     getAttribute(name) { return attributes.get(name) || ''; },
     hasAttribute(name) { return attributes.has(name); },
@@ -64,6 +79,13 @@ function element() {
     set(html) {
       this._innerHTML = html;
       this.firstChild = { textContent: '' };
+    }
+  });
+  Object.defineProperty(value, 'textContent', {
+    get() { return this._textContent || ''; },
+    set(content) {
+      this._textContent = String(content);
+      if (content === '') this.children = [];
     }
   });
   return value;
@@ -159,6 +181,152 @@ async function main() {
   assert.equal(flashArea.children.length, 1);
   assert.equal(flashArea.children[0].firstChild.textContent, 'The model is unavailable. Try again.');
 
+  const enterMessages = element();
+  enterMessages.setAttribute('data-workspace-messages', '');
+  const enterComposer = element();
+  enterComposer.setAttribute('data-workspace-composer', '');
+  const enterInput = element();
+  enterInput.setAttribute('data-workspace-input', '');
+  enterInput.value = 'Research the missing codes.';
+  enterComposer.appendChild(enterInput);
+  const enterWorkspace = element();
+  enterWorkspace.setAttribute('data-insight-workspace', '');
+  enterWorkspace.setAttribute('data-run-id', 'run_one');
+  enterWorkspace.setAttribute('data-insight-id', 'ins_one');
+  enterWorkspace.appendChild(enterMessages);
+  enterWorkspace.appendChild(enterComposer);
+  let enterFetches = 0;
+  global.fetch = async () => {
+    enterFetches += 1;
+    return responseFromChunks([
+      'event: answer_completed\ndata: {"message_id":"wmsg_enter","sources":[]}\n\n'
+    ]);
+  };
+  const keydown = listeners.find((item) => item.type === 'keydown');
+  assert.ok(keydown, 'the workspace composer should handle Enter');
+  let enterPrevented = false;
+  keydown.handler({
+    target: enterInput,
+    key: 'Enter',
+    shiftKey: false,
+    isComposing: false,
+    preventDefault() { enterPrevented = true; }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(enterPrevented, true);
+  assert.equal(enterFetches, 1);
+  assert.equal(enterInput.value, '');
+
+  enterInput.value = 'Keep this on a new line.';
+  let shiftEnterPrevented = false;
+  keydown.handler({
+    target: enterInput,
+    key: 'Enter',
+    shiftKey: true,
+    isComposing: false,
+    preventDefault() { shiftEnterPrevented = true; }
+  });
+  assert.equal(shiftEnterPrevented, false);
+  assert.equal(enterFetches, 1);
+  assert.equal(enterInput.value, 'Keep this on a new line.');
+
+  enterInput.value = '正在输入';
+  let composingPrevented = false;
+  keydown.handler({
+    target: enterInput,
+    key: 'Enter',
+    shiftKey: false,
+    isComposing: true,
+    preventDefault() { composingPrevented = true; }
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(composingPrevented, false);
+  assert.equal(enterFetches, 1);
+  assert.equal(enterInput.value, '正在输入');
+
+  const typingMessages = element();
+  typingMessages.setAttribute('data-workspace-messages', '');
+  const typingComposer = element();
+  typingComposer.setAttribute('data-workspace-composer', '');
+  const typingInput = element();
+  typingInput.setAttribute('data-workspace-input', '');
+  typingInput.value = 'Explain this finding.';
+  typingComposer.appendChild(typingInput);
+  const typingWorkspace = element();
+  typingWorkspace.setAttribute('data-insight-workspace', '');
+  typingWorkspace.setAttribute('data-run-id', 'run_one');
+  typingWorkspace.setAttribute('data-insight-id', 'ins_one');
+  const availableSources = element();
+  availableSources.setAttribute('data-workspace-sources', '');
+  availableSources.setAttribute('data-source-list', '');
+  const existingSource = element();
+  existingSource.setAttribute('data-source-item', '');
+  existingSource.setAttribute('data-source-id', 'ev_existing');
+  existingSource.href = 'https://example.org/existing';
+  existingSource.textContent = 'Existing source';
+  availableSources.appendChild(existingSource);
+  typingWorkspace.appendChild(availableSources);
+  typingWorkspace.appendChild(typingMessages);
+  typingWorkspace.appendChild(typingComposer);
+  const sourcePayload = Array.from({ length: 6 }, (_, index) => ({
+    id: `ev_${index + 1}`,
+    url: `https://example.org/source-${index + 1}`,
+    organization: `Source ${index + 1}`,
+    source_name: `Source ${index + 1}`
+  }));
+  global.fetch = async () => responseFromChunks([
+    'event: answer_delta\ndata: {"message_id":"wmsg_typing","text":"One two three four"}\n\n',
+    `event: answer_completed\ndata: ${JSON.stringify({ message_id: 'wmsg_typing', sources: sourcePayload })}\n\n`
+  ]);
+  const scheduled = [];
+  const nativeWindowTimeout = window.setTimeout;
+  window.setTimeout = (callback) => { scheduled.push(callback); return scheduled.length; };
+  const submit = listeners.find((item) => item.type === 'submit');
+  submit.handler({ target: typingComposer, preventDefault() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const typingAssistant = typingMessages.children[1];
+  const typingContent = typingAssistant.querySelector('[data-workspace-message-content]');
+  const typingState = typingAssistant.querySelector('[data-workspace-message-state]');
+  assert.notEqual(typingContent.textContent, 'One two three four');
+  assert.equal(typingState.textContent, 'Answering…');
+
+  while (scheduled.length) {
+    scheduled.shift()();
+    await Promise.resolve();
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  window.setTimeout = nativeWindowTimeout;
+
+  assert.equal(typingContent.textContent, 'One two three four');
+  assert.equal(typingState.textContent, 'Complete');
+  const messageSources = typingAssistant.querySelector('[data-workspace-message-sources]');
+  const sourceItems = messageSources.querySelectorAll('[data-source-item]');
+  const sourceToggle = messageSources.querySelector('[data-source-toggle]');
+  assert.equal(sourceItems.length, 6);
+  assert.deepEqual(sourceItems.map((item) => item.hidden), [false, false, false, false, true, true]);
+  assert.equal(sourceToggle.textContent, '+2 more');
+  assert.equal(sourceToggle.getAttribute('aria-expanded'), 'false');
+  const availableSourceItems = availableSources.querySelectorAll('[data-source-item]');
+  const availableSourceToggle = availableSources.querySelector('[data-source-toggle]');
+  assert.equal(availableSourceItems.length, 7);
+  assert.equal(availableSourceItems[0], existingSource);
+  assert.equal(availableSourceToggle.textContent, '+3 more');
+
+  listeners
+    .filter((item) => item.type === 'click')
+    .forEach((item) => item.handler({ target: sourceToggle, preventDefault() {} }));
+  assert.deepEqual(sourceItems.map((item) => item.hidden), [false, false, false, false, false, false]);
+  assert.equal(sourceToggle.textContent, 'Show less');
+  assert.equal(sourceToggle.getAttribute('aria-expanded'), 'true');
+
+  listeners
+    .filter((item) => item.type === 'click')
+    .forEach((item) => item.handler({ target: sourceToggle, preventDefault() {} }));
+  assert.deepEqual(sourceItems.map((item) => item.hidden), [false, false, false, false, true, true]);
+  assert.equal(sourceToggle.textContent, '+2 more');
+
   const messages = element();
   messages.setAttribute('data-workspace-messages', '');
   const composer = element();
@@ -181,7 +349,6 @@ async function main() {
     'event: error\ndata: {"message_id":"wmsg_error","detail":"Latest failure."}\n\n'
   ];
   global.fetch = async () => responseFromChunks(duplicateErrors);
-  const submit = listeners.find((item) => item.type === 'submit');
   submit.handler({ target: composer, preventDefault() {} });
   await new Promise((resolve) => setImmediate(resolve));
 
