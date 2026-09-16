@@ -169,6 +169,30 @@ async def test_workspace_get_creates_and_resumes_one_scoped_workspace(client, se
 
 
 @pytest.mark.asyncio
+async def test_workspace_render_omits_invalid_held_source_links(client, seeded):
+    run_id, insight_id, store = seeded
+    selected = store.get_evidence(run_id)[0]
+    invalid_script = selected.model_copy(update={
+        "id": "ev_workspace_script", "source_name": "Unsafe script", "url": "javascript:alert(1)",
+    })
+    invalid_hostless = selected.model_copy(update={
+        "id": "ev_workspace_hostless", "source_name": "Hostless", "url": "http://",
+    })
+    insight = store.get_insight(run_id, insight_id)
+    store.save_insights(run_id, [insight.model_copy(update={
+        "evidence_ids": [selected.id, invalid_script.id, invalid_hostless.id],
+    })])
+    store.save_evidence(run_id, [selected, invalid_script, invalid_hostless])
+
+    response = await client.get(f"/runs/{run_id}/insights/{insight_id}/modify")
+
+    assert response.status_code == 200
+    assert 'href="https://example.org/selected"' in response.text
+    assert "javascript:alert(1)" not in response.text
+    assert 'href="http://"' not in response.text
+
+
+@pytest.mark.asyncio
 async def test_message_route_streams_typed_events_in_order(client, seeded):
     run_id, insight_id, _ = seeded
     response = await client.post(

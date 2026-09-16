@@ -7,6 +7,7 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -430,8 +431,9 @@ class InsightWorkspaceSource(BaseModel):
     @field_validator("url")
     @classmethod
     def http_urls_only(cls, value: str) -> str:
-        if not value.startswith(("https://", "http://")):
-            raise ValueError("workspace source URL must use http or https")
+        parsed = urlparse(value)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError("workspace source URL must use http or https with a hostname")
         return value
 
 

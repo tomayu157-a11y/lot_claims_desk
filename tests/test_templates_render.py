@@ -33,6 +33,7 @@ from celestra.models import (
     Evidence,
     EvidenceOrigin,
     Insight,
+    InsightRevisionProposal,
     InsightTable,
     InsightWorkspace,
     InsightWorkspaceMessage,
@@ -769,6 +770,24 @@ def test_locked_workspace_keeps_chat_but_hides_update_actions(env, context):
     assert "data-workspace-send" in out
     assert "data-workspace-propose" not in out
     assert "approved document is locked" in out
+
+
+def test_locked_workspace_hides_persisted_proposal_overlay_but_keeps_research(env, context):
+    source = context["workspace"].sources[0]
+    workspace = context["workspace"].model_copy(update={
+        "pending_proposal": InsightRevisionProposal(
+            id="wprop_locked", proposed_summary="Do not show this proposal.",
+            change_note="The document is approved.", base_summary_digest="locked",
+            source_ids=[source.id],
+        ),
+    })
+    out = render_workspace(env, {**context, "workspace": workspace}, locked=True)
+    assert "data-workspace-preview hidden" in out
+    assert "data-workspace-proposal-id" not in out
+    assert "Do not show this proposal." not in out
+    assert "data-workspace-messages" in out
+    assert "data-workspace-composer" in out
+    assert "data-workspace-send" in out
 
 
 def test_chat_renderer_escapes_html_and_allows_supported_markdown():

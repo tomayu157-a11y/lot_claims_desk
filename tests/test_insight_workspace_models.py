@@ -12,9 +12,9 @@ from celestra.models import (
     InsightWorkspace,
     InsightWorkspaceMessage,
     InsightWorkspaceSource,
+    WorkspaceEvent,
     WorkspaceMessageRole,
     WorkspaceMessageState,
-    WorkspaceEvent,
     workspace_id,
 )
 from celestra.store import Store
@@ -41,12 +41,21 @@ def test_workspace_id_is_stable_and_scoped():
     assert workspace_id("run_one", "ins_one") != workspace_id("run_one", "ins_two")
 
 
-def test_workspace_source_rejects_non_http_url():
+@pytest.mark.parametrize("url", ["javascript:alert(1)", "http://"])
+def test_workspace_source_rejects_non_http_or_hostless_url(url):
     with pytest.raises(ValidationError):
         InsightWorkspaceSource(
             id="ev_bad", question_id="q_one", source_id="bad", source_name="Bad", tier=3,
-            url="javascript:alert(1)", quote="unsafe",
+            url=url, quote="unsafe",
         )
+
+
+def test_workspace_source_accepts_http_url_with_hostname():
+    source = InsightWorkspaceSource(
+        id="ev_valid", question_id="q_one", source_id="valid", source_name="Valid", tier=3,
+        url="https://example.org/lot", quote="safe",
+    )
+    assert source.url == "https://example.org/lot"
 
 
 def test_workspace_round_trips_and_isolated_by_run_and_insight(tmp_path: Path):

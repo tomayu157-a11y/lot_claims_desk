@@ -673,6 +673,7 @@
       }
     }
     buffer += decoder.decode();
+    if (buffer) consume(buffer);
   }
   Celestra.readSSE = readSSE;
 

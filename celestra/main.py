@@ -9,6 +9,7 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -971,13 +972,18 @@ async def insight_modal(request: Request, run_id: str, insight_id: str):
 
 def _workspace_available_sources(run_id: str, insight: Insight, workspace) -> list:
     """Show only evidence held by this finding and research it collected."""
+    def valid_source_url(value: str) -> bool:
+        parsed = urlparse(value)
+        return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+
     sources = {
         evidence.id: evidence
         for evidence in store.get_evidence(run_id)
-        if evidence.id in set(insight.evidence_ids)
+        if evidence.id in set(insight.evidence_ids) and valid_source_url(evidence.url)
     }
     for source in workspace.sources:
-        sources.setdefault(source.id, source)
+        if valid_source_url(source.url):
+            sources.setdefault(source.id, source)
     return list(sources.values())
 
 

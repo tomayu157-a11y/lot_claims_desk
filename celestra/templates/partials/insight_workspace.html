@@ -54,8 +54,8 @@
         </form>
       </section>
     </div>
-    <div class="insight-workspace-preview" data-workspace-preview{% if not workspace.pending_proposal %} hidden{% endif %}>
-      {% if workspace.pending_proposal %}
+    <div class="insight-workspace-preview" data-workspace-preview{% if locked or not workspace.pending_proposal %} hidden{% endif %}>
+      {% if workspace.pending_proposal and not locked %}
         {% set proposal = workspace.pending_proposal %}
         {% include 'partials/insight_workspace_proposal.html' %}
       {% endif %}
