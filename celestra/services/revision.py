@@ -56,6 +56,7 @@ class RevisionResult:
         "citations",
         "evidence",
         "note",
+        "provider_unavailable",
         "searched",
         "sites",
         "status",
@@ -71,6 +72,7 @@ class RevisionResult:
         self.searched: bool = False
         self.sites: list[dict] = []
         self.note: str = ""
+        self.provider_unavailable: bool = False
 
 
 async def _needs_more(instruction: str, question: str, answer: str,
@@ -117,6 +119,7 @@ async def revise(
         return out
 
     if not model.available:
+        out.provider_unavailable = True
         out.note = ("No model provider is configured, so the instruction was recorded "
                     "against the finding but not applied.")
         return out
@@ -187,6 +190,7 @@ async def revise(
             max_tokens=1500,
         )
     except LLMUnavailable as exc:
+        out.provider_unavailable = True
         out.note = f"Revision could not be applied: {exc}"
         return out
 

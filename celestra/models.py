@@ -25,6 +25,11 @@ def workspace_id(run_id: str, insight_id: str) -> str:
     return f"iws_{digest}"
 
 
+def is_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
+
+
 # --------------------------------------------------------------------------
 # Enumerations
 # --------------------------------------------------------------------------
@@ -431,8 +436,7 @@ class InsightWorkspaceSource(BaseModel):
     @field_validator("url")
     @classmethod
     def http_urls_only(cls, value: str) -> str:
-        parsed = urlparse(value)
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        if not is_http_url(value):
             raise ValueError("workspace source URL must use http or https with a hostname")
         return value
 

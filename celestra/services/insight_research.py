@@ -18,6 +18,10 @@ from .llm import LLMUnavailable, llm
 from .revision import revise
 
 
+class ProposalUnsupported(RuntimeError):
+    """Raised when held and supplementary evidence cannot support an update."""
+
+
 @dataclass
 class ResearchContext:
     insight: Insight
@@ -98,6 +102,10 @@ async def answer_turn(
 async def build_proposal(
     context: ResearchContext, registry: dict, llm_client=None
 ) -> ProposalDraft:
+    model = llm_client or llm
+    if not model.available:
+        raise LLMUnavailable("The model is unavailable. Try again.")
+
     basis = [
         message
         for message in context.messages
@@ -119,10 +127,14 @@ async def build_proposal(
         context.config,
         registry,
         context.synonyms,
-        llm_client=llm_client or llm,
+        llm_client=model,
     )
     if not result.text:
-        raise ValueError(result.note or "The evidence did not support an update.")
+        if result.provider_unavailable:
+            raise LLMUnavailable(result.note or "The model is unavailable. Try again.")
+        raise ProposalUnsupported(
+            result.note or "The evidence did not support an update."
+        )
 
     digest = hashlib.sha256(context.insight.summary.encode()).hexdigest()
     proposal = InsightRevisionProposal(

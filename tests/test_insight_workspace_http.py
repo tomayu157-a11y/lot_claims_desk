@@ -22,6 +22,7 @@ from celestra.models import (
 )
 from celestra.services.insight_research import ProposalDraft, ResearchTurnResult
 from celestra.services.insight_workspace import InsightWorkspaceService
+from celestra.services.llm import LLMUnavailable
 from celestra.store import Store
 
 
@@ -43,6 +44,17 @@ async def _summary(prior, messages, llm_client):
 
 
 async def _proposal(context, registry, llm_client):
+    supplementary = Evidence(
+        id="ev_workspace_proposed",
+        question_id=context.question.id,
+        source_id="supplementary_source",
+        source_name="Supplementary source",
+        tier=3,
+        url="https://example.org/proposed",
+        quote="Supplementary evidence supports an updated operational rule.",
+        origin=EvidenceOrigin.OPEN_WEB,
+    )
+    evidence = [*context.evidence, supplementary]
     return ProposalDraft(
         proposal=InsightRevisionProposal(
             id="wprop_http",
@@ -52,10 +64,10 @@ async def _proposal(context, registry, llm_client):
                 message.id for message in context.messages
                 if message.role is WorkspaceMessageRole.USER
             ],
-            source_ids=[item.id for item in context.evidence],
+            source_ids=[item.id for item in evidence],
             base_summary_digest=hashlib.sha256(context.insight.summary.encode()).hexdigest(),
         ),
-        evidence=context.evidence,
+        evidence=evidence,
         sites=[],
     )
 
@@ -214,7 +226,7 @@ async def test_message_route_streams_typed_events_in_order(client, seeded):
 
 
 @pytest.mark.asyncio
-async def test_proposal_then_apply_returns_workspace_and_card_fragments(client, seeded):
+async def test_proposal_then_apply_refreshes_card_sources_and_evidence_panel(client, seeded):
     run_id, insight_id, _ = seeded
     proposal = await client.post(
         f"/runs/{run_id}/insights/{insight_id}/workspace/proposal", json={},
@@ -229,6 +241,127 @@ async def test_proposal_then_apply_returns_workspace_and_card_fragments(client, 
     assert applied.status_code == 200
     assert "card_html" in applied.json() and "workspace_html" in applied.json()
     assert "Proposed operational finding" in applied.json()["card_html"]
+    assert 'data-sources="2"' in applied.json()["card_html"]
+    assert 'data-source-key="selected_source"' in applied.json()["card_html"]
+    assert 'data-source-key="supplementary_source"' in applied.json()["card_html"]
+    assert "ev_workspace_http" not in applied.json()["card_html"]
+
+    evidence = await client.get(f"/runs/{run_id}/insights/{insight_id}/evidence")
+    assert evidence.status_code == 200
+    assert "2 items" in evidence.text
+    assert "Supplementary evidence supports an updated operational rule." in evidence.text
+
+
+@pytest.mark.asyncio
+async def test_proposal_reports_an_unavailable_model_without_creating_a_proposal(
+    monkeypatch, seeded,
+):
+    """Removing the model availability guard must make this 503 contract fail."""
+    run_id, insight_id, store = seeded
+
+    class UnavailableModel:
+        available = False
+
+    monkeypatch.setattr(app_mod, "store", store)
+    monkeypatch.setattr(
+        app_mod,
+        "_insight_workspace_service",
+        lambda: InsightWorkspaceService(
+            store=store,
+            registry_factory=dict,
+            llm_client=UnavailableModel(),
+            lock_registry={},
+        ),
+    )
+    before = store.get_insight(run_id, insight_id)
+    transport = httpx.ASGITransport(app=app_mod.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as raw_client:
+        response = await raw_client.post(
+            f"/runs/{run_id}/insights/{insight_id}/workspace/proposal",
+            json={},
+            headers={"Accept": "application/json"},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "The model is unavailable. Try again."}
+    assert store.get_insight(run_id, insight_id) == before
+    assert store.get_insight_workspace(run_id, insight_id).pending_proposal is None
+
+
+@pytest.mark.asyncio
+async def test_proposal_reports_a_failed_model_provider_without_creating_a_proposal(
+    monkeypatch, seeded,
+):
+    """A provider outage is retryable, not unsupported evidence."""
+    run_id, insight_id, store = seeded
+
+    class FailingProviderModel:
+        available = True
+
+        async def complete_json(self, *args, **kwargs):
+            raise LLMUnavailable("provider timed out")
+
+    monkeypatch.setattr(app_mod, "store", store)
+    monkeypatch.setattr(
+        app_mod,
+        "_insight_workspace_service",
+        lambda: InsightWorkspaceService(
+            store=store,
+            registry_factory=dict,
+            llm_client=FailingProviderModel(),
+            lock_registry={},
+        ),
+    )
+    transport = httpx.ASGITransport(app=app_mod.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as raw_client:
+        response = await raw_client.post(
+            f"/runs/{run_id}/insights/{insight_id}/workspace/proposal",
+            json={},
+            headers={"Accept": "application/json"},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "The model is unavailable. Try again."}
+    assert store.get_insight_workspace(run_id, insight_id).pending_proposal is None
+
+
+@pytest.mark.asyncio
+async def test_proposal_reports_unsupported_evidence_without_creating_a_proposal(
+    monkeypatch, seeded,
+):
+    """Returning no supported rewrite must not become an internal-server error."""
+    run_id, insight_id, store = seeded
+
+    class UnsupportedProposalModel:
+        available = True
+
+        async def complete_json(self, *args, **kwargs):
+            if "needs_more_sources" in args[1]:
+                return {"needs_more_sources": False, "search_query": "", "reason": ""}
+            return {"answer": "", "applied": False, "note": "More verified evidence is needed."}
+
+    monkeypatch.setattr(app_mod, "store", store)
+    monkeypatch.setattr(
+        app_mod,
+        "_insight_workspace_service",
+        lambda: InsightWorkspaceService(
+            store=store,
+            registry_factory=dict,
+            llm_client=UnsupportedProposalModel(),
+            lock_registry={},
+        ),
+    )
+    transport = httpx.ASGITransport(app=app_mod.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as raw_client:
+        response = await raw_client.post(
+            f"/runs/{run_id}/insights/{insight_id}/workspace/proposal",
+            json={},
+            headers={"Accept": "application/json"},
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "More verified evidence is needed."}
+    assert store.get_insight_workspace(run_id, insight_id).pending_proposal is None
 
 
 @pytest.mark.asyncio

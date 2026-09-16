@@ -557,6 +557,47 @@ async def test_discovered_source_is_available_to_the_next_turn_without_official_
 
 
 @pytest.mark.asyncio
+async def test_send_skips_malformed_historical_evidence_urls(tmp_path):
+    """A malformed legacy source must not prevent a completed research turn."""
+    store, run, selected, _ = seeded_store(tmp_path)
+    valid = store.get_evidence_for(run.id, selected.question_ids[0])[0]
+    invalid_scheme = valid.model_copy(update={
+        "id": "ev_invalid_scheme", "url": "javascript:alert(1)",
+    })
+    invalid_hostless = valid.model_copy(update={
+        "id": "ev_invalid_hostless", "url": "http://",
+    })
+
+    async def answer(context, user_text, registry, on_status, llm_client):
+        await on_status("checking_evidence")
+        return ResearchTurnResult(
+            text="The valid evidence supports the requested rule.",
+            evidence=[valid, invalid_scheme, invalid_hostless],
+            citations=["Selected source"],
+            source_evidence_ids=[valid.id, invalid_scheme.id, invalid_hostless.id],
+            searched=False,
+            note="",
+            sites=[],
+        )
+
+    service = InsightWorkspaceService(
+        store=store,
+        registry_factory=dict,
+        answerer=answer,
+        summarizer=fake_summary,
+        llm_client=object(),
+    )
+    events = [event async for event in service.send(run.id, selected.id, "Use legacy evidence")]
+    workspace = service.load(run.id, selected.id)
+
+    assert events[-1].type is WorkspaceEventType.ANSWER_COMPLETED
+    assert events[-1].source_ids == [valid.id]
+    assert workspace.messages[-1].state is WorkspaceMessageState.COMPLETED
+    assert workspace.messages[-1].source_ids == [valid.id]
+    assert [source.id for source in workspace.sources] == [valid.id]
+
+
+@pytest.mark.asyncio
 async def test_research_status_arrives_before_answer_finishes(tmp_path):
     store, run, selected, _ = seeded_store(tmp_path)
     release = asyncio.Event()
@@ -833,7 +874,8 @@ async def test_apply_promotes_proposal_sources_and_audited_sites_only_after_appl
     result = await service.apply(run.id, selected.id, proposal.id)
     question = store.get_questions(run.id)[0]
     report = store.get_stage_reports(run.id)[0]
-    assert result.insight.source_ids == ["ev_selected", "ev_proposed"]
+    assert result.insight.source_ids == ["selected_source", "supplementary_source"]
+    assert result.insight.evidence_ids == ["ev_selected", "ev_proposed"]
     assert {item.id for item in store.get_evidence_for(run.id, question.id)} == {
         "ev_selected", "ev_proposed"
     }

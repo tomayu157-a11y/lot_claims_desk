@@ -9,7 +9,6 @@ import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -35,6 +34,7 @@ from .models import (
     RunMode,
     RunStatus,
     StageReport,
+    is_http_url,
     utcnow,
 )
 from .services import orchestrator as orch
@@ -972,17 +972,13 @@ async def insight_modal(request: Request, run_id: str, insight_id: str):
 
 def _workspace_available_sources(run_id: str, insight: Insight, workspace) -> list:
     """Show only evidence held by this finding and research it collected."""
-    def valid_source_url(value: str) -> bool:
-        parsed = urlparse(value)
-        return parsed.scheme in ("http", "https") and bool(parsed.hostname)
-
     sources = {
         evidence.id: evidence
         for evidence in store.get_evidence(run_id)
-        if evidence.id in set(insight.evidence_ids) and valid_source_url(evidence.url)
+        if evidence.id in set(insight.evidence_ids) and is_http_url(evidence.url)
     }
     for source in workspace.sources:
-        if valid_source_url(source.url):
+        if is_http_url(source.url):
             sources.setdefault(source.id, source)
     return list(sources.values())
 
@@ -1104,7 +1100,10 @@ async def workspace_message(request: Request, run_id: str, insight_id: str):
 @app.post("/runs/{run_id}/insights/{insight_id}/workspace/proposal")
 async def workspace_proposal(request: Request, run_id: str, insight_id: str):
     service = _insight_workspace_service()
-    proposal = await service.propose(run_id, insight_id)
+    try:
+        proposal = await service.propose(run_id, insight_id)
+    except HTTPException as exc:
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
     run = get_run_or_404(run_id)
     insight = store.get_insight(run_id, insight_id)
     if insight is None:

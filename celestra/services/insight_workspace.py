@@ -22,17 +22,19 @@ from ..models import (
     WorkspaceEventType,
     WorkspaceMessageRole,
     WorkspaceMessageState,
+    is_http_url,
     utcnow,
     workspace_id,
 )
 from ..store import InsightRevisionCommit, StaleInsightRevision
 from .insight_research import (
+    ProposalUnsupported,
     ResearchContext,
     answer_turn,
     build_proposal,
     summarize_context,
 )
-from .llm import llm
+from .llm import LLMUnavailable, llm
 
 _application_lock_registry: dict[tuple[str, str], asyncio.Lock] = {}
 
@@ -224,7 +226,7 @@ class InsightWorkspaceService:
         }
         source_id_map: dict[str, str] = {}
         for item in evidence:
-            if not item.url.startswith(("https://", "http://")):
+            if not is_http_url(item.url):
                 continue
             if item.id in canonical_ids:
                 source_id_map[item.id] = canonical_ids[item.id]
@@ -394,11 +396,16 @@ class InsightWorkspaceService:
             raise HTTPException(409, "This document is approved and locked. Start a new project to change it.")
 
         workspace = self.load(run_id, insight_id)
-        draft = await self.proposal_builder(
-            self._research_context(run_id, insight_id, workspace),
-            self.registry_factory(),
-            self.llm_client,
-        )
+        try:
+            draft = await self.proposal_builder(
+                self._research_context(run_id, insight_id, workspace),
+                self.registry_factory(),
+                self.llm_client,
+            )
+        except LLMUnavailable as exc:
+            raise HTTPException(503, "The model is unavailable. Try again.") from exc
+        except ProposalUnsupported as exc:
+            raise HTTPException(422, str(exc)) from exc
         source_id_map = self._merge_sources(workspace, draft.evidence)
         proposal = draft.proposal.model_copy(
             update={
@@ -510,7 +517,14 @@ class InsightWorkspaceService:
             updated_insight.confidence = Confidence.READY
             updated_insight.reviewed_at = utcnow()
             updated_insight.revision_note = proposal.change_note[:400]
-            updated_insight.source_ids = source_ids
+            updated_insight.source_ids = list(dict.fromkeys([
+                *insight.source_ids,
+                *(source.source_id for source in proposal_sources),
+            ]))
+            updated_insight.evidence_ids = list(dict.fromkeys([
+                *insight.evidence_ids,
+                *source_ids,
+            ]))
             updated_insight.used_web_fallback = (
                 insight.used_web_fallback or bool(proposal.web_sites or assistant_sites)
             )
