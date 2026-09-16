@@ -4,6 +4,7 @@ Regression for the defect where an incidence figure headlined every card in a
 stage: the disease name and the numbers in an epidemiology sentence outscored
 a genuine diagnosis sentence for a question about diagnosis.
 """
+
 from __future__ import annotations
 
 import sys
@@ -26,8 +27,14 @@ TEXT = (
     "part of the confirmatory workup at diagnosis. "
     "Five-year relative survival for acute lymphocytic leukemia is 73.2 percent."
 )
-REF = SourceRef(source_id="seer", source_name="NCI SEER", tier=1, url="https://seer.cancer.gov/x",
-                title="Acute Lymphocytic Leukemia — Cancer Stat Facts", snippet=TEXT)
+REF = SourceRef(
+    source_id="seer",
+    source_name="NCI SEER",
+    tier=1,
+    url="https://seer.cancer.gov/x",
+    title="Acute Lymphocytic Leukemia — Cancer Stat Facts",
+    snippet=TEXT,
+)
 
 failures: list[str] = []
 
@@ -57,46 +64,80 @@ def run_checks() -> int:
 
     print("\n== term tiers ==")
     ts = build_terms(diag_q, diag_a, SYN)
-    check("disease words are context, not focus",
-          "leukemia" in ts.context and "leukemia" not in ts.focus, str(sorted(ts.focus)))
-    check("question words are focus", {"diagnosed", "workup", "immunophenotyping"} <= ts.focus,
-          str(sorted(ts.focus)))
+    check(
+        "disease words are context, not focus",
+        "leukemia" in ts.context and "leukemia" not in ts.focus,
+        str(sorted(ts.focus)),
+    )
+    check(
+        "question words are focus",
+        {"diagnosed", "workup", "immunophenotyping"} <= ts.focus,
+        str(sorted(ts.focus)),
+    )
     check("diagnosis question is not quantitative", not ts.quantitative)
-    check("epidemiology question is quantitative", build_terms(epi_q, epi_a, SYN).quantitative)
+    check(
+        "epidemiology question is quantitative",
+        build_terms(epi_q, epi_a, SYN).quantitative,
+    )
 
     print("\n== headline quotes ==")
     d, e = top_quote(diag_q, diag_a), top_quote(epi_q, epi_a)
-    check("diagnosis question headlines a diagnosis sentence",
-          any(w in d for w in DIAG_WORDS) and "Estimated New Cases" not in d
-          and "per 100,000" not in d, d[:80])
-    check("epidemiology question headlines a statistic",
-          any(w in e for w in STAT_WORDS) and "workup" not in e, e[:80])
+    check(
+        "diagnosis question headlines a diagnosis sentence",
+        any(w in d for w in DIAG_WORDS)
+        and "Estimated New Cases" not in d
+        and "per 100,000" not in d,
+        d[:80],
+    )
+    check(
+        "epidemiology question headlines a statistic",
+        any(w in e for w in STAT_WORDS) and "workup" not in e,
+        e[:80],
+    )
     check("the two questions do not share a headline", d != e)
 
     print("\n== ranking ==")
     refs = [
-        SourceRef(source_id="seer", source_name="NCI SEER", tier=1,
-                  url="https://seer.cancer.gov/x",
-                  title="Acute Lymphocytic Leukemia — Cancer Stat Facts",
-                  snippet="Estimated new cases in 2026: 6,250. The rate of new cases of acute "
-                          "lymphocytic leukemia was 1.9 per 100,000 per year. Five-year relative "
-                          "survival is 73.2 percent."),
-        SourceRef(source_id="nci", source_name="NCI", tier=1,
-                  url="https://cancer.gov/x",
-                  title="Adult ALL Treatment (PDQ): Diagnosis and staging",
-                  snippet="Diagnostic workup: bone marrow aspirate, flow cytometry immunophenotyping, "
-                          "cytogenetics and molecular testing at diagnosis."),
-        SourceRef(source_id="acs", source_name="ACS", tier=3,
-                  url="https://cancer.org/x",
-                  title="Key statistics for acute lymphocytic leukemia",
-                  snippet="About 6,250 new cases and about 1,600 deaths from ALL in 2026."),
+        SourceRef(
+            source_id="seer",
+            source_name="NCI SEER",
+            tier=1,
+            url="https://seer.cancer.gov/x",
+            title="Acute Lymphocytic Leukemia — Cancer Stat Facts",
+            snippet="Estimated new cases in 2026: 6,250. The rate of new cases of acute "
+            "lymphocytic leukemia was 1.9 per 100,000 per year. Five-year relative "
+            "survival is 73.2 percent.",
+        ),
+        SourceRef(
+            source_id="nci",
+            source_name="NCI",
+            tier=1,
+            url="https://cancer.gov/x",
+            title="Adult ALL Treatment (PDQ): Diagnosis and staging",
+            snippet="Diagnostic workup: bone marrow aspirate, flow cytometry immunophenotyping, "
+            "cytogenetics and molecular testing at diagnosis.",
+        ),
+        SourceRef(
+            source_id="acs",
+            source_name="ACS",
+            tier=3,
+            url="https://cancer.org/x",
+            title="Key statistics for acute lymphocytic leukemia",
+            snippet="About 6,250 new cases and about 1,600 deaths from ALL in 2026.",
+        ),
     ]
     ranked = rank_deterministic(refs, build_terms(diag_q, diag_a, SYN))
-    check("diagnosis question ranks the diagnosis document first",
-          ranked[0][0].source_id == "nci", [r.source_id for r, _ in ranked].__str__())
+    check(
+        "diagnosis question ranks the diagnosis document first",
+        ranked[0][0].source_id == "nci",
+        [r.source_id for r, _ in ranked].__str__(),
+    )
     ranked = rank_deterministic(refs, build_terms(epi_q, epi_a, SYN))
-    check("epidemiology question does not rank the diagnosis document first",
-          ranked[0][0].source_id != "nci", [r.source_id for r, _ in ranked].__str__())
+    check(
+        "epidemiology question does not rank the diagnosis document first",
+        ranked[0][0].source_id != "nci",
+        [r.source_id for r, _ in ranked].__str__(),
+    )
 
     print(f"\n{len(failures)} failure(s)")
     return 1 if failures else 0
