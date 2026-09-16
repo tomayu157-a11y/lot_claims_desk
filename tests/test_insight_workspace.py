@@ -7,6 +7,7 @@ from celestra.models import (
     EvidenceOrigin,
     Insight,
     InsightWorkspaceMessage,
+    InsightWorkspaceSource,
     ResearchQuestion,
     Run,
     RunConfig,
@@ -193,19 +194,27 @@ async def test_send_marks_pending_assistant_failed_on_provider_error(tmp_path):
 async def test_large_context_is_summarized_without_deleting_transcript(tmp_path):
     store, run, selected, _ = seeded_store(tmp_path)
     calls = []
+    captured = {}
 
     async def summarizer(prior, messages, llm_client):
         calls.append([message.id for message in messages])
         return "Goal and citations retained."
 
+    async def answer(context, user_text, registry, on_status, llm_client):
+        captured["active_message_ids"] = [message.id for message in context.messages]
+        captured["active_content"] = context.continuity_summary + "\n".join(
+            message.content for message in context.messages
+        )
+        return await fake_answer(context, user_text, registry, on_status, llm_client)
+
     service = InsightWorkspaceService(
         store=store,
         registry_factory=dict,
-        answerer=fake_answer,
+        answerer=answer,
         summarizer=summarizer,
         llm_client=object(),
         active_token_limit=40,
-        reduced_token_target=20,
+        reduced_token_target=120,
     )
     initial = service.load(run.id, selected.id)
     initial.messages = long_completed_messages()
@@ -215,8 +224,112 @@ async def test_large_context_is_summarized_without_deleting_transcript(tmp_path)
     saved = service.load(run.id, selected.id)
     assert calls
     assert len(saved.messages) == before + 2
+    assert [message.content for message in saved.messages[:before]] == [
+        message.content for message in initial.messages
+    ]
     assert saved.continuity_summary == "Goal and citations retained."
     assert saved.summarized_through_message_id
+    assert captured["active_message_ids"] == [
+        "wmsg_long_4",
+        "wmsg_long_5",
+        "wmsg_long_6",
+        "wmsg_long_7",
+        saved.messages[-2].id,
+        saved.messages[-1].id,
+    ]
+    assert max(1, len(captured["active_content"]) // 4) <= 120
+
+
+@pytest.mark.asyncio
+async def test_impossible_context_budget_fails_before_answerer_and_keeps_transcript(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    answerer_calls = []
+
+    async def answer(context, user_text, registry, on_status, llm_client):
+        answerer_calls.append(user_text)
+        return await fake_answer(context, user_text, registry, on_status, llm_client)
+
+    service = InsightWorkspaceService(
+        store=store,
+        registry_factory=dict,
+        answerer=answer,
+        summarizer=fake_summary,
+        llm_client=object(),
+        active_token_limit=40,
+        reduced_token_target=20,
+    )
+    initial = service.load(run.id, selected.id)
+    initial.messages = long_completed_messages()
+    store.save_insight_workspace(initial)
+    original_content = [message.content for message in initial.messages]
+
+    events = [event async for event in service.send(run.id, selected.id, "Continue")]
+    saved = service.load(run.id, selected.id)
+
+    assert answerer_calls == []
+    assert events[-1].type is WorkspaceEventType.ERROR
+    assert [message.content for message in saved.messages[: len(original_content)]] == original_content
+    assert saved.messages[-2].content == "Continue"
+    assert saved.messages[-1].state is WorkspaceMessageState.FAILED
+    assert saved.messages[-1].error == "Research could not be completed. Try again."
+
+
+@pytest.mark.asyncio
+async def test_tuple_duplicate_source_uses_existing_canonical_workspace_source(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    workspace = InsightWorkspaceService(store, dict).load(run.id, selected.id)
+    workspace.sources.append(
+        InsightWorkspaceSource(
+            id="ev_canonical",
+            question_id=selected.question_ids[0],
+            source_id="open_web",
+            source_name="Open web",
+            tier=3,
+            url="https://example.org/canonical",
+            quote="Canonical scoped evidence.",
+            origin=EvidenceOrigin.OPEN_WEB,
+        )
+    )
+    store.save_insight_workspace(workspace)
+
+    async def answer(context, user_text, registry, on_status, llm_client):
+        duplicate = Evidence(
+            id="ev_duplicate",
+            question_id=selected.question_ids[0],
+            source_id="open_web",
+            source_name="Open web",
+            tier=3,
+            url="https://example.org/canonical",
+            quote="Canonical scoped evidence.",
+            origin=EvidenceOrigin.OPEN_WEB,
+        )
+        return ResearchTurnResult(
+            text="Reused canonical source.",
+            evidence=[duplicate],
+            citations=["Open web"],
+            source_evidence_ids=[duplicate.id],
+            searched=True,
+            note="",
+            sites=[],
+        )
+
+    service = InsightWorkspaceService(
+        store=store,
+        registry_factory=dict,
+        answerer=answer,
+        summarizer=fake_summary,
+        llm_client=object(),
+    )
+    events = [event async for event in service.send(run.id, selected.id, "Reuse source")]
+    saved = service.load(run.id, selected.id)
+
+    assert saved.messages[-1].source_ids == ["ev_canonical"]
+    assert events[-1].source_ids == ["ev_canonical"]
+    assert [source.id for source in saved.sources] == ["ev_canonical"]
+    assert all(
+        evidence.id != "ev_duplicate"
+        for evidence in store.get_evidence_for(run.id, selected.question_ids[0])
+    )
 
 
 @pytest.mark.asyncio

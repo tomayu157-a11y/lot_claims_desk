@@ -176,6 +176,8 @@ class InsightWorkspaceService:
         workspace.summarized_through_message_id = selected[-1].id
         workspace.updated_at = utcnow()
         self.store.save_insight_workspace(workspace)
+        if self._active_token_estimate(workspace) > self.reduced_token_target:
+            raise RuntimeError("Conversation context remains too large to answer safely.")
 
     @staticmethod
     def _source_key(item: Evidence) -> tuple[str, str, str]:
@@ -185,19 +187,22 @@ class InsightWorkspaceService:
         self,
         workspace: InsightWorkspace,
         evidence: list[Evidence],
-    ) -> set[str]:
-        known_ids = {source.id for source in workspace.sources}
-        known_keys = {
-            (source.source_id, source.url, source.quote)
+    ) -> dict[str, str]:
+        canonical_ids = {source.id: source.id for source in workspace.sources}
+        canonical_by_key = {
+            (source.source_id, source.url, source.quote): source.id
             for source in workspace.sources
         }
-        merged_ids = set(known_ids)
+        source_id_map: dict[str, str] = {}
         for item in evidence:
             if not item.url.startswith(("https://", "http://")):
                 continue
-            if item.id in known_ids or self._source_key(item) in known_keys:
-                if item.id in known_ids:
-                    merged_ids.add(item.id)
+            if item.id in canonical_ids:
+                source_id_map[item.id] = canonical_ids[item.id]
+                continue
+            canonical_id = canonical_by_key.get(self._source_key(item))
+            if canonical_id:
+                source_id_map[item.id] = canonical_id
                 continue
             workspace.sources.append(
                 InsightWorkspaceSource(
@@ -219,10 +224,10 @@ class InsightWorkspaceService:
                     retrieved_at=item.retrieved_at,
                 )
             )
-            known_ids.add(item.id)
-            known_keys.add(self._source_key(item))
-            merged_ids.add(item.id)
-        return merged_ids
+            canonical_ids[item.id] = item.id
+            canonical_by_key[self._source_key(item)] = item.id
+            source_id_map[item.id] = item.id
+        return source_id_map
 
     async def _persist_failed(
         self,
@@ -298,13 +303,13 @@ class InsightWorkspaceService:
                         break
                     yield event
                 result = await producer
-                merged_source_ids = self._merge_sources(workspace, result.evidence)
+                source_id_map = self._merge_sources(workspace, result.evidence)
                 assistant.content = result.text
                 assistant.state = WorkspaceMessageState.COMPLETED
                 assistant.source_ids = [
-                    source_id
+                    source_id_map[source_id]
                     for source_id in result.source_evidence_ids
-                    if source_id in merged_source_ids
+                    if source_id in source_id_map
                 ]
                 assistant.used_web_fallback = result.searched
                 assistant.web_sites = result.sites
