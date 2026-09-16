@@ -17,6 +17,7 @@ CONFIG_DIR = BASE_DIR / "config"
 # path), otherwise every deploy starts with an empty project list.
 DATA_DIR = Path(os.environ.get("CELESTRA_DATA_DIR") or (BASE_DIR / "data")).expanduser()
 REFERENCE_DIR = DATA_DIR / "reference"
+UPLOAD_DIR = DATA_DIR / "uploads"
 
 
 class Settings(BaseSettings):
@@ -324,5 +325,5 @@ def system_certs_active() -> bool:
 
 def ensure_dirs() -> None:
     configure_tls()
-    for path in (DATA_DIR, REFERENCE_DIR, DATA_DIR / "cache"):
+    for path in (DATA_DIR, REFERENCE_DIR, DATA_DIR / "cache", UPLOAD_DIR):
         path.mkdir(parents=True, exist_ok=True)
