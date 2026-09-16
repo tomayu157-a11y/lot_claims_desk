@@ -471,24 +471,23 @@ class InsightWorkspaceService:
             cited_sources = [
                 source.organization or source.source_name for source in proposal_sources
             ]
-            basis_indexes = [
-                index
-                for index, message in enumerate(workspace.messages)
+            basis_message_ids = set(proposal.basis_message_ids)
+            assistant_sites = []
+            for index, message in enumerate(workspace.messages):
                 if (
-                    message.id in proposal.basis_message_ids
-                    and message.role is WorkspaceMessageRole.USER
-                    and message.state is WorkspaceMessageState.COMPLETED
-                )
-            ]
-            assistant_sites = [
-                site
-                for message in workspace.messages[min(basis_indexes) + 1 :]
-                if (
-                    message.role is WorkspaceMessageRole.ASSISTANT
-                    and message.state is WorkspaceMessageState.COMPLETED
-                )
-                for site in message.web_sites
-            ] if basis_indexes else []
+                    message.id not in basis_message_ids
+                    or message.role is not WorkspaceMessageRole.USER
+                    or message.state is not WorkspaceMessageState.COMPLETED
+                ):
+                    continue
+                for response in workspace.messages[index + 1 :]:
+                    if response.role is WorkspaceMessageRole.USER:
+                        break
+                    if (
+                        response.role is WorkspaceMessageRole.ASSISTANT
+                        and response.state is WorkspaceMessageState.COMPLETED
+                    ):
+                        assistant_sites.extend(response.web_sites)
             sites = self._deduplicated_sites(
                 [*question.web_sites, *proposal.web_sites, *assistant_sites]
             )

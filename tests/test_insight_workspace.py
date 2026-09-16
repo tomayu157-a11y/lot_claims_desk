@@ -574,13 +574,13 @@ async def deterministic_proposal(context, registry, llm_client):
     )
 
 
-def proposal_service(store, lock_registry=None):
+def proposal_service(store, lock_registry=None, proposal_builder=deterministic_proposal):
     return InsightWorkspaceService(
         store=store,
         registry_factory=dict,
         answerer=fake_answer,
         summarizer=fake_summary,
-        proposal_builder=deterministic_proposal,
+        proposal_builder=proposal_builder,
         llm_client=object(),
         lock_registry=lock_registry if lock_registry is not None else {},
     )
@@ -758,7 +758,18 @@ async def test_apply_updates_only_the_matching_stage_report_answer_row(tmp_path)
 @pytest.mark.asyncio
 async def test_apply_promotes_assistant_site_audits_after_the_basis_message(tmp_path):
     store, run, selected, _ = seeded_store_with_stage_report(tmp_path)
-    service = proposal_service(store)
+
+    async def proposal_from_first_basis(context, registry, llm_client):
+        draft = await deterministic_proposal(context, registry, llm_client)
+        return ProposalDraft(
+            proposal=draft.proposal.model_copy(
+                update={"basis_message_ids": ["wmsg_basis"]}
+            ),
+            evidence=draft.evidence,
+            sites=draft.sites,
+        )
+
+    service = proposal_service(store, proposal_builder=proposal_from_first_basis)
     workspace = service.load(run.id, selected.id)
     workspace.messages = [
         InsightWorkspaceMessage(
@@ -776,6 +787,15 @@ async def test_apply_promotes_assistant_site_audits_after_the_basis_message(tmp_
             content="Later research consulted a page without a quote.",
             web_sites=[{"url": "https://example.org/after", "used": False}],
         ),
+        InsightWorkspaceMessage(
+            role=WorkspaceMessageRole.USER,
+            content="Research a separate follow-up topic.",
+        ),
+        InsightWorkspaceMessage(
+            role=WorkspaceMessageRole.ASSISTANT,
+            content="Separate follow-up research.",
+            web_sites=[{"url": "https://example.org/unrelated", "used": False}],
+        ),
     ]
     store.save_insight_workspace(workspace)
     proposal = await service.propose(run.id, selected.id)
@@ -785,6 +805,7 @@ async def test_apply_promotes_assistant_site_audits_after_the_basis_message(tmp_
     sites = store.get_questions(run.id)[0].web_sites
     assert {site["url"] for site in sites} >= {"https://example.org/after"}
     assert "https://example.org/before" not in {site["url"] for site in sites}
+    assert "https://example.org/unrelated" not in {site["url"] for site in sites}
 
 
 @pytest.mark.asyncio
