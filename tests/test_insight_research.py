@@ -2,6 +2,7 @@ import pytest
 
 import celestra.services.answering as answering_mod
 import celestra.services.insight_research as research_mod
+import celestra.services.revision as revision_mod
 from celestra.models import (
     Evidence,
     EvidenceOrigin,
@@ -36,6 +37,95 @@ def context() -> ResearchContext:
         config=RunConfig(indication="ALL", indication_key="ALL"),
         continuity_summary="Earlier work retained source ev_one.", messages=[],
     )
+
+
+@pytest.mark.asyncio
+async def test_revise_skips_evidence_status_for_an_empty_instruction():
+    class AvailableModel:
+        available = True
+
+        async def complete_json(self, *args, **kwargs):
+            raise AssertionError("empty instructions must not evaluate held evidence")
+
+    statuses = []
+
+    async def record_status(name):
+        statuses.append(name)
+
+    result = await revision_mod.revise(
+        context().insight,
+        context().question,
+        context().evidence,
+        "   ",
+        context().config,
+        {},
+        on_status=record_status,
+        llm_client=AvailableModel(),
+    )
+
+    assert statuses == []
+    assert result.provider_unavailable is False
+
+
+@pytest.mark.asyncio
+async def test_revise_skips_evidence_status_when_the_model_is_unavailable():
+    class UnavailableModel:
+        available = False
+
+    statuses = []
+
+    async def record_status(name):
+        statuses.append(name)
+
+    result = await revision_mod.revise(
+        context().insight,
+        context().question,
+        context().evidence,
+        "Use the held evidence.",
+        context().config,
+        {},
+        on_status=record_status,
+        llm_client=UnavailableModel(),
+    )
+
+    assert statuses == []
+    assert result.provider_unavailable is True
+
+
+@pytest.mark.asyncio
+async def test_revise_reports_evidence_check_immediately_before_held_evidence_evaluation():
+    class HeldEvidenceModel:
+        available = True
+
+        async def complete_json(self, system, prompt, max_tokens):
+            calls.append("held_evidence_evaluated")
+            if len(calls) == 2:
+                return {"needs_more_sources": False, "search_query": ""}
+            return {
+                "answer": "Treatment gaps can inform operational review.",
+                "status": "answered",
+                "applied": True,
+                "note": "Held evidence was retained.",
+            }
+
+    calls = []
+
+    async def record_status(name):
+        calls.append(name)
+
+    result = await revision_mod.revise(
+        context().insight,
+        context().question,
+        context().evidence,
+        "Use the held evidence.",
+        context().config,
+        {},
+        on_status=record_status,
+        llm_client=HeldEvidenceModel(),
+    )
+
+    assert calls[:2] == ["checking_evidence", "held_evidence_evaluated"]
+    assert result.text == "Treatment gaps can inform operational review."
 
 
 @pytest.mark.asyncio
@@ -74,6 +164,37 @@ async def test_answer_turn_uses_real_revision_with_held_evidence():
     assert result.text == "Treatment gaps can inform operational review."
     assert result.source_evidence_ids == ["ev_one"]
     assert result.citations == ["Crossref"]
+
+
+@pytest.mark.asyncio
+async def test_answer_turn_prompt_requires_a_brief_refusal_for_unrelated_requests():
+    class HeldEvidenceModel:
+        available = True
+
+        def __init__(self):
+            self.calls = []
+
+        async def complete_json(self, system, prompt, max_tokens):
+            self.calls.append((system, prompt))
+            if len(self.calls) == 1:
+                return {"needs_more_sources": False, "search_query": ""}
+            return {
+                "answer": "Treatment gaps can inform operational review.",
+                "status": "answered",
+                "applied": True,
+                "note": "Held evidence was retained.",
+            }
+
+    model = HeldEvidenceModel()
+
+    async def ignore_status(_):
+        return None
+
+    await research_mod.answer_turn(
+        context(), "Plan my vacation.", {}, on_status=ignore_status, llm_client=model,
+    )
+
+    assert "briefly refuse" in model.calls[0][1]
 
 
 @pytest.mark.asyncio

@@ -63,7 +63,8 @@ def _instruction(context: ResearchContext, user_text: str) -> str:
     transcript = _completed_transcript(context.messages)
     return (
         "Continue the insight-scoped research conversation. Answer the latest request; "
-        "do not use or infer content from other insights.\n\n"
+        "do not use or infer content from other insights. If the latest request is "
+        "unrelated to this insight-scoped research, briefly refuse it.\n\n"
         f"Continuity summary:\n{context.continuity_summary or '(none)'}\n\n"
         f"Recent conversation:\n{transcript or '(none)'}\n\n"
         f"Latest user request:\n{user_text}"

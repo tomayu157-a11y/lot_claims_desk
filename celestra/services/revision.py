@@ -111,7 +111,6 @@ async def revise(
     """Apply the instruction, searching the web when the held evidence cannot."""
     status = on_status or _noop_status
     model = llm_client or llm
-    await status("checking_evidence")
     out = RevisionResult()
     out.evidence = list(evidence)
     instruction = (instruction or "").strip()
@@ -129,6 +128,7 @@ async def revise(
     quotes = [e.quote for e in evidence]
 
     # 1. Can this be applied from what is already held?
+    await status("checking_evidence")
     needs_more, query = await _needs_more(instruction, question.text,
                                           question.answer_text, quotes, model)
 
