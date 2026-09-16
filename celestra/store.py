@@ -192,8 +192,8 @@ class Store:
         with self._conn() as connection:
             connection.execute(
                 "INSERT INTO insight_workspaces(id,run_id,insight_id,updated_at,doc) "
-                "VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
-                "run_id=excluded.run_id,insight_id=excluded.insight_id,"
+                "VALUES(?,?,?,?,?) ON CONFLICT(run_id,insight_id) DO UPDATE SET "
+                "id=excluded.id,"
                 "updated_at=excluded.updated_at,doc=excluded.doc",
                 (workspace.id, workspace.run_id, workspace.insight_id,
                  workspace.updated_at.isoformat(), self._dump(workspace)),

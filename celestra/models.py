@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utcnow() -> datetime:
@@ -484,6 +484,25 @@ class InsightWorkspace(BaseModel):
     applied_revisions: list[AppliedInsightRevision] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
+
+    @model_validator(mode="after")
+    def validate_identity_and_source_references(self) -> InsightWorkspace:
+        if self.id != workspace_id(self.run_id, self.insight_id):
+            raise ValueError("workspace id must match its run and insight")
+
+        source_ids = [source.id for source in self.sources]
+        if len(source_ids) != len(set(source_ids)):
+            raise ValueError("workspace sources must have unique ids")
+
+        known_source_ids = set(source_ids)
+        reference_sets = [message.source_ids for message in self.messages]
+        if self.pending_proposal:
+            reference_sets.append(self.pending_proposal.source_ids)
+        reference_sets.extend(revision.source_ids for revision in self.applied_revisions)
+        if any(source_id not in known_source_ids
+               for references in reference_sets for source_id in references):
+            raise ValueError("workspace source references must identify workspace sources")
+        return self
 
 
 class AppliedRevisionResult(BaseModel):
