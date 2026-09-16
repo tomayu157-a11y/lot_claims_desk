@@ -104,8 +104,11 @@ def _document_text(report: StageReport, questions: list[ResearchQuestion]) -> st
 def _card_spec_text(card: dict) -> str:
     et = card.get("evidence_type", "list")
     if et == "metrics":
-        shape = ('"evidence": [{"label": str, "value": str}] using labels such as '
-                 + "; ".join(card.get("metrics") or []) + " (only those the document states)")
+        shape = (
+            '"evidence": [{"label": str, "value": str}] where "value" is strictly the concise figure/statistic '
+            '(e.g. "126,118" or "73.2%" or "< 20 years") and "label" describes the metric using labels such as '
+            + "; ".join(card.get("metrics") or [])
+        )
     elif et == "table":
         shape = ('"evidence": {"columns": ' + str(card.get("columns") or ["Item", "Detail"])
                  + ', "rows": [[str, ...]]} with 3-8 rows')
@@ -155,8 +158,8 @@ def _clean_evidence(evidence_type: str, raw: Any) -> Any:
         out = []
         for item in (raw if isinstance(raw, list) else []):
             if isinstance(item, dict) and item.get("label") and item.get("value") not in (None, ""):
-                out.append({"label": _clean_text(item["label"], 60),
-                            "value": _clean_text(item["value"], 60)})
+                out.append({"label": _clean_text(item["label"], 120),
+                            "value": _clean_text(item["value"], 180)})
         return out[:6]
     if evidence_type == "table":
         if not isinstance(raw, dict):
