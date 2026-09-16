@@ -1,0 +1,31 @@
+{# ---------------------------------------------------------------------------
+   One attached reviewer file as a pill: a type icon, the first 50 characters
+   of the name, the full name and details on hover, and an optional remove.
+     remove_url  card pill: posts the removal (after a confirm) and swaps `swap`
+     local       dialog pill: the dialog script removes it when input is attached
+   --------------------------------------------------------------------------- #}
+{% from "partials/icons.html" import icon %}
+
+{% macro file_pill(f, remove_url='', swap='', local=false) -%}
+{%- set style = {'pdf': ('file-pdf', 'rose'), 'docx': ('file-word', 'blue'),
+                 'md': ('file-markdown', 'purple'), 'txt': ('file-text', 'slate')}.get(f.kind, ('file-text', 'slate')) -%}
+{%- set short = f.filename if f.filename | length <= 50 else f.filename[:50] ~ '…' -%}
+{%- set kb = [((f.size_bytes / 1024) | round(0, 'ceil')) | int, 1] | max -%}
+{%- set parts = [f.filename, f.kind | upper, kb ~ ' KB'] -%}
+{%- if f.pages_total -%}{%- set _ = parts.append(f.pages_read ~ ' of ' ~ f.pages_total ~ ' pages read') -%}{%- endif -%}
+{%- if f.truncated -%}{%- set _ = parts.append('cut at ~20k tokens') -%}{%- endif -%}
+{%- set detail = parts | join(' · ') -%}
+<span class="chip chip-sm chip-file chip-{{ style[1] }}" title="{{ detail }}"
+      data-file-id="{{ f.id }}" data-file-name="{{ f.filename }}"{% if local %} data-existing{% endif %}>
+  <span class="chip-file-icon" aria-hidden="true">{{ icon(style[0], 13) }}</span>
+  <span class="chip-file-name" aria-hidden="true">{{ short }}</span>
+  <span class="visually-hidden">{{ detail }}</span>
+  {%- if remove_url %}
+  <button type="button" class="chip-file-x" aria-label="Remove {{ f.filename }}"
+          data-action-url="{{ remove_url }}" data-swap="{{ swap }}"
+          data-confirm="Remove {{ short }} from this finding? Research that already used it isn't re-run.">{{ icon('x', 11) }}</button>
+  {%- elif local %}
+  <button type="button" class="chip-file-x" aria-label="Remove {{ f.filename }}" data-file-remove>{{ icon('x', 11) }}</button>
+  {%- endif %}
+</span>
+{%- endmacro %}

@@ -316,9 +316,12 @@ async def retrieve(
 
     upstream_terms: list[str] = []
     notes: list[str] = [str(n) for n in (context or {}).get("reviewer_notes") or []]
+    # Reviewer-file sections routed to this question. Framing for the
+    # answering calls only: never search terms, never connector context.
+    reviewer_documents: list[dict] = list((context or {}).get("reviewer_documents") or [])
     for key, value in (context or {}).items():
-        # Reviewer notes are sentences for the model, not terms for a search.
-        if key == "reviewer_notes":
+        # Reviewer notes and files are text for the model, not terms for a search.
+        if key in ("reviewer_notes", "reviewer_documents"):
             continue
         if isinstance(value, list):
             upstream_terms += [str(v) for v in value[:20]]
@@ -347,7 +350,7 @@ async def retrieve(
             synonyms=synonyms, geography=cfg.geography,
             population=cfg.target_population, stage=question.stage,
             question=query_text, aspects=question.aspects, cutoff=cfg.research_cutoff,
-            extra=dict(context or {}),
+            extra={k: v for k, v in (context or {}).items() if k != "reviewer_documents"},
         )
 
         # 1. discover
@@ -400,6 +403,7 @@ async def retrieve(
                 question.text, question.aspects, docs[start:start + batch_size],
                 question.id, terms, batch_index=batch_no, round_index=round_no,
                 notes=notes,
+                reviewer_documents=reviewer_documents,
             )
             if answer is not None:
                 outcome.answers.append(answer)
@@ -510,6 +514,7 @@ async def retrieve(
                 question.text, question.aspects, scraped[start:start + batch_size],
                 question.id, terms, batch_index=batch_no, round_index=99,
                 notes=notes,
+                reviewer_documents=reviewer_documents,
             )
             if answer is not None:
                 outcome.answers.append(answer)

@@ -50,8 +50,16 @@ def main() -> int:
     check("parts stay near the target", max(len(s.text) for s in secs) <= SECTION_TARGET_CHARS,
           str(max(len(s.text) for s in secs)))
     secs = split_sections([(None, "# Short big\n\n" + "a" * 3001)])
-    check("a 3,001-char headed paragraph is split to the target",
-          len(secs) == 2 and all(len(s.text) <= SECTION_TARGET_CHARS for s in secs),
+    check("a 3,001-char headed paragraph stays whole",
+          len(secs) == 1 and secs[0].heading == "Short big" and len(secs[0].text) == 3001,
+          str([len(s.text) for s in secs]))
+    secs = split_sections([(None, "# Boundary\n\n" + "a" * 4000)])
+    check("a 4,000-char headed paragraph stays whole",
+          len(secs) == 1 and secs[0].heading == "Boundary" and len(secs[0].text) == 4000,
+          str([len(s.text) for s in secs]))
+    secs = split_sections([(None, "# Over boundary\n\n" + "a" * 4001)])
+    check("a headed paragraph over 4,000 chars is split to the target",
+          len(secs) == 3 and all(len(s.text) <= SECTION_TARGET_CHARS for s in secs),
           str([len(s.text) for s in secs]))
 
     print("\n== no headings: blocks ==")

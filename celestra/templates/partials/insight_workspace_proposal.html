@@ -1,0 +1,28 @@
+{% from "partials/icons.html" import icon %}
+{% set proposed = proposal | default({"id": "", "proposed_summary": "", "change_note": "", "source_ids": []}, true) %}
+<section class="review-note is-revision insight-workspace-proposal" data-workspace-proposal-id="{{ proposed.id }}">
+  <p class="eyebrow">PROPOSED UPDATE</p>
+  <div class="icard-label">Proposed finding</div>
+  <div class="readonly-block">{{ proposed.proposed_summary }}</div>
+  <div class="icard-label">Why this changes</div>
+  <p>{{ proposed.change_note }}</p>
+  {% if proposed.source_ids %}
+  <div class="icard-label">Supporting sources</div>
+  <div class="chip-row" aria-label="Proposal sources">
+    {% for source in available_sources if source.id in proposed.source_ids %}
+      <a class="source-chip" href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.organization or source.source_name }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% if not locked %}
+  <div class="modal-actions">
+    <button type="button" class="btn btn-secondary" data-workspace-continue>
+      Continue researching
+    </button>
+    <button type="button" class="btn btn-primary"
+            data-workspace-apply-url="/runs/{{ run.id }}/insights/{{ insight.id }}/workspace/proposals/{{ proposed.id }}/apply">
+      {{ icon('check', 14) }} Apply update
+    </button>
+  </div>
+  {% endif %}
+</section>

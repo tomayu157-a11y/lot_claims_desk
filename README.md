@@ -66,6 +66,11 @@ pip install -r requirements-dev.txt
 python tests/test_pipeline.py          # orchestration, thresholds, QA, events
 python tests/test_llm_providers.py     # provider dispatch
 python tests/test_smoke_http.py        # every route and interaction
+python tests/test_reviewer_files.py     # reviewer files: validation and extraction
+python tests/test_reviewer_sections.py  # reviewer files: sections
+python tests/test_reviewer_routing.py   # reviewer files: routing per agent
+python tests/test_reviewer_context.py   # reviewer files: answering, never cited
+python tests/test_reviewer_input_http.py # reviewer files: attach, keep, remove
 python -m pytest tests/test_templates_render.py -q
 ```
 

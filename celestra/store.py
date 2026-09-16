@@ -6,17 +6,20 @@ table is keyed by run_id so a run can be loaded or deleted atomically.
 """
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import threading
+from collections.abc import Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar
-from collections.abc import Iterable
 
 from .models import (
     Answer,
     Contradiction,
     Evidence,
     Insight,
+    InsightWorkspace,
     QAMetrics,
     ResearchQuestion,
     Run,
@@ -25,6 +28,20 @@ from .models import (
 from .settings import DATA_DIR
 
 T = TypeVar("T")
+
+
+class StaleInsightRevision(Exception):
+    """The finding changed after a proposal captured its base summary."""
+
+
+@dataclass(frozen=True)
+class InsightRevisionCommit:
+    insight: Insight
+    question: ResearchQuestion
+    stage_reports: list[StageReport]
+    new_evidence: list[Evidence]
+    workspace: InsightWorkspace
+    expected_summary_digest: str
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -51,6 +68,14 @@ CREATE TABLE IF NOT EXISTS answers (
     doc TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS qa (
     run_id TEXT PRIMARY KEY, doc TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS insight_workspaces (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    insight_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    doc TEXT NOT NULL,
+    UNIQUE(run_id, insight_id)
+);
 CREATE INDEX IF NOT EXISTS ix_questions_run ON questions(run_id);
 CREATE INDEX IF NOT EXISTS ix_evidence_run ON evidence(run_id);
 CREATE INDEX IF NOT EXISTS ix_evidence_q ON evidence(question_id);
@@ -59,6 +84,7 @@ CREATE INDEX IF NOT EXISTS ix_contra_run ON contradictions(run_id);
 CREATE INDEX IF NOT EXISTS ix_stages_run ON stage_reports(run_id);
 CREATE INDEX IF NOT EXISTS ix_answers_run ON answers(run_id);
 CREATE INDEX IF NOT EXISTS ix_answers_q ON answers(question_id);
+CREATE INDEX IF NOT EXISTS ix_insight_workspaces_run ON insight_workspaces(run_id);
 """
 
 
@@ -108,7 +134,7 @@ class Store:
     def delete_run(self, run_id: str) -> None:
         with self._conn() as c:
             for t in ("questions", "evidence", "answers", "insights",
-                      "contradictions", "stage_reports", "qa"):
+                      "contradictions", "stage_reports", "qa", "insight_workspaces"):
                 c.execute(f"DELETE FROM {t} WHERE run_id=?", (run_id,))
             c.execute("DELETE FROM runs WHERE id=?", (run_id,))
 
@@ -177,6 +203,82 @@ class Store:
             "SELECT doc FROM insights WHERE run_id=? AND id=?", (run_id, insight_id)
         ).fetchone()
         return Insight.model_validate_json(row["doc"]) if row else None
+
+    def save_insight_workspace(self, workspace: InsightWorkspace) -> None:
+        with self._conn() as connection:
+            connection.execute(
+                "INSERT INTO insight_workspaces(id,run_id,insight_id,updated_at,doc) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(run_id,insight_id) DO UPDATE SET "
+                "id=excluded.id,"
+                "updated_at=excluded.updated_at,doc=excluded.doc",
+                (workspace.id, workspace.run_id, workspace.insight_id,
+                 workspace.updated_at.isoformat(), self._dump(workspace)),
+            )
+
+    def get_insight_workspace(self, run_id: str, insight_id: str) -> InsightWorkspace | None:
+        row = self._conn().execute(
+            "SELECT doc FROM insight_workspaces WHERE run_id=? AND insight_id=?",
+            (run_id, insight_id),
+        ).fetchone()
+        return InsightWorkspace.model_validate_json(row["doc"]) if row else None
+
+    def commit_insight_revision(self, commit: InsightRevisionCommit) -> None:
+        """Atomically promote an approved workspace proposal into canonical documents."""
+        connection = self._conn()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT doc FROM insights WHERE run_id=? AND id=?",
+                (commit.insight.run_id, commit.insight.id),
+            ).fetchone()
+            if row is None:
+                raise StaleInsightRevision("Insight no longer exists")
+            current = Insight.model_validate_json(row["doc"])
+            digest = hashlib.sha256(current.summary.encode()).hexdigest()
+            if digest != commit.expected_summary_digest:
+                raise StaleInsightRevision("Insight summary changed")
+
+            connection.execute(
+                "INSERT INTO insights(id,run_id,stage,doc) VALUES(?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET run_id=excluded.run_id,"
+                "stage=excluded.stage,doc=excluded.doc",
+                (commit.insight.id, commit.insight.run_id, commit.insight.stage,
+                 self._dump(commit.insight)),
+            )
+            connection.execute(
+                "INSERT INTO questions(id,run_id,stage,doc) VALUES(?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET run_id=excluded.run_id,"
+                "stage=excluded.stage,doc=excluded.doc",
+                (commit.question.id, commit.question.run_id, commit.question.stage,
+                 self._dump(commit.question)),
+            )
+            for evidence in commit.new_evidence:
+                connection.execute(
+                    "INSERT INTO evidence(id,run_id,question_id,source_id,doc) "
+                    "VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                    "run_id=excluded.run_id,question_id=excluded.question_id,"
+                    "source_id=excluded.source_id,doc=excluded.doc",
+                    (evidence.id, commit.insight.run_id, evidence.question_id,
+                     evidence.source_id, self._dump(evidence)),
+                )
+            for report in commit.stage_reports:
+                connection.execute(
+                    "INSERT INTO stage_reports(id,run_id,stage,doc) VALUES(?,?,?,?) "
+                    "ON CONFLICT(id) DO UPDATE SET run_id=excluded.run_id,"
+                    "stage=excluded.stage,doc=excluded.doc",
+                    (report.id, report.run_id, report.stage, self._dump(report)),
+                )
+            connection.execute(
+                "INSERT INTO insight_workspaces(id,run_id,insight_id,updated_at,doc) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(run_id,insight_id) DO UPDATE SET "
+                "id=excluded.id,updated_at=excluded.updated_at,doc=excluded.doc",
+                (commit.workspace.id, commit.workspace.run_id, commit.workspace.insight_id,
+                 commit.workspace.updated_at.isoformat(), self._dump(commit.workspace)),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
     def save_contradictions(self, run_id: str, items: Iterable[Contradiction]) -> None:
         self._save_many("contradictions", run_id, items, ("stage",))

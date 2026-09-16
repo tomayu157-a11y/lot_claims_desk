@@ -2,6 +2,7 @@
 
 # Tests and linting
 pytest>=8.0
+pytest-asyncio>=0.24
 ruff>=0.6
 
 # Only needed to capture screenshots of the running app

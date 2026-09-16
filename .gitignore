@@ -10,3 +10,4 @@ celestra/data/reference/*
 .pytest_cache/
 docs/superpowers
 celestra/data/uploads/
+graphify-out/

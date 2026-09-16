@@ -136,13 +136,16 @@ async def main() -> int:
         run = store.get_run(run_id)
         check("  input handed to the run context",
               any(e.get("insight_id") == insights[1].id for e in run.context.get("reviewer_inputs", [])))
+        before = store.get_insight(run_id, insights[2].id).summary
+        r = await c.get(f"/runs/{run_id}/insights/{insights[2].id}/modify")
+        check("Edit opens the insight workspace",
+              r.status_code == 200 and "data-insight-workspace" in r.text,
+              f"HTTP {r.status_code}")
         r = await c.post(f"/runs/{run_id}/insights/{insights[2].id}/modify",
                          json={"user_input": "Restrict to adults."})
-        check("modify accepted", r.status_code == 200, f"HTTP {r.status_code}")
+        check("direct modify is refused", r.status_code == 409, f"HTTP {r.status_code}")
         saved = store.get_insight(run_id, insights[2].id)
-        check("  decision recorded as revised", saved.review_action.value == "modified")
-        check("  revision note explains what happened", bool(saved.revision_note), saved.revision_note)
-        check("  card shows the instruction", "Your instruction" in r.text)
+        check("  finding remains unchanged", saved.summary == before)
 
         # Anything still needing input gets a decision so the gate opens.
         for i in store.get_insights(run_id):
@@ -254,9 +257,16 @@ async def main() -> int:
         r = await c.get(f"/runs/{run_id}/report")
         check("approved document renders", r.status_code == 200 and "Approved document" in r.text)
         check("  reviewer input printed in the document", "Use the 2024 SEER release" in r.text)
+        r = await c.get(f"/runs/{run_id}/insights/{insights[0].id}/modify")
+        check("locked finding workspace remains viewable",
+              r.status_code == 200 and "data-insight-workspace" in r.text,
+              f"HTTP {r.status_code}")
+        r = await c.post(f"/runs/{run_id}/insights/{insights[0].id}/workspace/messages",
+                         json={"message": "Explain the existing evidence."})
+        check("locked finding still allows research", r.status_code == 200, f"HTTP {r.status_code}")
         r = await c.post(f"/runs/{run_id}/insights/{insights[0].id}/modify",
                          json={"user_input": "change it"})
-        check("edits after approval are refused", r.status_code == 409, f"HTTP {r.status_code}")
+        check("direct edits after approval are refused", r.status_code == 409, f"HTTP {r.status_code}")
         r = await c.get(f"/runs/{run_id}")
         check("run root now opens the approved document", r.headers.get("location", "").endswith("/report"))
         r = await c.get(f"/runs/{run_id}/progress")

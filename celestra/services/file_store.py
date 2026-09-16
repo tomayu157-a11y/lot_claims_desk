@@ -7,6 +7,7 @@ lives under CELESTRA_DATA_DIR.
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Protocol
 
@@ -14,7 +15,9 @@ from ..settings import UPLOAD_DIR
 
 
 class FileStore(Protocol):
+    """Original reviewer-file bytes, including bounded rollback reads."""
     def put(self, key: str, data: bytes) -> None: ...
+    def get(self, key: str) -> bytes: ...
     def delete(self, key: str) -> None: ...
 
 
@@ -40,11 +43,37 @@ class LocalFileStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         # Write then rename, so a reader never sees half a file.
         tmp = path.with_name(path.name + ".part")
-        tmp.write_bytes(data)
-        tmp.replace(path)
+        try:
+            tmp.write_bytes(data)
+            tmp.replace(path)
+        except Exception as original_error:
+            cleanup_error = _cleanup_temp(tmp)
+            if cleanup_error is not None:
+                original_error.add_note(
+                    f"Temporary reviewer file could not be removed: {cleanup_error!r}"
+                )
+                raise original_error from cleanup_error
+            raise
+
+    def get(self, key: str) -> bytes:
+        return self._path(key).read_bytes()
 
     def delete(self, key: str) -> None:
         self._path(key).unlink(missing_ok=True)
 
 
 file_store: FileStore = LocalFileStore(UPLOAD_DIR)
+
+
+def _cleanup_temp(tmp: Path) -> BaseException | None:
+    """Try twice to remove a failed write's temporary file."""
+    cleanup_error: BaseException | None = None
+    for attempt in range(2):
+        try:
+            tmp.unlink(missing_ok=True)
+            return None
+        except OSError as exc:
+            cleanup_error = exc
+        if attempt == 0:
+            time.sleep(0.01)
+    return cleanup_error

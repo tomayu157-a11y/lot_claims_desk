@@ -25,6 +25,9 @@ MAX_CHARS = 20_000 * CHARS_PER_TOKEN  # ~20k tokens
 EXTRACT_TIMEOUT_SECONDS = 30.0
 SECTION_TARGET_CHARS = 2_000
 SECTION_SPLIT_OVER_CHARS = 4_000
+MAX_DOCX_ARCHIVE_MEMBERS = 100
+MAX_DOCX_MEMBER_BYTES = 2 * 1024 * 1024
+MAX_DOCX_ARCHIVE_BYTES = 4 * 1024 * 1024
 
 KINDS = {".pdf": "pdf", ".docx": "docx", ".txt": "txt", ".md": "md"}
 
@@ -67,13 +70,7 @@ def kind_for(filename: str, data: bytes) -> str:
     if kind == "pdf" and not data.startswith(b"%PDF"):
         raise FileRejected("This file is not a valid PDF.")
     if kind == "docx":
-        try:
-            with zipfile.ZipFile(io.BytesIO(data)) as archive:
-                ok = "word/document.xml" in archive.namelist()
-        except zipfile.BadZipFile:
-            ok = False
-        if not ok:
-            raise FileRejected("This file is not a valid Word document.")
+        _validate_docx_archive(data)
     if kind in ("txt", "md"):
         try:
             data.decode("utf-8-sig")
@@ -88,6 +85,7 @@ def extract(kind: str, data: bytes) -> Extraction:
         if kind == "pdf":
             pages, read, total = _pdf_pages(data)
         elif kind == "docx":
+            _validate_docx_archive(data)
             pages, read, total = [(None, _docx_markdown(data))], None, None
         else:
             text = data.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
@@ -104,6 +102,25 @@ def extract(kind: str, data: bytes) -> Extraction:
     pages, truncated = _cap(pages, MAX_CHARS)
     return Extraction(markdown="\n\n".join(text for _, text in pages), pages=pages,
                       pages_read=read, pages_total=total, truncated=truncated)
+
+
+def _validate_docx_archive(data: bytes) -> None:
+    """Reject DOCX archives that exceed the bounded converter input budget."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            infos = archive.infolist()
+    except zipfile.BadZipFile:
+        raise FileRejected("This file is not a valid Word document.") from None
+    if "word/document.xml" not in {info.filename for info in infos}:
+        raise FileRejected("This file is not a valid Word document.")
+
+    total = 0
+    for info in infos:
+        total += info.file_size
+        if info.file_size > MAX_DOCX_MEMBER_BYTES or total > MAX_DOCX_ARCHIVE_BYTES:
+            raise FileRejected("This Word document is too large or complex to read.")
+    if len(infos) > MAX_DOCX_ARCHIVE_MEMBERS:
+        raise FileRejected("This Word document is too large or complex to read.")
 
 
 async def extract_async(kind: str, data: bytes,
@@ -222,7 +239,7 @@ def split_sections(pages: list[tuple[int | None, str]]) -> list[ReviewerFileSect
                 out.append((_label(page, text, part), page, text))
             continue
         text = "\n\n".join(p.text for p in paras)
-        if len(text) <= SECTION_TARGET_CHARS:
+        if len(text) <= SECTION_SPLIT_OVER_CHARS:
             out.append((heading, heading_page, text))
             continue
         for i, (page, block) in enumerate(_blocks(paras), start=1):

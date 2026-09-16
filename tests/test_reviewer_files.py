@@ -3,8 +3,10 @@ Markdown within the page and token caps."""
 from __future__ import annotations
 
 import asyncio
+import io
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -44,6 +46,14 @@ def extract_error(kind: str, data: bytes) -> str:
     return ""
 
 
+def docx_archive(entries: list[tuple[str, bytes]]) -> bytes:
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in entries:
+            archive.writestr(name, data)
+    return buf.getvalue()
+
+
 def main() -> int:
     print("\n== what may be attached ==")
     check(".doc gets the save-as advice", ".docx or PDF" in rejected("notes.doc", b"\xd0\xcf\x11\xe0"))
@@ -59,6 +69,24 @@ def main() -> int:
     check("md", kind_for("notes.md", b"# Hi") == "md")
     check("client path stripped", kind_for(r"C:\fakepath\a.txt", b"hi") == "txt")
     check("display name drops the path", rf.display_name(r"C:\fakepath\Payer policy.pdf") == "Payer policy.pdf")
+
+    print("\n== DOCX archives are bounded before conversion ==")
+    document = ("word/document.xml", b"<w:document/>")
+    oversized_member = docx_archive([document, ("word/styles.xml", b"x" * 2_097_153)])
+    check("a DOCX member over 2 MiB is refused",
+          "too large or complex to read" in rejected("large-member.docx", oversized_member))
+    check("an oversized DOCX is refused before conversion",
+          "too large or complex to read" in extract_error("docx", oversized_member))
+    oversized_total = docx_archive(
+        [document] + [(f"word/part-{n}.xml", b"x" * 1_500_000) for n in range(3)]
+    )
+    check("a DOCX over 4 MiB uncompressed is refused",
+          "too large or complex to read" in rejected("large-total.docx", oversized_total))
+    too_many_members = docx_archive(
+        [document] + [(f"word/part-{n}.xml", b"x") for n in range(100)]
+    )
+    check("a DOCX with over 100 members is refused",
+          "too large or complex to read" in rejected("many-members.docx", too_many_members))
 
     print("\n== PDF: first 10 pages, headings kept ==")
     ex = extract("pdf", pdf_bytes(12))

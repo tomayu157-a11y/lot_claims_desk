@@ -7,10 +7,12 @@ import json
 import logging
 import re
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.formparsers import MultiPartException, MultiPartParser
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -26,14 +28,28 @@ from .models import (
     ContradictionSeverity,
     Insight,
     ReviewAction,
+    ReviewerFile,
     Run,
     RunConfig,
     RunMode,
     RunStatus,
+    StageReport,
+    is_http_url,
     utcnow,
 )
 from .services import orchestrator as orch
+from .services.file_store import file_store, storage_key
+from .services.reviewer_files import (
+    MAX_FILE_BYTES,
+    MAX_FILES_PER_INSIGHT,
+    FileRejected,
+    build_reviewer_file,
+    extract_async,
+    kind_for,
+)
 from .services.scoring import assess_confidence
+from .services.insight_workspace import InsightWorkspaceService
+from .services.llm import llm
 from .settings import (
     BASE_DIR,
     configure_tls,
@@ -54,6 +70,17 @@ log = logging.getLogger("celestra")
 
 _RUNNING: dict[str, asyncio.Task] = {}
 _REGISTRY: dict[str, Any] = {}
+_insight_workspace_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _insight_workspace_service() -> InsightWorkspaceService:
+    """Build a request-local workspace service over the current application store."""
+    return InsightWorkspaceService(
+        store=store,
+        registry_factory=registry,
+        llm_client=llm,
+        lock_registry=_insight_workspace_locks,
+    )
 
 
 def registry() -> dict[str, Any]:
@@ -205,6 +232,43 @@ def tagify(value: Any) -> Markup:
     return Markup(text)
 
 
+def chat_markdown(value: Any) -> Markup:
+    """Render the deliberately small, safe chat formatting subset."""
+    escaped = html.escape(str(value or ""))
+
+    def inline(text: str) -> str:
+        text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+        return re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
+
+    rendered: list[str] = []
+    paragraph: list[str] = []
+    list_items: list[str] = []
+
+    def flush_paragraph() -> None:
+        if paragraph:
+            rendered.append("<p>" + "<br>".join(inline(line) for line in paragraph) + "</p>")
+            paragraph.clear()
+
+    def flush_list() -> None:
+        if list_items:
+            rendered.append("<ul>" + "".join("<li>" + inline(item) + "</li>" for item in list_items) + "</ul>")
+            list_items.clear()
+
+    for line in escaped.splitlines():
+        if not line.strip():
+            flush_paragraph()
+            flush_list()
+        elif line.startswith("- "):
+            flush_paragraph()
+            list_items.append(line[2:])
+        else:
+            flush_list()
+            paragraph.append(line)
+    flush_paragraph()
+    flush_list()
+    return Markup("".join(rendered))
+
+
 def pct(value: Any) -> str:
     try:
         return f"{float(value) * 100:.0f}%"
@@ -213,6 +277,7 @@ def pct(value: Any) -> str:
 
 
 templates.env.filters["tagify"] = tagify
+templates.env.filters["chat_markdown"] = chat_markdown
 templates.env.filters["pct"] = pct
 
 
@@ -873,14 +938,20 @@ async def insights_page(request: Request, run_id: str):
 @app.get("/runs/{run_id}/insights/{insight_id}/modify", response_class=HTMLResponse)
 @app.get("/runs/{run_id}/insights/{insight_id}/input", response_class=HTMLResponse)
 async def insight_modal(request: Request, run_id: str, insight_id: str):
-    """Two dialogs, one template. Modify hands an instruction to the model;
-    Add Input attaches the reviewer's own knowledge. They do different things
-    and the dialog says which."""
+    """Open an insight workspace or the existing reviewer-input dialog."""
     run = get_run_or_404(run_id)
     insight = store.get_insight(run_id, insight_id)
     if insight is None:
         raise HTTPException(404, "Insight not found")
     mode = "input" if request.url.path.endswith("/input") else "modify"
+    if mode == "modify":
+        workspace = _insight_workspace_service().load(run_id, insight_id)
+        return templates.TemplateResponse(
+            request,
+            "partials/insight_workspace.html",
+            _workspace_template_context(request, run, insight, workspace),
+        )
+
     others = [i for i in store.get_insights(run_id) if i.id != insight_id]
     impacts = _impacts(insight, others) if mode == "modify" else []
     evidence = [e for e in store.get_evidence(run_id) if e.id in set(insight.evidence_ids)]
@@ -894,8 +965,33 @@ async def insight_modal(request: Request, run_id: str, insight_id: str):
         {**base_ctx(request), "insight": insight, "impacts": impacts, "mode": mode,
          "evidence": evidence, "run_id": run_id, "run": run,
          "downstream_agents": downstream, "web_available": web_search_status()["available"],
+         "max_file_bytes": MAX_FILE_BYTES,
          "agent_by_stage": _agent_by_stage()},
     )
+
+
+def _workspace_available_sources(run_id: str, insight: Insight, workspace) -> list:
+    """Show only evidence held by this finding and research it collected."""
+    sources = {
+        evidence.id: evidence
+        for evidence in store.get_evidence(run_id)
+        if evidence.id in set(insight.evidence_ids) and is_http_url(evidence.url)
+    }
+    for source in workspace.sources:
+        if is_http_url(source.url):
+            sources.setdefault(source.id, source)
+    return list(sources.values())
+
+
+def _workspace_template_context(request: Request, run: Run, insight: Insight, workspace) -> dict:
+    return {
+        **base_ctx(request),
+        "run": run,
+        "insight": insight,
+        "workspace": workspace,
+        "available_sources": _workspace_available_sources(run.id, insight, workspace),
+        "locked": run.is_locked,
+    }
 
 
 def _impacts(insight: Insight, others: list[Insight]) -> list[dict]:
@@ -972,18 +1068,99 @@ async def _body(request: Request) -> dict[str, Any]:
         return {}
 
 
+def _workspace_sse(event) -> str:
+    payload = event.model_dump(mode="json")
+    return (
+        f"event: {event.type.value}\n"
+        f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    )
+
+
+@app.post("/runs/{run_id}/insights/{insight_id}/workspace/messages")
+async def workspace_message(request: Request, run_id: str, insight_id: str):
+    body = await _body(request)
+    message = body.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise HTTPException(400, "Write a message first.")
+
+    service = _insight_workspace_service()
+    service.load(run_id, insight_id)
+
+    async def stream():
+        async for event in service.send(run_id, insight_id, message):
+            yield _workspace_sse(event)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/runs/{run_id}/insights/{insight_id}/workspace/proposal")
+async def workspace_proposal(request: Request, run_id: str, insight_id: str):
+    service = _insight_workspace_service()
+    try:
+        proposal = await service.propose(run_id, insight_id)
+    except HTTPException as exc:
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    run = get_run_or_404(run_id)
+    insight = store.get_insight(run_id, insight_id)
+    if insight is None:
+        raise HTTPException(404, "Insight not found")
+    workspace = service.load(run_id, insight_id)
+    context = _workspace_template_context(request, run, insight, workspace)
+    return JSONResponse({
+        "proposal_id": proposal.id,
+        "proposal_html": templates.get_template(
+            "partials/insight_workspace_proposal.html"
+        ).render(proposal=proposal, **context),
+    })
+
+
+@app.post("/runs/{run_id}/insights/{insight_id}/workspace/proposals/{proposal_id}/apply")
+async def workspace_apply(
+    request: Request,
+    run_id: str,
+    insight_id: str,
+    proposal_id: str,
+):
+    service = _insight_workspace_service()
+    result = await service.apply(run_id, insight_id, proposal_id)
+    run = get_run_or_404(run_id)
+    all_insights = store.get_insights(run_id)
+    gate = _gate(run, all_insights, store.get_contradictions(run_id), "approval")
+    card_html = templates.get_template("partials/insight_card.html").render(
+        **base_ctx(request),
+        insight=result.insight,
+        run_id=run_id,
+        run=run,
+        agent_by_stage=_agent_by_stage(),
+        counts=_counts(all_insights),
+        gate=gate,
+    )
+    workspace_context = _workspace_template_context(
+        request, run, result.insight, result.workspace,
+    )
+    workspace_context.update({"counts": _counts(all_insights), "gate": gate})
+    workspace_html = templates.get_template("partials/insight_workspace.html").render(
+        **workspace_context,
+    )
+    return JSONResponse({"card_html": card_html, "workspace_html": workspace_html})
+
+
 async def _apply_insight_action(
-    run_id: str, insight_id: str, action: str, user_input: str
+    run_id: str, insight_id: str, action: str, user_input: str,
+    reviewer_files: list[ReviewerFile] | None = None,
 ) -> Insight:
-    """The three decisions a reviewer can make on a finding.
+    """The two direct decisions a reviewer can make on a finding.
 
     approve  accept it as generated
-    modify   tell the model what to change; it re-checks the evidence, searches
-             the web if needed, and rewrites the finding and the document
     input    attach your own knowledge; it is printed with the finding, goes
              into the document, and is handed to the agents still to run
 
-    Any of the three settles a finding that Requires Input: a person looked.
+    Modification is proposal-only through the insight workspace. Either direct
+    decision settles a finding that Requires Input: a person looked.
     """
     run = get_run_or_404(run_id)
     if run.is_locked:
@@ -997,20 +1174,18 @@ async def _apply_insight_action(
     if action == "approve":
         insight.review_action = ReviewAction.APPROVED
     elif action == "modify":
-        if not text:
-            raise HTTPException(400, "Say what should change. Modify sends your "
-                                     "instruction to the model; it cannot act on nothing.")
-        insight.review_action = ReviewAction.MODIFIED
-        insight.user_input = text
-        others = [i for i in store.get_insights(run_id) if i.id != insight_id]
-        impacted = {x["title"] for x in _impacts(insight, others)}
-        insight.impacted_insight_ids = [o.id for o in others if o.title in impacted]
-        await _revise_insight(run_id, insight)
+        raise HTTPException(
+            409,
+            "Direct modification is no longer available. Open Chat & edit, review the proposal, "
+            "and apply it.",
+        )
     elif action == "input":
         if not text:
             raise HTTPException(400, "Write the input you want attached to this finding.")
         insight.review_action = ReviewAction.INPUT_ADDED
         insight.reviewer_input = text
+        if reviewer_files is not None:
+            insight.reviewer_files = reviewer_files
         _record_reviewer_input(run, insight)
     else:
         raise HTTPException(400, f"Unknown action '{action}'")
@@ -1054,71 +1229,108 @@ def _record_reviewer_input(run: Run, insight: Insight) -> None:
             store.save_stage_reports(run.id, [report])
 
 
-async def _revise_insight(run_id: str, insight: Insight) -> None:
-    """Send the reviewer's instruction to the model and apply the result.
+# Two files at 1 MB plus the form fields. A larger body is refused before it
+# is parsed further.
+_MAX_ATTACH_BODY = MAX_FILES_PER_INSIGHT * MAX_FILE_BYTES + 256 * 1024
+_MAX_ATTACH_FIELDS = MAX_FILES_PER_INSIGHT + 1  # user_input plus two keep ids
+_MAX_ATTACH_FIELD_BYTES = 256 * 1024
 
-    The instruction is not filed as a note. The model decides whether the held
-    evidence can satisfy it and searches the open web when it cannot, then
-    rewrites the answer against everything found. The revision carries into
-    the stage report so the final document reflects it.
-    """
-    from .services.revision import revise
 
-    run = store.get_run(run_id)
-    question = next(
-        (q for q in store.get_questions(run_id) if q.id in set(insight.question_ids)), None
-    )
-    if run is None or question is None:
-        return
+class _AttachBodyTooLarge(Exception):
+    """A multipart stream crossed the route's total upload budget."""
 
-    evidence = [e for e in store.get_evidence(run_id) if e.question_id == question.id]
-    synonyms = list(
-        get_questions()["indications"].get(run.config.indication_key, {}).get("synonyms") or []
-    )
+
+class _FilePartTooLarge(Exception):
+    """A multipart file exceeded its allowed bytes before Starlette spooled it."""
+
+    def __init__(self, filename: str) -> None:
+        self.filename = filename
+
+
+class _CappedMultipartParser(MultiPartParser):
+    """Starlette's parser with the missing file-part byte boundary."""
+    def __init__(self, *args, max_file_bytes: int, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.max_file_bytes = max_file_bytes
+        self._current_file_bytes = 0
+
+    def on_part_begin(self) -> None:
+        self._current_file_bytes = 0
+        super().on_part_begin()
+
+    def on_part_data(self, data: bytes, start: int, end: int) -> None:
+        if self._current_part.file is not None:
+            self._current_file_bytes += end - start
+            if self._current_file_bytes > self.max_file_bytes:
+                raise _FilePartTooLarge(self._current_part.file.filename or "file")
+        super().on_part_data(data, start, end)
+
+
+class _InsightLock:
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0
+
+
+_INSIGHT_LOCKS: dict[tuple[str, str], _InsightLock] = {}
+
+
+@asynccontextmanager
+async def _insight_critical_section(run_id: str, insight_id: str):
+    """Serialize one card's persisted reviewer-file state in this worker."""
+    key = (run_id, insight_id)
+    entry = _INSIGHT_LOCKS.setdefault(key, _InsightLock())
+    entry.users += 1
     try:
-        result = await revise(insight, question, evidence, insight.user_input,
-                              run.config, registry(), synonyms)
-    except Exception:
-        log.exception("revision failed for %s", insight.id)
-        return
+        async with entry.lock:
+            yield
+    finally:
+        entry.users -= 1
+        if entry.users == 0 and _INSIGHT_LOCKS.get(key) is entry:
+            del _INSIGHT_LOCKS[key]
 
-    if result.evidence and len(result.evidence) > len(evidence):
-        store.save_evidence(run_id, [e for e in result.evidence if e not in evidence])
-    if result.sites:
-        question.web_sites = (question.web_sites or []) + result.sites
 
-    if result.text:
-        insight.summary = result.text[:400]
-        question.answer_text = result.text
-        question.answer_status = result.status
-        if result.citations:
-            question.answer_citations = result.citations
-            insight.source_ids = list(dict.fromkeys(
-                [e.source_id for e in result.evidence]
-            ))
-        insight.used_web_fallback = insight.used_web_fallback or bool(result.searched)
-    where = (
-        f"searched the web ({len(result.sites)} page(s))" if result.searched
-        else "re-read the evidence it already held"
+async def _bounded_attach_form(request: Request):
+    """Parse one Add Input body without trusting its optional length header."""
+    received = 0
+
+    async def receive() -> dict[str, Any]:
+        nonlocal received
+        message = await request.receive()
+        if message["type"] == "http.request":
+            received += len(message.get("body", b""))
+            if received > _MAX_ATTACH_BODY:
+                raise _AttachBodyTooLarge
+        return message
+
+    bounded = Request(request.scope, receive)
+    try:
+        parser = _CappedMultipartParser(
+            bounded.headers, bounded.stream(),
+            max_files=MAX_FILES_PER_INSIGHT,
+            max_fields=_MAX_ATTACH_FIELDS,
+            max_part_size=_MAX_ATTACH_FIELD_BYTES,
+            max_file_bytes=MAX_FILE_BYTES,
+        )
+        return await parser.parse()
+    except _AttachBodyTooLarge:
+        raise _AttachError(413, "Files can be up to 1 MB each.") from None
+    except _FilePartTooLarge as exc:
+        raise _AttachError(400, "Some files can't be attached.", [{
+            "name": exc.filename, "error": "This file is over 1 MB.",
+        }]) from None
+    except MultiPartException as exc:
+        raise _AttachError(400, exc.message) from None
+    except StarletteHTTPException as exc:
+        raise _AttachError(exc.status_code, str(exc.detail)) from None
+
+
+def _card_response(request: Request, run_id: str, insight: Insight):
+    return templates.TemplateResponse(
+        request, "partials/insight_card.html",
+        {**base_ctx(request), "insight": insight, "run_id": run_id, "run": store.get_run(run_id),
+         "agent_by_stage": _agent_by_stage()},
     )
-    insight.revision_note = (
-        (result.note or ("Finding rewritten." if result.text else "Finding left unchanged."))
-        + f" Celestra {where}."
-    )[:400]
-
-    store.save_questions(run_id, [question])
-
-    # Carry the revision into the stage document.
-    for report in store.get_stage_reports(run_id):
-        if report.stage != question.stage:
-            continue
-        for row in report.answers:
-            if row.get("question") == question.text or row.get("seed") == question.seed_text:
-                row["answer"] = question.answer_text
-                row["status"] = question.answer_status.value
-                row["citations"] = question.answer_citations
-                row["revised"] = True
-        store.save_stage_reports(run_id, [report])
 
 
 @app.post("/runs/{run_id}/insights/{insight_id}/{action}", response_class=HTMLResponse)
@@ -1126,15 +1338,274 @@ async def insight_action(request: Request, run_id: str, insight_id: str, action:
     get_run_or_404(run_id)
     if action not in ("approve", "modify", "input"):
         raise HTTPException(404, "Unknown insight action")
+    if action == "input" and request.headers.get("content-type", "").startswith("multipart/form-data"):
+        try:
+            form = await _bounded_attach_form(request)
+        except _AttachError as exc:
+            return JSONResponse({"detail": exc.detail, "files": exc.files}, status_code=exc.status)
+        uploads = [u for u in form.getlist("files")
+                   if hasattr(u, "read") and getattr(u, "filename", "")]
+        try:
+            insight = await _apply_input_with_files(
+                run_id, insight_id, str(form.get("user_input", "")),
+                [str(v) for v in form.getlist("keep_file_ids")], uploads,
+            )
+        except _AttachError as exc:
+            return JSONResponse({"detail": exc.detail, "files": exc.files}, status_code=exc.status)
+        return _card_response(request, run_id, insight)
     body = await _body(request)
-    insight = await _apply_insight_action(
-        run_id, insight_id, action, str(body.get("user_input", ""))
+    async with _insight_critical_section(run_id, insight_id):
+        insight = await _apply_insight_action(
+            run_id, insight_id, action, str(body.get("user_input", ""))
+        )
+    return _card_response(request, run_id, insight)
+
+
+class _AttachError(Exception):
+    """An Add Input submission with files that cannot be saved, with a reason
+    per file where one applies."""
+
+    def __init__(self, status: int, detail: str, files: list[dict[str, str]] | None = None):
+        super().__init__(detail)
+        self.status, self.detail, self.files = status, detail, files or []
+
+
+@dataclass
+class _InputCommitSnapshot:
+    """Persisted reviewer-input documents that need one rollback boundary."""
+    insight: Insight
+    run: Run
+    reports: list[StageReport]
+
+
+def _snapshot_input_commit(run: Run, insight: Insight) -> _InputCommitSnapshot:
+    """Capture only the stage report this reviewer input may change."""
+    question = next(
+        (q for q in store.get_questions(run.id) if q.id in set(insight.question_ids)), None
     )
-    return templates.TemplateResponse(
-        request, "partials/insight_card.html",
-        {**base_ctx(request), "insight": insight, "run_id": run_id, "run": store.get_run(run_id),
-         "agent_by_stage": _agent_by_stage()},
+    reports = [] if question is None else [
+        report.model_copy(deep=True)
+        for report in store.get_stage_reports(run.id)
+        if report.stage == question.stage
+    ]
+    return _InputCommitSnapshot(
+        insight=insight.model_copy(deep=True), run=run.model_copy(deep=True), reports=reports,
     )
+
+
+def _restore_input_commit(run_id: str, snapshot: _InputCommitSnapshot) -> bool:
+    """Best-effort restoration of every document the input action persisted."""
+    restored = True
+    for restore, label in (
+        (lambda: store.save_run(snapshot.run), "run context"),
+        (lambda: store.save_stage_reports(run_id, snapshot.reports), "stage reports"),
+        (lambda: store.save_insights(run_id, [snapshot.insight]), "reviewer file metadata"),
+    ):
+        try:
+            restore()
+        except Exception:
+            restored = False
+            log.exception("could not restore %s for %s", label, snapshot.insight.id)
+    return restored
+
+
+def _original_file_bytes(files: list[ReviewerFile]) -> dict[str, bytes]:
+    """Read removable originals before changing their metadata or bytes."""
+    try:
+        return {file.storage_key: file_store.get(file.storage_key) for file in files}
+    except Exception as exc:
+        raise _AttachError(500, "Could not remove this file. It remains attached.") from exc
+
+
+def _restore_originals(files: list[ReviewerFile], originals: dict[str, bytes]) -> bool:
+    """Best-effort compensation for originals already deleted in this request."""
+    restored = True
+    for file in files:
+        try:
+            file_store.put(file.storage_key, originals[file.storage_key])
+        except Exception:
+            restored = False
+            log.exception("could not restore reviewer file %s", file.storage_key)
+    return restored
+
+
+def _remove_new_originals(keys: list[str]) -> bool:
+    """Best-effort rollback of new bytes written for a failed Attach."""
+    removed = True
+    for key in keys:
+        try:
+            file_store.delete(key)
+        except Exception:
+            removed = False
+            log.exception("could not roll back reviewer file %s", key)
+    return removed
+
+
+def _rollback_file_input(
+    run_id: str, deleted: list[ReviewerFile], originals: dict[str, bytes], written: list[str],
+    snapshot: _InputCommitSnapshot | None = None,
+) -> bool:
+    """Compensate attachment bytes and, after an input action, its metadata."""
+    restored = _restore_originals(deleted, originals)
+    cleaned = _remove_new_originals(written)
+    metadata_restored = snapshot is None or _restore_input_commit(run_id, snapshot)
+    return restored and cleaned and metadata_restored
+
+
+async def _apply_input_with_files(
+    run_id: str, insight_id: str, text: str, keep_ids: list[str], uploads: list[Any],
+) -> Insight:
+    """Add Input with files, all or nothing. Every new file is checked and
+    read before anything is stored, and nothing is saved if one fails, so an
+    insight never holds a file that has not finished processing."""
+    if not text.strip():
+        raise _AttachError(400, "Write the input you want attached to this finding.")
+    run = get_run_or_404(run_id)
+    if run.is_locked:
+        raise HTTPException(409, "This document is approved and locked. Start a new "
+                                 "project to research it again.")
+    insight = store.get_insight(run_id, insight_id)
+    if insight is None:
+        raise HTTPException(404, "Insight not found")
+    existing_file_ids = {file.id for file in insight.reviewer_files}
+
+    # Extraction is expensive but does not touch persisted state. The latest
+    # card is loaded again under the critical section before committing it.
+    new_files = await _prepare_reviewer_files(run_id, insight_id, uploads)
+    async with _insight_critical_section(run_id, insight_id):
+        return await _commit_input_with_files(
+            run_id, insight_id, text, keep_ids, existing_file_ids, new_files,
+        )
+
+
+async def _prepare_reviewer_files(
+    run_id: str, insight_id: str, uploads: list[Any],
+) -> list[tuple[ReviewerFile, bytes]]:
+    received: list[tuple[str, str, bytes]] = []
+    errors: list[dict[str, str]] = []
+    for upload in uploads:
+        name = str(upload.filename or "file")
+        data = await upload.read(MAX_FILE_BYTES + 1)
+        try:
+            received.append((name, kind_for(name, data), data))
+        except FileRejected as exc:
+            errors.append({"name": name, "error": str(exc)})
+    if errors:
+        raise _AttachError(400, "Some files can't be attached.", errors)
+
+    new_files: list[tuple[ReviewerFile, bytes]] = []
+    for name, kind, data in received:
+        try:
+            extraction = await extract_async(kind, data)
+        except FileRejected as exc:
+            errors.append({"name": name, "error": str(exc)})
+            continue
+        record = build_reviewer_file(name, kind, data, extraction)
+        record.storage_key = storage_key(run_id, insight_id, record.id, kind)
+        new_files.append((record, data))
+    if errors:
+        raise _AttachError(422, "Some files could not be read. Nothing was saved.", errors)
+    return new_files
+
+
+async def _commit_input_with_files(
+    run_id: str, insight_id: str, text: str, keep_ids: list[str], existing_file_ids: set[str],
+    new_files: list[tuple[ReviewerFile, bytes]],
+) -> Insight:
+    run = get_run_or_404(run_id)
+    if run.is_locked:
+        raise HTTPException(409, "This document is approved and locked. Start a new "
+                                 "project to research it again.")
+    insight = store.get_insight(run_id, insight_id)
+    if insight is None:
+        raise HTTPException(404, "Insight not found")
+    keep = set(keep_ids)
+    # The dialog can only remove files it displayed. A file attached after
+    # this request started is retained rather than being silently removed by
+    # a stale keep list from the concurrent dialog.
+    kept = [f for f in insight.reviewer_files
+            if f.id in keep or f.id not in existing_file_ids]
+    removed = [f for f in insight.reviewer_files
+               if f.id in existing_file_ids and f.id not in keep]
+    if len(kept) + len(new_files) > MAX_FILES_PER_INSIGHT:
+        raise _AttachError(400, f"A finding can hold {MAX_FILES_PER_INSIGHT} files. "
+                                "Remove one first.")
+
+    snapshot = _snapshot_input_commit(run, insight)
+    originals = _original_file_bytes(removed)
+    written: list[str] = []
+    try:
+        for record, data in new_files:
+            file_store.put(record.storage_key, data)
+            written.append(record.storage_key)
+        try:
+            deleted: list[ReviewerFile] = []
+            for file in removed:
+                file_store.delete(file.storage_key)
+                deleted.append(file)
+        except Exception as exc:
+            recovered = _rollback_file_input(run_id, deleted, originals, written)
+            detail = "Could not replace the attached files. Previous files remain attached."
+            if not recovered:
+                detail = "Could not replace the attached files. Recovery needs attention."
+            raise _AttachError(500, detail) from exc
+        try:
+            return await _apply_insight_action(
+                run_id, insight_id, "input", text,
+                reviewer_files=kept + [record for record, _ in new_files],
+            )
+        except Exception as exc:
+            recovered = _rollback_file_input(run_id, deleted, originals, written, snapshot)
+            detail = "Could not replace the attached files. Previous files remain attached."
+            if not recovered:
+                detail = "Could not replace the attached files. Recovery needs attention."
+            raise _AttachError(500, detail) from exc
+    except _AttachError:
+        raise
+    except Exception:
+        _remove_new_originals(written)
+        raise
+
+
+@app.post("/runs/{run_id}/insights/{insight_id}/files/{file_id}/remove",
+          response_class=HTMLResponse)
+async def remove_reviewer_file(request: Request, run_id: str, insight_id: str, file_id: str):
+    """Remove one attached file from the card. The typed input and the
+    decision stay; research that already used the file is not re-run."""
+    try:
+        async with _insight_critical_section(run_id, insight_id):
+            run = get_run_or_404(run_id)
+            if run.is_locked:
+                raise HTTPException(409, "This document is approved and locked.")
+            insight = store.get_insight(run_id, insight_id)
+            if insight is None:
+                raise HTTPException(404, "Insight not found")
+            target = next((f for f in insight.reviewer_files if f.id == file_id), None)
+            if target is None:
+                raise HTTPException(404, "File not found")
+            original_insight = insight.model_copy(deep=True)
+            original = _original_file_bytes([target])
+            try:
+                file_store.delete(target.storage_key)
+            except Exception as exc:
+                raise _AttachError(500, "Could not remove this file. It remains attached.") from exc
+            insight.reviewer_files = [f for f in insight.reviewer_files if f.id != file_id]
+            try:
+                store.save_insights(run_id, [insight])
+            except Exception as exc:
+                restored = _restore_originals([target], original)
+                try:
+                    store.save_insights(run_id, [original_insight])
+                except Exception:
+                    restored = False
+                    log.exception("could not restore reviewer file metadata for %s", insight_id)
+                detail = "Could not remove this file. It remains attached."
+                if not restored:
+                    detail = "Could not remove this file. Recovery needs attention."
+                raise _AttachError(500, detail) from exc
+    except _AttachError as exc:
+        return JSONResponse({"detail": exc.detail, "files": exc.files}, status_code=exc.status)
+    return _card_response(request, run_id, insight)
 
 
 @app.get("/runs/{run_id}/gate", response_class=HTMLResponse)

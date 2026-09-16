@@ -1,0 +1,69 @@
+{% from "partials/icons.html" import icon %}
+<div class="modal-backdrop" data-modal-backdrop>
+  <section class="modal insight-workspace" role="dialog" aria-modal="true"
+           aria-labelledby="workspace-title-{{ insight.id }}"
+           data-insight-workspace data-run-id="{{ run.id }}" data-insight-id="{{ insight.id }}">
+    <header class="modal-head insight-workspace-head">
+      <div>
+        <h2 id="workspace-title-{{ insight.id }}">Research this finding</h2>
+        <div class="meta">{{ insight.title }} · {{ insight.category }}</div>
+      </div>
+      <button type="button" class="icon-btn" data-modal-close aria-label="Close dialog">
+        {{ icon('x', 16) }}
+      </button>
+    </header>
+    <div class="insight-workspace-grid">
+      <aside class="insight-workspace-context">
+        <div class="icard-label">Current finding</div>
+        <div class="readonly-block" data-workspace-current>{{ insight.summary }}</div>
+        <div class="icard-label">Research available to this chat</div>
+        <div class="chip-row workspace-source-list" data-workspace-sources data-source-list>
+          {% for source in available_sources %}
+            <a class="source-chip" data-source-item data-source-id="{{ source.id }}"{% if loop.index > 4 %} hidden{% endif %}
+               href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.organization or source.source_name }}</a>
+          {% else %}
+            <span class="meta" data-source-empty>No sources available yet.</span>
+          {% endfor %}
+          {% if available_sources|length > 4 %}
+            <button type="button" class="source-chip source-chip-toggle" data-source-toggle
+                    aria-expanded="false">+{{ available_sources|length - 4 }} more</button>
+          {% endif %}
+        </div>
+        <div class="icard-label">Applied updates</div>
+        <div data-workspace-history>{{ workspace.applied_revisions|length }}</div>
+        {% if locked %}
+        <p class="insight-workspace-lock meta">This approved document is locked. You can still research this finding, but updates cannot be proposed or applied.</p>
+        {% endif %}
+      </aside>
+      <section class="insight-workspace-chat">
+        <div class="insight-workspace-messages" data-workspace-messages aria-live="polite">
+          {% for message in workspace.messages %}
+            {% include 'partials/insight_workspace_message.html' %}
+            {% if message.id == workspace.summarized_through_message_id %}
+            <div class="insight-workspace-summary-marker" data-workspace-summary-marker>
+              Earlier messages summarized for continuity
+            </div>
+            {% endif %}
+          {% else %}
+            <p class="meta">Research this finding before proposing an update.</p>
+          {% endfor %}
+        </div>
+        <form class="insight-workspace-composer" data-workspace-composer>
+          <textarea maxlength="4000" data-workspace-input data-autofocus
+                    placeholder="Ask about this finding or request deeper research…"></textarea>
+          <div class="insight-workspace-actions">
+            <span class="meta">This conversation can only use this insight and its research.</span>
+            {% if not locked %}<button type="button" class="btn btn-secondary" data-workspace-propose>Update finding</button>{% endif %}
+            <button type="submit" class="btn btn-primary" data-workspace-send>Send</button>
+          </div>
+        </form>
+      </section>
+    </div>
+    <div class="insight-workspace-preview" data-workspace-preview{% if locked or not workspace.pending_proposal %} hidden{% endif %}>
+      {% if workspace.pending_proposal and not locked %}
+        {% set proposal = workspace.pending_proposal %}
+        {% include 'partials/insight_workspace_proposal.html' %}
+      {% endif %}
+    </div>
+  </section>
+</div>

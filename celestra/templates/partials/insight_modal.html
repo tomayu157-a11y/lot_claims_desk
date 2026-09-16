@@ -1,15 +1,13 @@
 {# ---------------------------------------------------------------------------
-   The Modify and Add Input dialogs. Same shell, different contract:
-     modify  the text is an instruction; the model rewrites the finding
-     input   the text is knowledge; it is attached, never rewritten
-   Context: insight, mode ('modify'|'input'), impacts, evidence, downstream_agents,
-            web_available, run (optional)
+   The Add Input dialog. Text is attached as reviewer knowledge; the finding
+   itself is never rewritten here.
+   Context: insight, evidence, downstream_agents, run (optional)
    --------------------------------------------------------------------------- #}
 {% from "partials/icons.html" import icon %}
 {% from "partials/macros.html" import confidence_chip, tinted_tile, enum_value, tier_badge %}
+{% from "partials/file_pill.html" import file_pill %}
 
 {%- set rid = (run.id if run is defined and run else insight.run_id) -%}
-{%- set is_input = (mode | default('modify')) == 'input' -%}
 {%- set cat_style = {
   'clinical': ('leaf', 'green'), 'treatment': ('pill', 'blue'),
   'diagnostic': ('microscope', 'purple'), 'logic': ('flow', 'indigo'),
@@ -21,7 +19,7 @@
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title-{{ insight.id }}"
        data-action-scope>
     <div class="modal-head">
-      <h2 id="modal-title-{{ insight.id }}">{{ 'Add your input' if is_input else 'Modify this finding' }}</h2>
+      <h2 id="modal-title-{{ insight.id }}">Add your input</h2>
       <button type="button" class="icon-btn" data-modal-close aria-label="Close dialog">
         {{ icon('x', 16) }}
       </button>
@@ -41,7 +39,6 @@
       <div class="input-reason mb-2"><strong>Why this needs you:</strong> {{ insight.input_reason }}</div>
       {% endif %}
 
-      {% if is_input %}
       <div class="modal-explain is-input">
         <strong>What Add Input does.</strong> Your text is attached to this finding as reviewer
         input. The finding itself is not rewritten.
@@ -54,19 +51,10 @@
           <li>Every agent has already run, so it goes into the document only.</li>
           {% endif %}
           <li>It counts as your decision on this finding.</li>
+          <li>Attached files are read as context for the agents' research, only where they
+            are relevant. They are never cited as sources.</li>
         </ul>
       </div>
-      {% else %}
-      <div class="modal-explain is-modify">
-        <strong>What Modify does.</strong> Your text is an instruction to Celestra.
-        <ul>
-          <li>It re-reads the evidence it holds for this finding and, if that is not enough,
-            {% if web_available %}searches the web{% else %}would search the web (web search is not configured, so it will use held evidence only){% endif %}.</li>
-          <li>It rewrites the finding and its answer in the document, citing what it used.</li>
-          <li>It counts as your decision on this finding. You see the result immediately.</li>
-        </ul>
-      </div>
-      {% endif %}
 
       <div class="field">
         <span class="label">Current finding</span>
@@ -76,38 +64,34 @@
       </div>
 
       <div class="field">
-        <label for="insight-input-{{ insight.id }}">{{ 'Your input' if is_input else 'What should change' }}</label>
+        <label for="insight-input-{{ insight.id }}">Your input</label>
         <textarea id="insight-input-{{ insight.id }}" rows="4" maxlength="500"
                   data-field="user_input" data-autofocus
                   aria-describedby="counter-{{ insight.id }}"
-                  placeholder="{% if is_input %}For example: our claims data shows first-line venetoclax use is mostly in del(17p) patients; use 2024 SEER incidence.{% else %}For example: restrict this to adults; the 5-year survival figure should come from SEER 2024, not the older review.{% endif %}">{{ insight.reviewer_input if is_input else insight.user_input }}</textarea>
+                  placeholder="For example: our claims data shows first-line venetoclax use is mostly in del(17p) patients; use 2024 SEER incidence.">{{ insight.reviewer_input }}</textarea>
         <div class="counter" id="counter-{{ insight.id }}" aria-live="polite"
              data-counter-for="insight-input-{{ insight.id }}" data-counter-max="500">0/500</div>
       </div>
 
-      {% if not is_input %}
-      <div class="impact">
-        <h4>{{ icon('activity', 15) }} What else this touches</h4>
-        <p class="lead">
-          {% if impacts %}
-            {{ impacts | length }} related finding{{ '' if impacts | length == 1 else 's' }} share
-            sources or a stage with this one. They are listed so you can check them after the
-            rewrite; they are not rewritten automatically.
-          {% else %}
-            No other finding shares a source or stage with this one. Only this finding changes.
-          {% endif %}
-        </p>
-        {% for im in impacts | default([]) %}
-        <div class="impact-item">
-          {{ tinted_tile('sparkle', ['green', 'blue', 'purple', 'indigo', 'teal'][loop.index0 % 5], 'tile-sm') }}
-          <div>
-            <div class="impact-name">{{ im.agent_name }}</div>
-            <div class="impact-desc">{{ im.get("title") or im.get("description", "") }}</div>
-          </div>
+      <div class="field reviewer-files" data-reviewer-files
+           data-max-files="2" data-max-bytes="{{ max_file_bytes }}">
+        <span class="label">Supporting files <span class="meta">(optional)</span></span>
+        <div class="chip-row" data-file-pills>
+          {% for f in insight.reviewer_files %}{{ file_pill(f, local=true) }}{% endfor %}
         </div>
-        {% endfor %}
+        <input type="file" id="reviewer-files-{{ insight.id }}" class="visually-hidden"
+               multiple accept=".pdf,.docx,.txt,.md" data-file-input>
+        <label for="reviewer-files-{{ insight.id }}" class="btn btn-secondary btn-sm mt-1">
+          {{ icon('plus-circle', 14) }} Add files</label>
+        <p class="reviewer-files-hint">PDF, DOCX, TXT or MD · up to 1 MB each · 2 files per finding ·
+          the first 10 pages or ~20k tokens are read · images are ignored</p>
+        <ul class="file-errors" data-file-errors aria-live="polite"></ul>
+        <template data-file-icon="pdf">{{ icon('file-pdf', 13) }}</template>
+        <template data-file-icon="docx">{{ icon('file-word', 13) }}</template>
+        <template data-file-icon="md">{{ icon('file-markdown', 13) }}</template>
+        <template data-file-icon="txt">{{ icon('file-text', 13) }}</template>
+        <template data-file-icon="x">{{ icon('x', 11) }}</template>
       </div>
-      {% endif %}
 
       {% if evidence %}
       <div class="subblock">
@@ -132,21 +116,10 @@
 
     <div class="modal-foot">
       <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
-      {% if is_input %}
       <button type="button" class="btn btn-primary"
-              data-action-url="/runs/{{ rid }}/insights/{{ insight.id }}/input"
+              data-attach-input-url="/runs/{{ rid }}/insights/{{ insight.id }}/input"
               data-swap="[data-insight-id='{{ insight.id }}']"
-              data-requires-field="user_input"
-              data-busy-label="Attaching…"
-              data-closes-modal>{{ icon('plus-circle', 14) }} Attach input</button>
-      {% else %}
-      <button type="button" class="btn btn-primary"
-              data-action-url="/runs/{{ rid }}/insights/{{ insight.id }}/modify"
-              data-swap="[data-insight-id='{{ insight.id }}']"
-              data-requires-field="user_input"
-              data-busy-label="Revising… this can take a minute"
-              data-closes-modal>{{ icon('edit', 14) }} Revise finding</button>
-      {% endif %}
+              data-busy-label="Attaching and reading files…">{{ icon('plus-circle', 14) }} Attach input</button>
     </div>
   </div>
 </div>
