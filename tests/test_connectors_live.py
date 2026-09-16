@@ -23,8 +23,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from celestra.connectors.base import ConnectorResult, RetrievalContext, http  # noqa: E402
-from celestra.connectors.registry import build_registry, connector_health  # noqa: E402
+from celestra.connectors.base import ConnectorResult, RetrievalContext, http
+from celestra.connectors.registry import build_registry, connector_health
 
 CONTEXTS: dict[str, RetrievalContext] = {
     "CLL": RetrievalContext(
@@ -75,7 +75,7 @@ async def run_one(source_id: str, connector, ctx: RetrievalContext) -> tuple[str
     started = time.perf_counter()
     try:
         result = await connector.discover(ctx, LIMIT)
-    except Exception as exc:  # a connector that raises is a contract violation
+    except Exception as exc:  # noqa: BLE001 - a raised connector is a contract violation
         result = ConnectorResult.failure(source_id, f"RAISED {type(exc).__name__}: {exc}")
     return source_id, result, time.perf_counter() - started
 
@@ -93,15 +93,25 @@ async def run_context(label: str, ctx: RetrievalContext, only: list[str]) -> dic
     out: dict[str, ConnectorResult] = {}
     for source_id, result, elapsed in sorted(results, key=lambda r: r[0]):
         out[source_id] = result
-        print(f"{source_id:<18} {str(result.ok):<5} {result.count:>5}  "
+        print(f"{source_id:<18} {result.ok!s:<5} {result.count:>5}  "
               f"{elapsed:>7.2f}s  {result.reason[:60]}")
     return out
 
 
-def check(label: str, results: dict[str, ConnectorResult]) -> list[str]:
+def check(
+    label: str,
+    results: dict[str, ConnectorResult],
+    *,
+    configured_sources: set[str] | None = None,
+    ignored_sources: set[str] | None = None,
+) -> list[str]:
     """Return the list of contract violations for this context."""
     problems: list[str] = []
+    configured_sources = configured_sources or set()
+    ignored_sources = ignored_sources or set()
     for source_id in MUST_SUCCEED:
+        if source_id in ignored_sources:
+            continue
         result = results.get(source_id)
         if result is None:
             continue
@@ -109,8 +119,16 @@ def check(label: str, results: dict[str, ConnectorResult]) -> list[str]:
             problems.append(f"{label}/{source_id}: ok={result.ok} count={result.count} "
                             f"reason={result.reason!r}")
     for source_id, expected in EXPECTED_BLOCKED.items():
+        if source_id in ignored_sources:
+            continue
         result = results.get(source_id)
         if result is None:
+            continue
+        if source_id in configured_sources:
+            if not result.ok:
+                problems.append(
+                    f"{label}/{source_id}: configured source failed: {result.reason!r}"
+                )
             continue
         if result.ok:
             problems.append(f"{label}/{source_id}: expected a blocked result, got ok")
@@ -118,6 +136,8 @@ def check(label: str, results: dict[str, ConnectorResult]) -> list[str]:
             problems.append(f"{label}/{source_id}: reason {result.reason!r} "
                             f"does not mention {expected!r}")
     for source_id, result in results.items():
+        if source_id in ignored_sources:
+            continue
         if result.reason.startswith("RAISED"):
             problems.append(f"{label}/{source_id}: {result.reason}")
         for ref in result.refs:
@@ -133,17 +153,25 @@ def print_health() -> None:
     print("-" * 100)
     for row in connector_health():
         print(f"{row['id']:<18} {row['tier']:>4} {row['access_method']:<17} "
-              f"{str(row['configured']):<11} {', '.join(row['blocking'])}")
+              f"{row['configured']!s:<11} {', '.join(row['blocking'])}")
 
 
-async def main(argv: list[str]) -> int:
+async def main(argv: list[str], ignored_sources: set[str] | None = None) -> int:
     labels = [a for a in argv if a.upper() in CONTEXTS] or list(CONTEXTS)
     only = [a for a in argv if a.upper() not in CONTEXTS]
     problems: list[str] = []
+    configured_sources = {
+        row["id"] for row in connector_health() if row["configured"]
+    }
     try:
         for label in labels:
             results = await run_context(label.upper(), CONTEXTS[label.upper()], only)
-            problems += check(label.upper(), results)
+            problems += check(
+                label.upper(),
+                results,
+                configured_sources=configured_sources,
+                ignored_sources=ignored_sources,
+            )
     finally:
         await http.aclose()
     print_health()
@@ -157,8 +185,8 @@ async def main(argv: list[str]) -> int:
 
 
 def test_connectors_live() -> None:
-    """pytest entry point; identical to running the module directly."""
-    assert asyncio.run(main([])) == 0
+    """Run live contracts while excluding the separately managed Firecrawl account."""
+    assert asyncio.run(main([], ignored_sources={"open_web"})) == 0
 
 
 if __name__ == "__main__":
