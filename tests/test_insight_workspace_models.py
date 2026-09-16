@@ -7,12 +7,14 @@ from celestra.models import (
     AppliedInsightRevision,
     AppliedRevisionResult,
     EvidenceOrigin,
+    Insight,
     InsightRevisionProposal,
     InsightWorkspace,
     InsightWorkspaceMessage,
     InsightWorkspaceSource,
     WorkspaceMessageRole,
     WorkspaceMessageState,
+    WorkspaceEvent,
     workspace_id,
 )
 from celestra.store import Store
@@ -85,6 +87,52 @@ def test_workspace_models_reject_unknown_fields():
         )
     with pytest.raises(ValidationError):
         InsightWorkspaceMessage(role=WorkspaceMessageRole.USER, unexpected="value")
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        pytest.param(
+            lambda: InsightWorkspace(
+                id=workspace_id("run_one", "ins_one"), run_id="run_one", insight_id="ins_one",
+                unexpected_workspace="value",
+            ),
+            id="workspace",
+        ),
+        pytest.param(
+            lambda: InsightRevisionProposal(
+                proposed_summary="Proposed.", change_note="Reason.", base_summary_digest="digest",
+                unexpected_proposal="value",
+            ),
+            id="revision-proposal",
+        ),
+        pytest.param(
+            lambda: AppliedInsightRevision(
+                proposal_id="wprop_one", previous_summary="Before.", applied_summary="After.",
+                unexpected_applied_revision="value",
+            ),
+            id="applied-revision",
+        ),
+        pytest.param(
+            lambda: AppliedRevisionResult(
+                insight=Insight(
+                    stage="stage_1", bucket="A", category="Clinical", title="Finding",
+                    summary="Summary.",
+                ),
+                workspace=workspace(),
+                unexpected_result="value",
+            ),
+            id="applied-revision-result",
+        ),
+        pytest.param(
+            lambda: WorkspaceEvent(type="message_saved", unexpected_event="value"),
+            id="workspace-event",
+        ),
+    ],
+)
+def test_remaining_workspace_models_reject_unknown_fields(factory):
+    with pytest.raises(ValidationError):
+        factory()
 
 
 def test_workspace_rejects_duplicate_and_dangling_source_references():
