@@ -389,38 +389,39 @@ class InsightWorkspaceService:
                     await self._persist_failed(workspace, assistant)
 
     async def propose(self, run_id: str, insight_id: str):
-        run = self.store.get_run(run_id)
-        if run is None or self.store.get_insight(run_id, insight_id) is None:
-            raise HTTPException(404, "Insight not found")
-        if run.is_locked:
-            raise HTTPException(409, "This document is approved and locked. Start a new project to change it.")
+        async with self._lock_for(run_id, insight_id):
+            run = self.store.get_run(run_id)
+            if run is None or self.store.get_insight(run_id, insight_id) is None:
+                raise HTTPException(404, "Insight not found")
+            if run.is_locked:
+                raise HTTPException(409, "This document is approved and locked. Start a new project to change it.")
 
-        workspace = self.load(run_id, insight_id)
-        try:
-            draft = await self.proposal_builder(
-                self._research_context(run_id, insight_id, workspace),
-                self.registry_factory(),
-                self.llm_client,
+            workspace = self.load(run_id, insight_id)
+            try:
+                draft = await self.proposal_builder(
+                    self._research_context(run_id, insight_id, workspace),
+                    self.registry_factory(),
+                    self.llm_client,
+                )
+            except LLMUnavailable as exc:
+                raise HTTPException(503, "The model is unavailable. Try again.") from exc
+            except ProposalUnsupported as exc:
+                raise HTTPException(422, str(exc)) from exc
+            source_id_map = self._merge_sources(workspace, draft.evidence)
+            proposal = draft.proposal.model_copy(
+                update={
+                    "source_ids": [
+                        source_id_map[source_id]
+                        for source_id in draft.proposal.source_ids
+                        if source_id in source_id_map
+                    ],
+                    "web_sites": self._deduplicated_sites(draft.proposal.web_sites + draft.sites),
+                }
             )
-        except LLMUnavailable as exc:
-            raise HTTPException(503, "The model is unavailable. Try again.") from exc
-        except ProposalUnsupported as exc:
-            raise HTTPException(422, str(exc)) from exc
-        source_id_map = self._merge_sources(workspace, draft.evidence)
-        proposal = draft.proposal.model_copy(
-            update={
-                "source_ids": [
-                    source_id_map[source_id]
-                    for source_id in draft.proposal.source_ids
-                    if source_id in source_id_map
-                ],
-                "web_sites": self._deduplicated_sites(draft.proposal.web_sites + draft.sites),
-            }
-        )
-        workspace.pending_proposal = proposal
-        workspace.updated_at = utcnow()
-        self.store.save_insight_workspace(workspace)
-        return proposal
+            workspace.pending_proposal = proposal
+            workspace.updated_at = utcnow()
+            self.store.save_insight_workspace(workspace)
+            return proposal
 
     @staticmethod
     def _deduplicated_sites(sites: list[dict]) -> list[dict]:

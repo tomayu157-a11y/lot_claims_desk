@@ -733,11 +733,16 @@ async def deterministic_proposal(context, registry, llm_client):
     )
 
 
-def proposal_service(store, lock_registry=None, proposal_builder=deterministic_proposal):
+def proposal_service(
+    store,
+    lock_registry=None,
+    proposal_builder=deterministic_proposal,
+    answerer=fake_answer,
+):
     return InsightWorkspaceService(
         store=store,
         registry_factory=dict,
-        answerer=fake_answer,
+        answerer=answerer,
         summarizer=fake_summary,
         proposal_builder=proposal_builder,
         llm_client=object(),
@@ -990,3 +995,149 @@ async def test_concurrent_apply_serializes_shared_workspace_lock(tmp_path):
     workspace = proposer.load(run.id, selected.id)
     assert len(workspace.applied_revisions) == 1
     assert workspace.pending_proposal is None
+
+
+@pytest.mark.asyncio
+async def test_proposal_lifecycle_serializes_send_without_losing_messages(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    proposal_started = asyncio.Event()
+    release_proposal = asyncio.Event()
+    answer_started = asyncio.Event()
+    release_answer = asyncio.Event()
+
+    async def blocked_proposal(context, registry, llm_client):
+        proposal_started.set()
+        await release_proposal.wait()
+        return await deterministic_proposal(context, registry, llm_client)
+
+    async def blocked_answer(context, user_text, registry, on_status, llm_client):
+        answer_started.set()
+        await release_answer.wait()
+        return await fake_answer(context, user_text, registry, on_status, llm_client)
+
+    shared_locks = {}
+    proposer = proposal_service(
+        store,
+        lock_registry=shared_locks,
+        proposal_builder=blocked_proposal,
+    )
+    sender = proposal_service(
+        store,
+        lock_registry=shared_locks,
+        answerer=blocked_answer,
+    )
+    proposal_task = asyncio.create_task(proposer.propose(run.id, selected.id))
+    await asyncio.wait_for(proposal_started.wait(), timeout=0.5)
+
+    async def collect_send():
+        return [event async for event in sender.send(run.id, selected.id, "Keep this turn.")]
+
+    send_task = asyncio.create_task(collect_send())
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(answer_started.wait()), timeout=0.05)
+    finally:
+        release_proposal.set()
+        proposal = await proposal_task
+        await asyncio.wait_for(answer_started.wait(), timeout=0.5)
+        release_answer.set()
+        events = await asyncio.wait_for(send_task, timeout=0.5)
+
+    workspace = proposer.load(run.id, selected.id)
+    assert proposal.id == workspace.pending_proposal.id
+    assert [message.content for message in workspace.messages] == [
+        "Keep this turn.",
+        "Operational rules require gap and regimen-change definitions.",
+    ]
+    assert events[-1].type is WorkspaceEventType.ANSWER_COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_proposal_replacement_serializes_apply_and_preserves_workspace_state(tmp_path):
+    store, run, selected, _ = seeded_store_with_stage_report(tmp_path)
+    proposal_started = asyncio.Event()
+    release_replacement = asyncio.Event()
+    proposal_count = 0
+
+    async def staged_proposal(context, registry, llm_client):
+        nonlocal proposal_count
+        proposal_count += 1
+        draft = await deterministic_proposal(context, registry, llm_client)
+        proposal_id = "wprop_initial" if proposal_count == 1 else "wprop_replacement"
+        if proposal_count == 2:
+            proposal_started.set()
+            await release_replacement.wait()
+        return ProposalDraft(
+            proposal=draft.proposal.model_copy(update={"id": proposal_id}),
+            evidence=draft.evidence,
+            sites=draft.sites,
+        )
+
+    shared_locks = {}
+    proposer = proposal_service(
+        store,
+        lock_registry=shared_locks,
+        proposal_builder=staged_proposal,
+    )
+    applier = proposal_service(store, lock_registry=shared_locks)
+    await proposer.propose(run.id, selected.id)
+    messages = [event async for event in applier.send(run.id, selected.id, "Keep this turn.")]
+    assert messages[-1].type is WorkspaceEventType.ANSWER_COMPLETED
+
+    replacement_task = asyncio.create_task(proposer.propose(run.id, selected.id))
+    await asyncio.wait_for(proposal_started.wait(), timeout=0.5)
+    apply_task = asyncio.create_task(applier.apply(run.id, selected.id, "wprop_initial"))
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(apply_task), timeout=0.05)
+    finally:
+        release_replacement.set()
+        replacement = await replacement_task
+        (apply_result,) = await asyncio.gather(apply_task, return_exceptions=True)
+
+    assert isinstance(apply_result, HTTPException)
+    assert apply_result.status_code == 409
+    workspace = proposer.load(run.id, selected.id)
+    assert workspace.pending_proposal.id == replacement.id
+    assert len(workspace.applied_revisions) == 0
+    assert [message.content for message in workspace.messages] == [
+        "Keep this turn.",
+        "Operational rules require gap and regimen-change definitions.",
+    ]
+    assert store.get_insight(run.id, selected.id).summary == selected.summary
+
+
+@pytest.mark.asyncio
+async def test_proposal_lifecycle_lock_does_not_block_different_insight_send(tmp_path):
+    store, run, selected, other = seeded_store(tmp_path)
+    proposal_started = asyncio.Event()
+    release_proposal = asyncio.Event()
+
+    async def blocked_proposal(context, registry, llm_client):
+        proposal_started.set()
+        await release_proposal.wait()
+        return await deterministic_proposal(context, registry, llm_client)
+
+    service = proposal_service(
+        store,
+        lock_registry={},
+        proposal_builder=blocked_proposal,
+    )
+    proposal_task = asyncio.create_task(service.propose(run.id, selected.id))
+    await asyncio.wait_for(proposal_started.wait(), timeout=0.5)
+    try:
+        other_events = await asyncio.wait_for(
+            _collect_workspace_events(
+                service.send(run.id, other.id, "Research the other insight.")
+            ),
+            timeout=0.5,
+        )
+    finally:
+        release_proposal.set()
+        await proposal_task
+
+    assert other_events[-1].type is WorkspaceEventType.ANSWER_COMPLETED
+
+
+async def _collect_workspace_events(stream):
+    return [event async for event in stream]
