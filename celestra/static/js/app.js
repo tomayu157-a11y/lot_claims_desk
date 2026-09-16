@@ -938,10 +938,13 @@
   function workspaceError(message, detail) {
     if (!message) return;
     setWorkspaceMessageState(message, 'failed');
-    var error = document.createElement('p');
-    error.className = 'meta insight-workspace-error';
+    var error = $('.insight-workspace-error', message);
+    if (!error) {
+      error = document.createElement('p');
+      error.className = 'meta insight-workspace-error';
+      message.appendChild(error);
+    }
     error.textContent = (detail || 'Research could not be completed.') + ' Try again.';
-    message.appendChild(error);
   }
 
   function setWorkspaceBusy(workspace, busy) {
