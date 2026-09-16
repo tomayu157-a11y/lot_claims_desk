@@ -17,6 +17,7 @@ from .models import (
     Contradiction,
     Evidence,
     Insight,
+    InsightWorkspace,
     QAMetrics,
     ResearchQuestion,
     Run,
@@ -51,6 +52,14 @@ CREATE TABLE IF NOT EXISTS answers (
     doc TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS qa (
     run_id TEXT PRIMARY KEY, doc TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS insight_workspaces (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    insight_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    doc TEXT NOT NULL,
+    UNIQUE(run_id, insight_id)
+);
 CREATE INDEX IF NOT EXISTS ix_questions_run ON questions(run_id);
 CREATE INDEX IF NOT EXISTS ix_evidence_run ON evidence(run_id);
 CREATE INDEX IF NOT EXISTS ix_evidence_q ON evidence(question_id);
@@ -59,6 +68,7 @@ CREATE INDEX IF NOT EXISTS ix_contra_run ON contradictions(run_id);
 CREATE INDEX IF NOT EXISTS ix_stages_run ON stage_reports(run_id);
 CREATE INDEX IF NOT EXISTS ix_answers_run ON answers(run_id);
 CREATE INDEX IF NOT EXISTS ix_answers_q ON answers(question_id);
+CREATE INDEX IF NOT EXISTS ix_insight_workspaces_run ON insight_workspaces(run_id);
 """
 
 
@@ -108,7 +118,7 @@ class Store:
     def delete_run(self, run_id: str) -> None:
         with self._conn() as c:
             for t in ("questions", "evidence", "answers", "insights",
-                      "contradictions", "stage_reports", "qa"):
+                      "contradictions", "stage_reports", "qa", "insight_workspaces"):
                 c.execute(f"DELETE FROM {t} WHERE run_id=?", (run_id,))
             c.execute("DELETE FROM runs WHERE id=?", (run_id,))
 
@@ -177,6 +187,24 @@ class Store:
             "SELECT doc FROM insights WHERE run_id=? AND id=?", (run_id, insight_id)
         ).fetchone()
         return Insight.model_validate_json(row["doc"]) if row else None
+
+    def save_insight_workspace(self, workspace: InsightWorkspace) -> None:
+        with self._conn() as connection:
+            connection.execute(
+                "INSERT INTO insight_workspaces(id,run_id,insight_id,updated_at,doc) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                "run_id=excluded.run_id,insight_id=excluded.insight_id,"
+                "updated_at=excluded.updated_at,doc=excluded.doc",
+                (workspace.id, workspace.run_id, workspace.insight_id,
+                 workspace.updated_at.isoformat(), self._dump(workspace)),
+            )
+
+    def get_insight_workspace(self, run_id: str, insight_id: str) -> InsightWorkspace | None:
+        row = self._conn().execute(
+            "SELECT doc FROM insight_workspaces WHERE run_id=? AND insight_id=?",
+            (run_id, insight_id),
+        ).fetchone()
+        return InsightWorkspace.model_validate_json(row["doc"]) if row else None
 
     def save_contradictions(self, run_id: str, items: Iterable[Contradiction]) -> None:
         self._save_many("contradictions", run_id, items, ("stage",))
