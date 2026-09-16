@@ -165,8 +165,8 @@
               data-action-url="/runs/{{ rid }}/insights/{{ insight.id }}/approve"
               data-swap="[data-insight-id='{{ insight.id }}']">{{ icon('check', 13) }} Approve</button>
       {% endif %}
-      <button type="button" class="btn btn-sm btn-secondary" title="Tell Celestra what to change; it rewrites the card"
-              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/modify">Edit</button>
+      <button type="button" class="btn btn-sm btn-secondary" title="Research this finding, ask questions, and propose an update"
+              data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/modify">Chat &amp; edit</button>
       <button type="button" class="btn btn-sm btn-secondary" title="Attach what you know; kept as your input and passed to later agents"
               data-modal-url="/runs/{{ rid }}/insights/{{ insight.id }}/input">Add input</button>
       {% endif %}

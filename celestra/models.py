@@ -7,8 +7,9 @@ import hashlib
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def utcnow() -> datetime:
@@ -17,6 +18,16 @@ def utcnow() -> datetime:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+def workspace_id(run_id: str, insight_id: str) -> str:
+    digest = hashlib.sha1(f"{run_id}|{insight_id}".encode()).hexdigest()[:16]
+    return f"iws_{digest}"
+
+
+def is_http_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme in ("http", "https") and bool(parsed.hostname)
 
 
 # --------------------------------------------------------------------------
@@ -161,6 +172,26 @@ class ReviewAction(str, enum.Enum):
     @property
     def is_decided(self) -> bool:
         return self is not ReviewAction.PENDING
+
+
+class WorkspaceMessageRole(str, enum.Enum):
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+
+
+class WorkspaceMessageState(str, enum.Enum):
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class WorkspaceEventType(str, enum.Enum):
+    MESSAGE_SAVED = "message_saved"
+    RESEARCH_STATUS = "research_status"
+    ANSWER_DELTA = "answer_delta"
+    ANSWER_COMPLETED = "answer_completed"
+    ERROR = "error"
 
 
 # --------------------------------------------------------------------------
@@ -379,6 +410,121 @@ class Insight(BaseModel):
     def needs_decision(self) -> bool:
         """True while a person still has to act on this finding."""
         return self.confidence is Confidence.REQUIRES_INPUT and not self.review_action.is_decided
+
+
+class InsightWorkspaceSource(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # The workspace source id is the Evidence id. Message and proposal
+    # source_ids therefore use one stable identifier end to end.
+    id: str
+    question_id: str
+    source_id: str
+    source_name: str
+    organization: str = ""
+    tier: int
+    url: str
+    title: str = ""
+    published: str = ""
+    quote: str
+    context: str = ""
+    origin: EvidenceOrigin = EvidenceOrigin.APPROVED_API
+    tag: VerificationTag = VerificationTag.VERIFIED
+    relevance: float = 0.0
+    identifiers: dict[str, str] = Field(default_factory=dict)
+    retrieved_at: datetime = Field(default_factory=utcnow)
+
+    @field_validator("url")
+    @classmethod
+    def http_urls_only(cls, value: str) -> str:
+        if not is_http_url(value):
+            raise ValueError("workspace source URL must use http or https with a hostname")
+        return value
+
+
+class InsightWorkspaceMessage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(default_factory=lambda: new_id("wmsg"))
+    role: WorkspaceMessageRole
+    state: WorkspaceMessageState = WorkspaceMessageState.COMPLETED
+    content: str = ""
+    source_ids: list[str] = Field(default_factory=list)
+    used_web_fallback: bool = False
+    web_sites: list[dict[str, Any]] = Field(default_factory=list)
+    error: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class InsightRevisionProposal(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(default_factory=lambda: new_id("wprop"))
+    proposed_summary: str
+    change_note: str
+    basis_message_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+    web_sites: list[dict[str, Any]] = Field(default_factory=list)
+    base_summary_digest: str
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class AppliedInsightRevision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(default_factory=lambda: new_id("wrev"))
+    proposal_id: str
+    previous_summary: str
+    applied_summary: str
+    source_ids: list[str] = Field(default_factory=list)
+    applied_at: datetime = Field(default_factory=utcnow)
+
+
+class InsightWorkspace(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    run_id: str
+    insight_id: str
+    messages: list[InsightWorkspaceMessage] = Field(default_factory=list)
+    sources: list[InsightWorkspaceSource] = Field(default_factory=list)
+    continuity_summary: str = ""
+    summarized_through_message_id: str = ""
+    pending_proposal: InsightRevisionProposal | None = None
+    applied_revisions: list[AppliedInsightRevision] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+    @model_validator(mode="after")
+    def validate_identity_and_source_references(self) -> InsightWorkspace:
+        if self.id != workspace_id(self.run_id, self.insight_id):
+            raise ValueError("workspace id must match its run and insight")
+
+        source_ids = [source.id for source in self.sources]
+        if len(source_ids) != len(set(source_ids)):
+            raise ValueError("workspace sources must have unique ids")
+
+        known_source_ids = set(source_ids)
+        reference_sets = [message.source_ids for message in self.messages]
+        if self.pending_proposal:
+            reference_sets.append(self.pending_proposal.source_ids)
+        reference_sets.extend(revision.source_ids for revision in self.applied_revisions)
+        if any(source_id not in known_source_ids
+               for references in reference_sets for source_id in references):
+            raise ValueError("workspace source references must identify workspace sources")
+        return self
+
+
+class AppliedRevisionResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    insight: Insight
+    workspace: InsightWorkspace
+
+
+class WorkspaceEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    type: WorkspaceEventType
+    message_id: str = ""
+    text: str = ""
+    detail: str = ""
+    source_ids: list[str] = Field(default_factory=list)
+    sources: list[InsightWorkspaceSource] = Field(default_factory=list)
 
 
 class Contradiction(BaseModel):
