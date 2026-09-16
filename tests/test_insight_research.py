@@ -1,19 +1,19 @@
-from types import SimpleNamespace
-
 import pytest
 
+import celestra.services.answering as answering_mod
 import celestra.services.insight_research as research_mod
 from celestra.models import (
-    AnswerStatus,
     Evidence,
+    EvidenceOrigin,
     Insight,
     InsightWorkspaceMessage,
     ResearchQuestion,
     RunConfig,
+    SourceRef,
     WorkspaceMessageRole,
 )
 from celestra.services.insight_research import ResearchContext
-from celestra.services.revision import RevisionResult
+from celestra.services.llm import LLMUnavailable
 
 
 def context() -> ResearchContext:
@@ -39,24 +39,25 @@ def context() -> ResearchContext:
 
 
 @pytest.mark.asyncio
-async def test_answer_turn_reuses_revision_and_forwards_status(monkeypatch):
-    seen = {}
+async def test_answer_turn_uses_real_revision_with_held_evidence():
+    class HeldEvidenceModel:
+        available = True
 
-    async def fake_revise(insight, question, evidence, instruction, cfg, registry,
-                          synonyms=None, on_status=None, llm_client=None):
-        seen["instruction"] = instruction
-        await on_status("checking_evidence")
-        await on_status("searching_web")
-        result = RevisionResult()
-        result.text = "Treatment gaps and regimen changes are common operational concepts."
-        result.status = AnswerStatus.ANSWERED
-        result.evidence = evidence
-        result.citations = ["Crossref"]
-        result.searched = True
-        result.sites = [{"url": "https://example.org/consulted", "scraped": True}]
-        return result
+        def __init__(self):
+            self.calls = []
 
-    monkeypatch.setattr(research_mod, "revise", fake_revise)
+        async def complete_json(self, system, prompt, max_tokens):
+            self.calls.append((system, prompt))
+            if len(self.calls) == 1:
+                return {"needs_more_sources": False, "search_query": ""}
+            return {
+                "answer": "Treatment gaps can inform operational review.",
+                "status": "answered",
+                "applied": True,
+                "note": "Held evidence was retained.",
+            }
+
+    model = HeldEvidenceModel()
     statuses = []
 
     async def record_status(name):
@@ -64,41 +65,129 @@ async def test_answer_turn_reuses_revision_and_forwards_status(monkeypatch):
 
     result = await research_mod.answer_turn(
         context(), "What rules can we operationalize?", {},
-        on_status=record_status, llm_client=SimpleNamespace(),
+        on_status=record_status, llm_client=model,
     )
-    assert statuses == ["checking_evidence", "searching_web"]
-    assert "What rules can we operationalize?" in seen["instruction"]
-    assert "Earlier work retained source ev_one" in seen["instruction"]
-    assert result.searched is True
+    assert statuses == ["checking_evidence"]
+    assert len(model.calls) == 2
+    assert "What rules can we operationalize?" in model.calls[0][1]
+    assert "Earlier work retained source ev_one" in model.calls[0][1]
+    assert result.text == "Treatment gaps can inform operational review."
     assert result.source_evidence_ids == ["ev_one"]
-    assert result.sites[0]["scraped"] is True
+    assert result.citations == ["Crossref"]
 
 
 @pytest.mark.asyncio
-async def test_build_proposal_uses_completed_user_messages(monkeypatch):
-    captured = {}
+async def test_answer_turn_searches_web_after_triage_with_real_revision(monkeypatch):
+    quote = "A treatment change after a sustained gap can indicate a new treatment line in claims data."
 
-    async def fake_revise(insight, question, evidence, instruction, cfg, registry,
-                          synonyms=None, on_status=None, llm_client=None):
-        captured["instruction"] = instruction
-        result = RevisionResult()
-        result.text = "Use gaps, substitutions, and restart logic; validate thresholds."
-        result.note = "Added operational concepts and retained the SME caveat."
-        result.evidence = evidence
-        result.citations = ["Crossref"]
-        return result
+    class RevisionModel:
+        available = True
 
-    monkeypatch.setattr(research_mod, "revise", fake_revise)
+        def __init__(self):
+            self.calls = []
+
+        async def complete_json(self, system, prompt, max_tokens):
+            self.calls.append((system, prompt))
+            if len(self.calls) == 1:
+                return {"needs_more_sources": True, "search_query": "treatment line gaps"}
+            return {
+                "answer": "A sustained treatment gap can support line review.",
+                "status": "partial",
+                "applied": True,
+                "note": "Open-web evidence was added.",
+            }
+
+    class AnsweringModel:
+        available = True
+
+        async def complete_json(self, system, prompt, max_tokens):
+            return {
+                "status": "partial",
+                "answer": "A sustained gap can indicate a new treatment line.",
+                "aspects_covered": [],
+                "support": [{"document": 0, "quote": quote, "relevance": 0.9}],
+            }
+
+    class FakeOpenWeb:
+        def __init__(self):
+            self.searches = []
+            self.scrapes = []
+            self.ref = SourceRef(
+                source_id="open_web",
+                source_name="Open Web",
+                tier=3,
+                url="https://example.org/open-web",
+                title="Treatment line evidence",
+                snippet=quote,
+                origin=EvidenceOrigin.OPEN_WEB,
+            )
+
+        async def search(self, query, limit):
+            self.searches.append((query, limit))
+            return [self.ref]
+
+        async def scrape(self, url):
+            self.scrapes.append(url)
+            return self.ref
+
+    revision_model = RevisionModel()
+    web = FakeOpenWeb()
+    monkeypatch.setattr(answering_mod, "llm", AnsweringModel())
+    statuses = []
+
+    async def record_status(name):
+        statuses.append(name)
+
+    result = await research_mod.answer_turn(
+        context(), "Find missing operational support.", {"open_web": web},
+        on_status=record_status, llm_client=revision_model,
+    )
+    assert statuses == ["checking_evidence", "searching_web"]
+    assert "Find missing operational support." in revision_model.calls[0][1]
+    assert len(revision_model.calls) == 2
+    assert web.searches[0][0] == "treatment line gaps"
+    assert web.scrapes == ["https://example.org/open-web"]
+    assert result.searched is True
+    assert any(item.source_id == "open_web" for item in result.evidence)
+    assert result.sites == [{
+        "url": "https://example.org/open-web",
+        "title": "Treatment line evidence",
+        "scraped": True,
+        "used": True,
+    }]
+
+
+@pytest.mark.asyncio
+async def test_build_proposal_uses_real_revision_and_completed_user_messages():
+    class HeldEvidenceModel:
+        available = True
+
+        def __init__(self):
+            self.calls = []
+
+        async def complete_json(self, system, prompt, max_tokens):
+            self.calls.append((system, prompt))
+            if len(self.calls) == 1:
+                return {"needs_more_sources": False, "search_query": ""}
+            return {
+                "answer": "Use gaps, substitutions, and restart logic; validate thresholds.",
+                "status": "answered",
+                "applied": True,
+                "note": "Added operational concepts and retained the SME caveat.",
+            }
+
+    model = HeldEvidenceModel()
     ctx = context()
     ctx.messages.append(InsightWorkspaceMessage(
         id="wmsg_user", role=WorkspaceMessageRole.USER,
         content="Focus on rules that can be implemented in claims.",
     ))
-    draft = await research_mod.build_proposal(ctx, {}, llm_client=SimpleNamespace())
+    draft = await research_mod.build_proposal(ctx, {}, llm_client=model)
     assert draft.proposal.proposed_summary.startswith("Use gaps")
     assert draft.proposal.basis_message_ids == ["wmsg_user"]
     assert [item.id for item in draft.evidence] == ["ev_one"]
-    assert "Focus on rules" in captured["instruction"]
+    assert "Focus on rules" in model.calls[0][1]
+    assert len(model.calls) == 2
 
 
 @pytest.mark.asyncio
@@ -117,3 +206,39 @@ async def test_summary_contract_retains_required_fields():
     assert "operational rules" in summary
     assert "ev_one" in summary
     assert "SME threshold validation" in summary
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "summary": ["not plain text"],
+            "instructions": ["Keep thresholds study-specific"],
+            "citations": ["ev_one"],
+            "unresolved": ["SME threshold validation"],
+            "applied_revisions": ["Revision one added gap logic"],
+        },
+        {
+            "summary": "Goal: operational rules.",
+            "instructions": "Keep thresholds study-specific",
+            "citations": ["ev_one"],
+            "unresolved": ["SME threshold validation"],
+            "applied_revisions": ["Revision one added gap logic"],
+        },
+        {
+            "summary": "Goal: operational rules.",
+            "instructions": ["Keep thresholds study-specific"],
+            "citations": [""],
+            "unresolved": ["SME threshold validation"],
+            "applied_revisions": ["Revision one added gap logic"],
+        },
+    ],
+)
+async def test_summary_contract_rejects_malformed_required_fields(payload):
+    class FakeLLM:
+        async def complete_json(self, system, prompt, max_tokens):
+            return payload
+
+    with pytest.raises(LLMUnavailable):
+        await research_mod.summarize_context("", context().messages, FakeLLM())

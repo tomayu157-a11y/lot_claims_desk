@@ -140,10 +140,8 @@ async def build_proposal(
     )
 
 
-def _section(value: object) -> str:
-    if isinstance(value, list):
-        return "\n".join(f"- {item}" for item in value)
-    return str(value)
+def _section(value: list[str]) -> str:
+    return "\n".join(f"- {item}" for item in value)
 
 
 async def summarize_context(
@@ -162,19 +160,31 @@ async def summarize_context(
         '"citations": [str], "unresolved": [str], "applied_revisions": [str]}.',
         max_tokens=1000,
     )
-    if not isinstance(result, dict) or not result.get("summary"):
+    if not isinstance(result, dict):
+        raise LLMUnavailable("model did not return a structured research summary")
+
+    summary = result.get("summary")
+    if not isinstance(summary, str) or not summary.strip():
         raise LLMUnavailable("model did not return a structured research summary")
 
     required = ("instructions", "citations", "unresolved", "applied_revisions")
-    if any(not result.get(field) for field in required):
-        raise LLMUnavailable("model did not return a complete structured research summary")
+    sections: dict[str, list[str]] = {}
+    for section_name in required:
+        value = result.get(section_name)
+        if (
+            not isinstance(value, list)
+            or not value
+            or any(not isinstance(item, str) or not item.strip() for item in value)
+        ):
+            raise LLMUnavailable("model did not return a complete structured research summary")
+        sections[section_name] = [item.strip() for item in value]
 
     return "\n\n".join(
         [
-            f"Summary:\n{result['summary']}",
-            f"Instructions:\n{_section(result['instructions'])}",
-            f"Citations:\n{_section(result['citations'])}",
-            f"Unresolved:\n{_section(result['unresolved'])}",
-            f"Applied revisions:\n{_section(result['applied_revisions'])}",
+            f"Summary:\n{summary.strip()}",
+            f"Instructions:\n{_section(sections['instructions'])}",
+            f"Citations:\n{_section(sections['citations'])}",
+            f"Unresolved:\n{_section(sections['unresolved'])}",
+            f"Applied revisions:\n{_section(sections['applied_revisions'])}",
         ]
     )
