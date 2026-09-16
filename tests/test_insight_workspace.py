@@ -275,6 +275,55 @@ async def test_impossible_context_budget_fails_before_answerer_and_keeps_transcr
 
 
 @pytest.mark.asyncio
+async def test_irreducible_six_message_budget_skips_summarizer_and_answerer(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    summarizer_calls = []
+    answerer_calls = []
+
+    async def summarizer(prior, messages, llm_client):
+        summarizer_calls.append((prior, [message.id for message in messages]))
+        raise AssertionError("summarizer must not run for an irreducible context")
+
+    async def answer(context, user_text, registry, on_status, llm_client):
+        answerer_calls.append(user_text)
+        raise AssertionError("answerer must not run for an irreducible context")
+
+    service = InsightWorkspaceService(
+        store=store,
+        registry_factory=dict,
+        answerer=answer,
+        summarizer=summarizer,
+        llm_client=object(),
+        active_token_limit=40,
+        reduced_token_target=20,
+    )
+    initial = service.load(run.id, selected.id)
+    prior_boundary = InsightWorkspaceMessage(
+        id="wmsg_prior_boundary",
+        role=WorkspaceMessageRole.ASSISTANT,
+        state=WorkspaceMessageState.COMPLETED,
+        content="Earlier completed conversation.",
+    )
+    initial.messages = [prior_boundary, *long_completed_messages()]
+    initial.continuity_summary = "Prior continuity summary."
+    initial.summarized_through_message_id = prior_boundary.id
+    store.save_insight_workspace(initial)
+    original_messages = [message.model_copy(deep=True) for message in initial.messages]
+
+    events = [event async for event in service.send(run.id, selected.id, "Continue")]
+    saved = service.load(run.id, selected.id)
+
+    assert summarizer_calls == []
+    assert answerer_calls == []
+    assert events[-1].type is WorkspaceEventType.ERROR
+    assert saved.continuity_summary == "Prior continuity summary."
+    assert saved.summarized_through_message_id == prior_boundary.id
+    assert saved.messages[: len(original_messages)] == original_messages
+    assert saved.messages[-1].state is WorkspaceMessageState.FAILED
+    assert saved.messages[-1].error == "Research could not be completed. Try again."
+
+
+@pytest.mark.asyncio
 async def test_tuple_duplicate_source_uses_existing_canonical_workspace_source(tmp_path):
     store, run, selected, _ = seeded_store(tmp_path)
     workspace = InsightWorkspaceService(store, dict).load(run.id, selected.id)

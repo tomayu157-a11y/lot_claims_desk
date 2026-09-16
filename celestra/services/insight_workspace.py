@@ -150,6 +150,11 @@ class InsightWorkspaceService:
             return
 
         active = self._active_messages(workspace)
+        retained = active[-6:]
+        retained_prompt = "\n".join(message.content for message in retained)
+        if self._token_estimate(retained_prompt) > self.reduced_token_target:
+            raise RuntimeError("Conversation context is too large to summarize safely.")
+
         retain_from = max(0, len(active) - 6)
         selected: list[InsightWorkspaceMessage] = []
         remaining = list(active)
