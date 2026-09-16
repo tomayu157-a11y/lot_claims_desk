@@ -1,0 +1,17 @@
+{% if message is defined and message is not string %}
+  {% set workspace_message = message %}
+{% else %}
+  {% set workspace_message = {"id": "", "role": {"value": "assistant"}, "content": "", "error": "", "source_ids": []} %}
+{% endif %}
+<article class="review-note insight-workspace-message" data-workspace-message-id="{{ workspace_message.id }}">
+  <strong>{{ workspace_message.role.value | capitalize }}</strong>
+  {% if workspace_message.content %}<p>{{ workspace_message.content }}</p>{% endif %}
+  {% if workspace_message.error %}<p class="meta">{{ workspace_message.error }}</p>{% endif %}
+  {% if workspace_message.source_ids %}
+  <div class="chip-row" aria-label="Message sources">
+    {% for source in available_sources | default([], true) if source.id in workspace_message.source_ids %}
+      <a class="chip" href="{{ source.url }}" target="_blank" rel="noopener">{{ source.source_name }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</article>

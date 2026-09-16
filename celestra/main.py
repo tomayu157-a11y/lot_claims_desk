@@ -47,6 +47,8 @@ from .services.reviewer_files import (
     kind_for,
 )
 from .services.scoring import assess_confidence
+from .services.insight_workspace import InsightWorkspaceService
+from .services.llm import llm
 from .settings import (
     BASE_DIR,
     configure_tls,
@@ -67,6 +69,17 @@ log = logging.getLogger("celestra")
 
 _RUNNING: dict[str, asyncio.Task] = {}
 _REGISTRY: dict[str, Any] = {}
+_insight_workspace_locks: dict[tuple[str, str], asyncio.Lock] = {}
+
+
+def _insight_workspace_service() -> InsightWorkspaceService:
+    """Build a request-local workspace service over the current application store."""
+    return InsightWorkspaceService(
+        store=store,
+        registry_factory=registry,
+        llm_client=llm,
+        lock_registry=_insight_workspace_locks,
+    )
 
 
 def registry() -> dict[str, Any]:
@@ -886,14 +899,20 @@ async def insights_page(request: Request, run_id: str):
 @app.get("/runs/{run_id}/insights/{insight_id}/modify", response_class=HTMLResponse)
 @app.get("/runs/{run_id}/insights/{insight_id}/input", response_class=HTMLResponse)
 async def insight_modal(request: Request, run_id: str, insight_id: str):
-    """Two dialogs, one template. Modify hands an instruction to the model;
-    Add Input attaches the reviewer's own knowledge. They do different things
-    and the dialog says which."""
+    """Open an insight workspace or the existing reviewer-input dialog."""
     run = get_run_or_404(run_id)
     insight = store.get_insight(run_id, insight_id)
     if insight is None:
         raise HTTPException(404, "Insight not found")
     mode = "input" if request.url.path.endswith("/input") else "modify"
+    if mode == "modify":
+        workspace = _insight_workspace_service().load(run_id, insight_id)
+        return templates.TemplateResponse(
+            request,
+            "partials/insight_workspace.html",
+            _workspace_template_context(request, run, insight, workspace),
+        )
+
     others = [i for i in store.get_insights(run_id) if i.id != insight_id]
     impacts = _impacts(insight, others) if mode == "modify" else []
     evidence = [e for e in store.get_evidence(run_id) if e.id in set(insight.evidence_ids)]
@@ -910,6 +929,29 @@ async def insight_modal(request: Request, run_id: str, insight_id: str):
          "max_file_bytes": MAX_FILE_BYTES,
          "agent_by_stage": _agent_by_stage()},
     )
+
+
+def _workspace_available_sources(run_id: str, insight: Insight, workspace) -> list:
+    """Show only evidence held by this finding and research it collected."""
+    sources = {
+        evidence.id: evidence
+        for evidence in store.get_evidence(run_id)
+        if evidence.id in set(insight.evidence_ids)
+    }
+    for source in workspace.sources:
+        sources.setdefault(source.id, source)
+    return list(sources.values())
+
+
+def _workspace_template_context(request: Request, run: Run, insight: Insight, workspace) -> dict:
+    return {
+        **base_ctx(request),
+        "run": run,
+        "insight": insight,
+        "workspace": workspace,
+        "available_sources": _workspace_available_sources(run.id, insight, workspace),
+        "locked": run.is_locked,
+    }
 
 
 def _impacts(insight: Insight, others: list[Insight]) -> list[dict]:
@@ -986,19 +1028,96 @@ async def _body(request: Request) -> dict[str, Any]:
         return {}
 
 
+def _workspace_sse(event) -> str:
+    payload = event.model_dump(mode="json")
+    return (
+        f"event: {event.type.value}\n"
+        f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    )
+
+
+@app.post("/runs/{run_id}/insights/{insight_id}/workspace/messages")
+async def workspace_message(request: Request, run_id: str, insight_id: str):
+    body = await _body(request)
+    message = body.get("message")
+    if not isinstance(message, str) or not message.strip():
+        raise HTTPException(400, "Write a message first.")
+
+    service = _insight_workspace_service()
+    service.load(run_id, insight_id)
+
+    async def stream():
+        async for event in service.send(run_id, insight_id, message):
+            yield _workspace_sse(event)
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/runs/{run_id}/insights/{insight_id}/workspace/proposal")
+async def workspace_proposal(request: Request, run_id: str, insight_id: str):
+    service = _insight_workspace_service()
+    proposal = await service.propose(run_id, insight_id)
+    run = get_run_or_404(run_id)
+    insight = store.get_insight(run_id, insight_id)
+    if insight is None:
+        raise HTTPException(404, "Insight not found")
+    workspace = service.load(run_id, insight_id)
+    context = _workspace_template_context(request, run, insight, workspace)
+    return JSONResponse({
+        "proposal_id": proposal.id,
+        "proposal_html": templates.get_template(
+            "partials/insight_workspace_proposal.html"
+        ).render(proposal=proposal, **context),
+    })
+
+
+@app.post("/runs/{run_id}/insights/{insight_id}/workspace/proposals/{proposal_id}/apply")
+async def workspace_apply(
+    request: Request,
+    run_id: str,
+    insight_id: str,
+    proposal_id: str,
+):
+    service = _insight_workspace_service()
+    result = await service.apply(run_id, insight_id, proposal_id)
+    run = get_run_or_404(run_id)
+    all_insights = store.get_insights(run_id)
+    gate = _gate(run, all_insights, store.get_contradictions(run_id), "approval")
+    card_html = templates.get_template("partials/insight_card.html").render(
+        **base_ctx(request),
+        insight=result.insight,
+        run_id=run_id,
+        run=run,
+        agent_by_stage=_agent_by_stage(),
+        counts=_counts(all_insights),
+        gate=gate,
+    )
+    workspace_context = _workspace_template_context(
+        request, run, result.insight, result.workspace,
+    )
+    workspace_context.update({"counts": _counts(all_insights), "gate": gate})
+    workspace_html = templates.get_template("partials/insight_workspace.html").render(
+        **workspace_context,
+    )
+    return JSONResponse({"card_html": card_html, "workspace_html": workspace_html})
+
+
 async def _apply_insight_action(
     run_id: str, insight_id: str, action: str, user_input: str,
     reviewer_files: list[ReviewerFile] | None = None,
 ) -> Insight:
-    """The three decisions a reviewer can make on a finding.
+    """The two direct decisions a reviewer can make on a finding.
 
     approve  accept it as generated
-    modify   tell the model what to change; it re-checks the evidence, searches
-             the web if needed, and rewrites the finding and the document
     input    attach your own knowledge; it is printed with the finding, goes
              into the document, and is handed to the agents still to run
 
-    Any of the three settles a finding that Requires Input: a person looked.
+    Modification is proposal-only through the insight workspace. Either direct
+    decision settles a finding that Requires Input: a person looked.
     """
     run = get_run_or_404(run_id)
     if run.is_locked:
@@ -1012,15 +1131,11 @@ async def _apply_insight_action(
     if action == "approve":
         insight.review_action = ReviewAction.APPROVED
     elif action == "modify":
-        if not text:
-            raise HTTPException(400, "Say what should change. Modify sends your "
-                                     "instruction to the model; it cannot act on nothing.")
-        insight.review_action = ReviewAction.MODIFIED
-        insight.user_input = text
-        others = [i for i in store.get_insights(run_id) if i.id != insight_id]
-        impacted = {x["title"] for x in _impacts(insight, others)}
-        insight.impacted_insight_ids = [o.id for o in others if o.title in impacted]
-        await _revise_insight(run_id, insight)
+        raise HTTPException(
+            409,
+            "Direct modification is no longer available. Open Edit, review the proposal, "
+            "and apply it.",
+        )
     elif action == "input":
         if not text:
             raise HTTPException(400, "Write the input you want attached to this finding.")
@@ -1069,73 +1184,6 @@ def _record_reviewer_input(run: Run, insight: Insight) -> None:
                 changed = True
         if changed:
             store.save_stage_reports(run.id, [report])
-
-
-async def _revise_insight(run_id: str, insight: Insight) -> None:
-    """Send the reviewer's instruction to the model and apply the result.
-
-    The instruction is not filed as a note. The model decides whether the held
-    evidence can satisfy it and searches the open web when it cannot, then
-    rewrites the answer against everything found. The revision carries into
-    the stage report so the final document reflects it.
-    """
-    from .services.revision import revise
-
-    run = store.get_run(run_id)
-    question = next(
-        (q for q in store.get_questions(run_id) if q.id in set(insight.question_ids)), None
-    )
-    if run is None or question is None:
-        return
-
-    evidence = [e for e in store.get_evidence(run_id) if e.question_id == question.id]
-    synonyms = list(
-        get_questions()["indications"].get(run.config.indication_key, {}).get("synonyms") or []
-    )
-    try:
-        result = await revise(insight, question, evidence, insight.user_input,
-                              run.config, registry(), synonyms)
-    except Exception:
-        log.exception("revision failed for %s", insight.id)
-        return
-
-    if result.evidence and len(result.evidence) > len(evidence):
-        store.save_evidence(run_id, [e for e in result.evidence if e not in evidence])
-    if result.sites:
-        question.web_sites = (question.web_sites or []) + result.sites
-
-    if result.text:
-        insight.summary = result.text[:400]
-        question.answer_text = result.text
-        question.answer_status = result.status
-        if result.citations:
-            question.answer_citations = result.citations
-            insight.source_ids = list(dict.fromkeys(
-                [e.source_id for e in result.evidence]
-            ))
-        insight.used_web_fallback = insight.used_web_fallback or bool(result.searched)
-    where = (
-        f"searched the web ({len(result.sites)} page(s))" if result.searched
-        else "re-read the evidence it already held"
-    )
-    insight.revision_note = (
-        (result.note or ("Finding rewritten." if result.text else "Finding left unchanged."))
-        + f" Celestra {where}."
-    )[:400]
-
-    store.save_questions(run_id, [question])
-
-    # Carry the revision into the stage document.
-    for report in store.get_stage_reports(run_id):
-        if report.stage != question.stage:
-            continue
-        for row in report.answers:
-            if row.get("question") == question.text or row.get("seed") == question.seed_text:
-                row["answer"] = question.answer_text
-                row["status"] = question.answer_status.value
-                row["citations"] = question.answer_citations
-                row["revised"] = True
-        store.save_stage_reports(run_id, [report])
 
 
 # Two files at 1 MB plus the form fields. A larger body is refused before it

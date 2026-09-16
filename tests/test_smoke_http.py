@@ -135,7 +135,9 @@ async def main() -> int:
         check("  evidence panel quotes a source", "http" in r.text)
 
         r = await c.get(f"/runs/{run_id}/insights/{iid}/modify")
-        check("GET modify modal", r.status_code == 200, f"HTTP {r.status_code}")
+        check("GET Edit opens the insight workspace",
+              r.status_code == 200 and "data-insight-workspace" in r.text,
+              f"HTTP {r.status_code}")
 
         r = await c.post(f"/runs/{run_id}/insights/{iid}/approve", json={})
         check("POST approve", r.status_code == 200, f"HTTP {r.status_code}")
@@ -143,12 +145,12 @@ async def main() -> int:
         check("  persisted",
               test_store.get_insight(run_id, iid).review_action.value == "approved")
 
+        before = test_store.get_insight(run_id, iid).summary
         r = await c.post(f"/runs/{run_id}/insights/{iid}/modify",
                          json={"user_input": "Restrict to systemic therapy only."})
-        check("POST modify", r.status_code == 200, f"HTTP {r.status_code}")
+        check("POST direct modify is refused", r.status_code == 409, f"HTTP {r.status_code}")
         saved = test_store.get_insight(run_id, iid)
-        check("  user input persisted", saved.user_input.startswith("Restrict"))
-        check("  impact recorded", isinstance(saved.impacted_insight_ids, list))
+        check("  finding remains unchanged", saved.summary == before)
 
         cons = test_store.get_contradictions(run_id)
         if cons:

@@ -1,0 +1,19 @@
+{% from "partials/icons.html" import icon %}
+{% set proposed = proposal | default({"id": "", "proposed_summary": "", "change_note": ""}, true) %}
+<section class="review-note is-revision" data-workspace-proposal-id="{{ proposed.id }}">
+  <p class="eyebrow">PROPOSED UPDATE</p>
+  <label for="proposal-{{ proposed.id }}">Proposed finding</label>
+  <textarea id="proposal-{{ proposed.id }}" readonly>{{ proposed.proposed_summary }}</textarea>
+  <p>{{ proposed.change_note }}</p>
+  {% if not (locked | default(false, true)) %}
+  <div class="modal-actions">
+    <button type="button" class="btn btn-secondary" data-workspace-continue>
+      Continue researching
+    </button>
+    <button type="button" class="btn btn-primary"
+            data-workspace-apply-url="/runs/{{ run.id }}/insights/{{ insight.id }}/workspace/proposals/{{ proposed.id }}/apply">
+      {{ icon('check', 14) }} Apply update
+    </button>
+  </div>
+  {% endif %}
+</section>
