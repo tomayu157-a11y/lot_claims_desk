@@ -86,14 +86,27 @@ class InsightCardReconciler:
         covered = not unsupported_fields
         input_reason = "" if covered else "Evidence support is required for the proposed factual update."
         evidence_by_id = {item.id: item for item in selected_evidence}
-        active_evidence = [evidence_by_id[item_id] for item_id in supported_ids]
+        preserved_ids = [item_id for item_id in before.evidence_ids if item_id in evidence_by_id]
+        active_ids = _stable_unique([*preserved_ids, *supported_ids])
+        active_evidence = [
+            evidence_by_id[item_id] for item_id in active_ids if item_id in evidence_by_id
+        ]
         derived = self.derive_state(covered, input_reason, active_evidence)
         after = candidate.model_copy(update={
             "covered": derived.covered,
             "input_reason": derived.input_reason,
-            "evidence_ids": supported_ids,
-            "source_ids": _stable_unique(item.source_id for item in active_evidence),
-            "used_web_fallback": derived.used_web_fallback,
+            "evidence_ids": active_ids,
+            "source_ids": _stable_unique([
+                *(
+                    before.source_ids
+                    if preserved_ids
+                    else []
+                ),
+                *(item.source_id for item in active_evidence),
+            ]),
+            "used_web_fallback": (
+                before.used_web_fallback if preserved_ids else False
+            ) or derived.used_web_fallback,
         })
         diff = diff_card_content(before, after)
         if not diff.changes:

@@ -280,16 +280,59 @@ class Store:
             current = Insight.model_validate_json(row["doc"])
             if insight_snapshot_digest(current) != expected_insight_digest:
                 raise StaleInsightRevision("Insight changed")
+            run_row = connection.execute(
+                "SELECT doc FROM runs WHERE id=?", (run.id,),
+            ).fetchone()
+            if run_row is None:
+                raise StaleInsightRevision("Run no longer exists")
+            current_run = Run.model_validate_json(run_row["doc"])
+            incoming_entries = [
+                entry
+                for entry in (run.context.get("reviewer_inputs") or [])
+                if isinstance(entry, dict) and entry.get("insight_id") == insight.id
+            ]
+            if incoming_entries:
+                current_entries = [
+                    entry
+                    for entry in (current_run.context.get("reviewer_inputs") or [])
+                    if isinstance(entry, dict) and entry.get("insight_id") != insight.id
+                ]
+                current_entries.append(incoming_entries[-1])
+                current_run.context["reviewer_inputs"] = current_entries
             connection.execute(
                 "INSERT INTO runs(id,reference,status,indication,created_at,doc) "
                 "VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
                 "reference=excluded.reference,status=excluded.status,doc=excluded.doc",
-                (run.id, run.reference, run.status.value, run.config.indication,
-                 run.created_at.isoformat(), self._dump(run)),
+                (current_run.id, current_run.reference, current_run.status.value,
+                 current_run.config.indication, current_run.created_at.isoformat(),
+                 self._dump(current_run)),
             )
-            self._save_many_in_transaction(
-                connection, "stage_reports", run.id, reports, ("stage",),
-            )
+            for report in reports:
+                report_row = connection.execute(
+                    "SELECT doc FROM stage_reports WHERE run_id=? AND id=?",
+                    (run.id, report.id),
+                ).fetchone()
+                if report_row is None:
+                    self._save_many_in_transaction(
+                        connection, "stage_reports", run.id, [report], ("stage",),
+                    )
+                    continue
+                current_report = StageReport.model_validate_json(report_row["doc"])
+                for incoming_answer in report.answers:
+                    if incoming_answer.get("reviewer_input") != insight.reviewer_input:
+                        continue
+                    question = incoming_answer.get("question")
+                    seed = incoming_answer.get("seed")
+                    for current_answer in current_report.answers:
+                        if (
+                            question and current_answer.get("question") == question
+                        ) or (
+                            seed and current_answer.get("seed") == seed
+                        ):
+                            current_answer["reviewer_input"] = insight.reviewer_input
+                self._save_many_in_transaction(
+                    connection, "stage_reports", run.id, [current_report], ("stage",),
+                )
             connection.execute(
                 "INSERT INTO insights(id,run_id,stage,doc) VALUES(?,?,?,?) "
                 "ON CONFLICT(id) DO UPDATE SET run_id=excluded.run_id,"

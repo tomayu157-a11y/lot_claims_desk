@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Self
@@ -8,6 +9,7 @@ from typing import Self
 import httpx
 import pytest
 
+from celestra.connectors.base import HttpClient
 from celestra.connectors.firecrawl import FirecrawlConnector
 from celestra.models import EvidenceOrigin
 from celestra.services.azure_web_search import (
@@ -71,6 +73,46 @@ class FakeDirectHttp:
         if isinstance(self.html, Exception):
             raise self.html
         return self.html
+
+    async def get_public_text(self, url: str) -> str:
+        return await self.get_text(url)
+
+
+class FakeRestrictedResponse:
+    def __init__(self, status_code: int, text: str = "", location: str = "") -> None:
+        self.status_code = status_code
+        self.text = text
+        self.headers = {"location": location} if location else {}
+        self.request = httpx.Request("GET", "https://public.example/page")
+
+    @property
+    def is_redirect(self) -> bool:
+        return 300 <= self.status_code < 400
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                "status", request=self.request,
+                response=httpx.Response(self.status_code, request=self.request),
+            )
+
+
+class FakeRestrictedClient:
+    def __init__(self, responses: list[FakeRestrictedResponse]) -> None:
+        self.responses = responses
+        self.urls: list[str] = []
+        self.is_closed = False
+
+    async def get(self, url: str, *, follow_redirects: bool) -> FakeRestrictedResponse:
+        assert follow_redirects is False
+        self.urls.append(url)
+        return self.responses.pop(0)
+
+
+def _address(host: str, address: str):
+    family = socket.AF_INET6 if ":" in address else socket.AF_INET
+    sockaddr = (address, 443, 0, 0) if family == socket.AF_INET6 else (address, 443)
+    return family, socket.SOCK_STREAM, 6, "", sockaddr
 
 
 def azure_settings() -> Settings:
@@ -250,6 +292,58 @@ async def test_direct_hydration_rejects_short_page_and_short_result_snippet() ->
                                      http_client=FakeDirectHttp("<main>Short.</main>"))
     assert outcome.status == "unusable"
     assert outcome.text == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("address", [
+    "127.0.0.1", "10.0.0.1", "169.254.1.1", "::1", "fc00::1", "fe80::1",
+], ids=["ipv4-loopback", "ipv4-private", "ipv4-link-local", "ipv6-loopback", "ipv6-private", "ipv6-link-local"])
+async def test_restricted_direct_fetch_rejects_non_public_resolved_destinations(monkeypatch, address: str) -> None:
+    client = HttpClient()
+    restricted = FakeRestrictedClient([FakeRestrictedResponse(200, "never fetched")])
+    client._client = restricted
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, port, **kwargs: [_address(host, address)])
+
+    with pytest.raises(ValueError, match="public"):
+        await client.get_public_text("https://public.example/page")
+
+    assert restricted.urls == []
+
+
+@pytest.mark.asyncio
+async def test_restricted_direct_fetch_rejects_a_redirect_to_a_private_destination(monkeypatch) -> None:
+    client = HttpClient()
+    restricted = FakeRestrictedClient([
+        FakeRestrictedResponse(302, location="http://private.example/internal"),
+    ])
+    client._client = restricted
+    addresses = {
+        "public.example": "93.184.216.34",
+        "private.example": "10.0.0.1",
+    }
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, **kwargs: [_address(host, addresses[host])],
+    )
+
+    with pytest.raises(ValueError, match="public"):
+        await client.get_public_text("https://public.example/page")
+
+    assert restricted.urls == ["https://public.example/page"]
+
+
+@pytest.mark.asyncio
+async def test_restricted_direct_fetch_accepts_a_public_https_destination(monkeypatch) -> None:
+    client = HttpClient()
+    restricted = FakeRestrictedClient([FakeRestrictedResponse(200, "Public page text")])
+    client._client = restricted
+    monkeypatch.setattr(
+        socket, "getaddrinfo",
+        lambda host, port, **kwargs: [_address(host, "93.184.216.34")],
+    )
+
+    assert await client.get_public_text("https://public.example/page") == "Public page text"
+    assert restricted.urls == ["https://public.example/page"]
 
 
 @pytest.mark.asyncio

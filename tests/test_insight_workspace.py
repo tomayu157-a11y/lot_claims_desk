@@ -1274,6 +1274,60 @@ async def test_reviewer_input_commit_rejects_stale_card_without_writing_context_
     assert [item.model_dump_json() for item in apply_store.get_stage_reports(run.id)] == before_reports
 
 
+def test_reviewer_input_commits_from_two_stores_merge_distinct_card_context_and_reports(tmp_path):
+    """Independent Add Input requests retain each other's document-side updates."""
+    primary, run, selected, other = seeded_store(tmp_path)
+    primary.save_stage_reports(run.id, [StageReport(
+        run_id=run.id,
+        stage=selected.stage,
+        bucket=selected.bucket,
+        name="Line-of-therapy evidence",
+        core_question="Which operational rules apply?",
+        agent_name="Treatment Evidence Agent",
+        answers=[
+            {"question": "Which gap and regimen-change rules are needed?"},
+            {"question": "OTHER_QUESTION_SECRET: how is unrelated evidence handled?"},
+        ],
+    )])
+    first_store = Store(primary.path)
+    second_store = Store(primary.path)
+
+    first_card = first_store.get_insight(run.id, selected.id)
+    first_run = first_store.get_run(run.id)
+    first_report = first_store.get_stage_reports(run.id)[0]
+    second_card = second_store.get_insight(run.id, other.id)
+    second_run = second_store.get_run(run.id)
+    second_report = second_store.get_stage_reports(run.id)[0]
+    assert all((first_card, first_run, second_card, second_run))
+
+    first_card.review_action = ReviewAction.INPUT_ADDED
+    first_card.reviewer_input = "Use the clinical reviewer's gap definition."
+    first_card.confidence = Confidence.READY
+    first_run.context["reviewer_inputs"] = [{"insight_id": first_card.id, "input": first_card.reviewer_input}]
+    first_report.answers[0]["reviewer_input"] = first_card.reviewer_input
+
+    second_card.review_action = ReviewAction.INPUT_ADDED
+    second_card.reviewer_input = "Use the unrelated evidence handling rule."
+    second_card.confidence = Confidence.READY
+    second_run.context["reviewer_inputs"] = [{"insight_id": second_card.id, "input": second_card.reviewer_input}]
+    second_report.answers[1]["reviewer_input"] = second_card.reviewer_input
+
+    first_store.commit_reviewer_input_if_unchanged(
+        first_card, insight_snapshot_digest(selected), first_run, [first_report],
+    )
+    second_store.commit_reviewer_input_if_unchanged(
+        second_card, insight_snapshot_digest(other), second_run, [second_report],
+    )
+
+    persisted_run = primary.get_run(run.id)
+    persisted_report = primary.get_stage_reports(run.id)[0]
+    assert {entry["insight_id"] for entry in persisted_run.context["reviewer_inputs"]} == {
+        selected.id, other.id,
+    }
+    assert persisted_report.answers[0]["reviewer_input"] == first_card.reviewer_input
+    assert persisted_report.answers[1]["reviewer_input"] == second_card.reviewer_input
+
+
 @pytest.mark.asyncio
 async def test_direct_reviewer_action_returns_conflict_for_a_stale_card(tmp_path, monkeypatch):
     store, run, selected, _ = seeded_store(tmp_path)

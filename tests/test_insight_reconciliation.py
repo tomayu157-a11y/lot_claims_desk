@@ -171,6 +171,82 @@ def test_reconciler_keeps_a_review_note_only_update_applyable_without_evidence()
     assert proposal.unsupported_factual_fields == []
 
 
+def test_reconciler_keeps_existing_active_support_for_a_review_note_only_update():
+    first = selected_evidence().model_copy(update={"id": "ev_one", "source_id": "source_one"})
+    second = selected_evidence().model_copy(update={"id": "ev_two", "source_id": "source_two"})
+    insight = populated_insight(covered=True, input_reason="")
+    editorial = {
+        "summary": insight.summary,
+        "detail": insight.detail,
+        "evidence_type": insight.evidence_type,
+        "evidence": insight.evidence,
+        "interpretation": insight.interpretation,
+        "review_note": "Clarified for the next reviewer.",
+    }
+
+    proposal = InsightCardReconciler().propose(
+        insight, [first, second], editorial, [],
+        {"review_note": "Editorial clarification."}, [],
+    )
+
+    assert proposal.applyable is True
+    assert proposal.after_content.evidence_ids == ["ev_one", "ev_two"]
+    assert proposal.after_content.source_ids == ["source_one", "source_two"]
+    assert proposal.after_content.used_web_fallback is True
+
+
+def test_reconciler_adds_required_support_for_a_factual_edit_without_dropping_existing_support():
+    first = selected_evidence().model_copy(update={"id": "ev_one", "source_id": "source_one"})
+    second = selected_evidence().model_copy(update={"id": "ev_two", "source_id": "source_two"})
+    added = selected_evidence().model_copy(update={"id": "ev_added", "source_id": "source_added"})
+    insight = populated_insight(covered=True, input_reason="")
+    editorial = {
+        "summary": "Updated summary supported by the new evidence.",
+        "detail": insight.detail,
+        "evidence_type": insight.evidence_type,
+        "evidence": insight.evidence,
+        "interpretation": insight.interpretation,
+        "review_note": insight.review_note,
+    }
+
+    proposal = InsightCardReconciler().propose(
+        insight, [first, second, added], editorial,
+        [InsightFieldSupport(field="summary", evidence_ids=[added.id])],
+        {"summary": "The new source supports the updated finding."}, [],
+    )
+
+    assert proposal.applyable is True
+    assert proposal.after_content.evidence_ids == ["ev_one", "ev_two", "ev_added"]
+    assert proposal.after_content.source_ids == ["source_one", "source_two", "source_added"]
+
+
+def test_reconciler_keeps_existing_active_support_for_an_evidence_format_only_update():
+    first = selected_evidence().model_copy(update={"id": "ev_one", "source_id": "source_one"})
+    second = selected_evidence().model_copy(update={"id": "ev_two", "source_id": "source_two"})
+    insight = populated_insight(
+        evidence_type="steps", evidence=["Observe treatment", "Apply the rule"],
+        covered=True, input_reason="",
+    )
+    editorial = {
+        "summary": insight.summary,
+        "detail": insight.detail,
+        "evidence_type": "list",
+        "evidence": insight.evidence,
+        "interpretation": insight.interpretation,
+        "review_note": insight.review_note,
+    }
+
+    proposal = InsightCardReconciler().propose(
+        insight, [first, second], editorial, [],
+        {"evidence_type": "The display format is clearer for reviewers."}, [],
+    )
+
+    assert proposal.applyable is True
+    assert proposal.after_content.evidence_ids == ["ev_one", "ev_two"]
+    assert proposal.after_content.source_ids == ["source_one", "source_two"]
+    assert proposal.after_content.used_web_fallback is True
+
+
 def test_reconciler_derives_general_knowledge_for_supplementary_only_support():
     supplementary = selected_evidence(origin=EvidenceOrigin.OPEN_WEB)
     proposal = InsightCardReconciler().propose(

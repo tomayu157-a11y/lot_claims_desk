@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
+import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urljoin, urlparse
 
 import httpx
 
@@ -225,6 +228,43 @@ class HttpClient:
     async def get_text(self, url: str, **kw: Any) -> str:
         kw["as_json"] = False
         return await self.request("GET", url, **kw)
+
+    async def get_public_text(self, url: str) -> str:
+        """Fetch one public web page, re-validating every redirect destination."""
+        current_url = url
+        async with self._sem:
+            client = await self.client()
+            for _ in range(6):
+                _validate_public_destination(current_url)
+                response = await client.get(current_url, follow_redirects=False)
+                if response.is_redirect:
+                    location = response.headers.get("location")
+                    if not location:
+                        raise ValueError("redirect destination is missing")
+                    current_url = urljoin(current_url, location)
+                    continue
+                response.raise_for_status()
+                return response.text
+        raise ValueError("too many redirects")
+
+
+def _validate_public_destination(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("destination must use http or https with a hostname")
+    try:
+        addresses = socket.getaddrinfo(
+            parsed.hostname, parsed.port or (443 if parsed.scheme.lower() == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
+    except OSError as exc:
+        raise ValueError("destination could not be resolved") from exc
+    resolved = {
+        ipaddress.ip_address(record[4][0])
+        for record in addresses
+    }
+    if not resolved or any(not address.is_global for address in resolved):
+        raise ValueError("destination must resolve only to public addresses")
 
 
 http = HttpClient()

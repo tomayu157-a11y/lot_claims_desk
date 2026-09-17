@@ -69,7 +69,7 @@ async def hydrate_web_page(
 
     try:
         client = http_client or http
-        html = await client.get_text(normalized_url)
+        html = await client.get_public_text(normalized_url)
         text = _page_text(html)
         if text:
             return WebPageHydration("hydrated", text=text, title=_title(html))
