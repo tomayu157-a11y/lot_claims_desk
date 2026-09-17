@@ -546,8 +546,6 @@ class InsightWorkspaceService:
                 "",
             )
             updated_insight = insight.model_copy(deep=True)
-            for field in MUTABLE_CARD_FIELDS:
-                setattr(updated_insight, field, getattr(proposal.after_content, field))
             active_evidence = [
                 Evidence(
                     id=source.id,
@@ -570,15 +568,22 @@ class InsightWorkspaceService:
                 for source in proposal_sources
             ]
             derived = InsightCardReconciler.derive_state(
-                updated_insight.covered,
-                updated_insight.input_reason,
+                proposal.after_content.covered,
+                proposal.after_content.input_reason,
                 active_evidence,
             )
+            applied_content = proposal.after_content.model_copy(
+                update={
+                    "covered": derived.covered,
+                    "input_reason": derived.input_reason,
+                    "used_web_fallback": derived.used_web_fallback,
+                }
+            )
+            for field in MUTABLE_CARD_FIELDS:
+                setattr(updated_insight, field, getattr(applied_content, field))
             updated_insight.review_action = ReviewAction.MODIFIED
             updated_insight.confidence = derived.confidence
             updated_insight.tag = derived.tag
-            updated_insight.covered = derived.covered
-            updated_insight.input_reason = derived.input_reason
             updated_insight.reviewed_at = utcnow()
             updated_insight.revision_note = proposal.change_note[:400]
             updated_insight.user_input = latest_input
@@ -613,7 +618,7 @@ class InsightWorkspaceService:
                     applied_summary=updated_insight.summary,
                     source_ids=source_ids,
                     before_content=before_content,
-                    after_content=proposal.after_content,
+                    after_content=applied_content,
                     changed_fields=proposal.changed_fields,
                     unchanged_fields=proposal.unchanged_fields,
                     support_by_field=proposal.support_by_field,

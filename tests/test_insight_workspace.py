@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import sqlite3
+from dataclasses import replace
 
 import pytest
 from fastapi import HTTPException
@@ -9,6 +10,7 @@ from fastapi import HTTPException
 import celestra.main as main_mod
 import celestra.services.insight_web_research as web_research_mod
 from celestra.models import (
+    AppliedInsightRevision,
     Confidence,
     Evidence,
     EvidenceOrigin,
@@ -37,7 +39,7 @@ from celestra.services.insight_reconciliation import (
 )
 from celestra.services.insight_research import ProposalDraft, ResearchTurnResult
 from celestra.services.insight_workspace import InsightWorkspaceService
-from celestra.store import Store
+from celestra.store import InsightCardRevisionCommit, Store
 
 
 def seeded_store(tmp_path):
@@ -998,6 +1000,30 @@ def seeded_store_with_stage_report(tmp_path):
     return store, run, selected, other
 
 
+async def pending_card_commit(store, run, selected):
+    service = proposal_service(store)
+    proposal = await service.propose(run.id, selected.id)
+    current = store.get_insight(run.id, selected.id)
+    updated = current.model_copy(deep=True)
+    for field, value in proposal.after_content.model_dump().items():
+        setattr(updated, field, value)
+    workspace = service.load(run.id, selected.id).model_copy(deep=True)
+    workspace.applied_revisions.append(
+        AppliedInsightRevision(
+            proposal_id=proposal.id,
+            before_content=proposal.before_content,
+            after_content=proposal.after_content,
+        )
+    )
+    workspace.pending_proposal = None
+    return InsightCardRevisionCommit(
+        insight=updated,
+        new_evidence=[],
+        workspace=workspace,
+        expected_content_digest=insight_card_digest(current),
+    )
+
+
 @pytest.mark.asyncio
 async def test_proposal_is_persisted_without_mutating_insight(tmp_path):
     store, run, selected, _ = seeded_store(tmp_path)
@@ -1117,13 +1143,23 @@ async def test_apply_rejects_a_legacy_summary_only_pending_proposal(tmp_path):
 @pytest.mark.asyncio
 async def test_locked_run_allows_send_but_rejects_proposal_and_apply(tmp_path):
     store, run, selected, _ = seeded_store(tmp_path)
+    service = proposal_service(store)
+    proposal = await service.propose(run.id, selected.id)
     run.status = RunStatus.APPROVED
     store.save_run(run)
-    service = proposal_service(store)
     assert [event async for event in service.send(run.id, selected.id, "Explain this")]
+    before_insight = store.get_insight(run.id, selected.id)
+    before_workspace = service.load(run.id, selected.id)
+    before_evidence = store.get_evidence(run.id)
     with pytest.raises(HTTPException) as exc:
         await service.propose(run.id, selected.id)
     assert exc.value.status_code == 409
+    with pytest.raises(HTTPException) as exc:
+        await service.apply(run.id, selected.id, proposal.id)
+    assert exc.value.status_code == 409
+    assert store.get_insight(run.id, selected.id) == before_insight
+    assert store.get_insight_workspace(run.id, selected.id) == before_workspace
+    assert store.get_evidence(run.id) == before_evidence
 
 
 @pytest.mark.asyncio
@@ -1205,6 +1241,69 @@ async def test_apply_reconciles_only_selected_full_card_and_preserves_other_docu
     assert revision.after_content == proposal.after_content
     assert revision.changed_fields == proposal.changed_fields
     assert revision.source_ids == proposal.source_ids
+
+
+@pytest.mark.asyncio
+async def test_apply_derives_web_usage_for_card_and_history_from_active_evidence(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+
+    async def proposal_with_untrusted_web_state(context, registry, llm_client):
+        draft = await deterministic_proposal(context, registry, llm_client)
+        return ProposalDraft(
+            proposal=draft.proposal.model_copy(
+                update={
+                    "after_content": draft.proposal.after_content.model_copy(
+                        update={"used_web_fallback": False}
+                    )
+                }
+            ),
+            evidence=draft.evidence,
+            sites=draft.sites,
+        )
+
+    service = proposal_service(store, proposal_builder=proposal_with_untrusted_web_state)
+    proposal = await service.propose(run.id, selected.id)
+    assert proposal.after_content.used_web_fallback is False
+
+    result = await service.apply(run.id, selected.id, proposal.id)
+
+    assert result.insight.used_web_fallback is True
+    assert result.workspace.applied_revisions[-1].after_content.used_web_fallback is True
+
+
+@pytest.mark.asyncio
+async def test_store_commit_rejects_a_workspace_for_another_insight(tmp_path):
+    store, run, selected, other = seeded_store(tmp_path)
+    commit = await pending_card_commit(store, run, selected)
+    other_workspace = proposal_service(store).load(run.id, other.id).model_copy(deep=True)
+    other_workspace.applied_revisions.append(
+        AppliedInsightRevision(proposal_id=commit.workspace.applied_revisions[-1].proposal_id)
+    )
+    malformed = replace(commit, workspace=other_workspace)
+    before_selected = store.get_insight(run.id, selected.id)
+    before_other_workspace = store.get_insight_workspace(run.id, other.id)
+
+    with pytest.raises(ValueError, match="selected insight"):
+        store.commit_insight_card_revision(malformed)
+
+    assert store.get_insight(run.id, selected.id) == before_selected
+    assert store.get_insight_workspace(run.id, other.id) == before_other_workspace
+
+
+@pytest.mark.asyncio
+async def test_store_commit_rejects_a_structural_card_change(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    commit = await pending_card_commit(store, run, selected)
+    malformed = replace(
+        commit,
+        insight=commit.insight.model_copy(update={"question_ids": ["q_other"]}),
+    )
+    before = store.get_insight(run.id, selected.id)
+
+    with pytest.raises(ValueError, match="fixed fields"):
+        store.commit_insight_card_revision(malformed)
+
+    assert store.get_insight(run.id, selected.id) == before
 
 
 @pytest.mark.asyncio

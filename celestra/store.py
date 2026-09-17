@@ -29,6 +29,23 @@ from .settings import DATA_DIR
 
 T = TypeVar("T")
 
+_FIXED_INSIGHT_REVISION_FIELDS = (
+    "id",
+    "run_id",
+    "stage",
+    "bucket",
+    "category",
+    "title",
+    "number",
+    "card_key",
+    "question_ids",
+    "table_titles",
+    "reviewer_input",
+    "reviewer_files",
+    "created_at",
+    "impacted_insight_ids",
+)
+
 
 class StaleInsightRevision(Exception):
     """The selected finding or pending proposal changed before Apply."""
@@ -234,6 +251,11 @@ class Store:
             current = Insight.model_validate_json(row["doc"])
             if insight_card_digest(current) != commit.expected_content_digest:
                 raise StaleInsightRevision("Insight content changed")
+            if any(
+                getattr(commit.insight, field) != getattr(current, field)
+                for field in _FIXED_INSIGHT_REVISION_FIELDS
+            ):
+                raise ValueError("Insight card fixed fields changed")
 
             workspace_row = connection.execute(
                 "SELECT doc FROM insight_workspaces WHERE run_id=? AND insight_id=?",
@@ -242,6 +264,12 @@ class Store:
             if workspace_row is None:
                 raise StaleInsightRevision("Insight workspace no longer exists")
             current_workspace = InsightWorkspace.model_validate_json(workspace_row["doc"])
+            if (
+                commit.workspace.run_id != current_workspace.run_id
+                or commit.workspace.insight_id != current_workspace.insight_id
+                or commit.workspace.id != current_workspace.id
+            ):
+                raise ValueError("Commit workspace must identify the selected insight")
             applied_proposal_id = (
                 commit.workspace.applied_revisions[-1].proposal_id
                 if commit.workspace.applied_revisions else ""
