@@ -9,27 +9,35 @@ from fastapi import HTTPException
 import celestra.main as main_mod
 import celestra.services.insight_web_research as web_research_mod
 from celestra.models import (
-    AnswerStatus,
     Confidence,
     Evidence,
     EvidenceOrigin,
     Insight,
+    InsightCardContent,
     InsightRevisionProposal,
     InsightWorkspaceMessage,
     InsightWorkspaceSource,
     ResearchQuestion,
     ReviewAction,
+    ReviewerFile,
     Run,
     RunConfig,
     RunStatus,
+    VerificationTag,
     WorkspaceEventType,
     WorkspaceMessageRole,
     WorkspaceMessageState,
     workspace_id,
 )
+from celestra.services.insight_reconciliation import (
+    MUTABLE_CARD_FIELDS,
+    diff_card_content,
+    insight_card_content,
+    insight_card_digest,
+)
 from celestra.services.insight_research import ProposalDraft, ResearchTurnResult
 from celestra.services.insight_workspace import InsightWorkspaceService
-from celestra.store import InsightRevisionCommit, Store
+from celestra.store import Store
 
 
 def seeded_store(tmp_path):
@@ -893,6 +901,21 @@ async def deterministic_proposal(context, registry, llm_client):
         quote="Supplementary evidence supports an operational update.",
         origin=EvidenceOrigin.OPEN_WEB,
     )
+    before = insight_card_content(context.insight)
+    after = InsightCardContent(
+        summary="Proposed operational finding.",
+        detail="Apply the revised operational rule to the selected finding.",
+        evidence_type="list",
+        evidence=["Use the verified operational rule."],
+        interpretation="The selected cohort logic needs the revised rule.",
+        review_note="Review the operational impact with the methodology lead.",
+        covered=True,
+        input_reason="",
+        evidence_ids=[context.evidence[0].id, supplementary.id],
+        source_ids=[context.evidence[0].source_id, supplementary.source_id],
+        used_web_fallback=True,
+    )
+    card_diff = diff_card_content(before, after)
     return ProposalDraft(
         proposal=InsightRevisionProposal(
             id="wprop_deterministic",
@@ -909,6 +932,15 @@ async def deterministic_proposal(context, registry, llm_client):
                 {"url": "https://example.org/consulted", "title": "Consulted", "used": False},
             ],
             base_summary_digest=hashlib.sha256(context.insight.summary.encode()).hexdigest(),
+            before_content=before,
+            after_content=after,
+            changed_fields=card_diff.changes,
+            unchanged_fields=card_diff.unchanged_fields,
+            change_reasons={
+                change.field: "Scoped evidence supports this full-card update."
+                for change in card_diff.changes
+            },
+            base_content_digest=insight_card_digest(context.insight),
         ),
         evidence=[*context.evidence, supplementary],
         sites=[
@@ -966,24 +998,6 @@ def seeded_store_with_stage_report(tmp_path):
     return store, run, selected, other
 
 
-def revision_commit(store, run, selected):
-    question = next(
-        item for item in store.get_questions(run.id) if item.id == selected.question_ids[0]
-    )
-    report = next(item for item in store.get_stage_reports(run.id) if item.stage == question.stage)
-    workspace = proposal_service(store).load(run.id, selected.id)
-    changed = selected.model_copy(deep=True)
-    changed.summary = "Committed operational finding."
-    return InsightRevisionCommit(
-        insight=changed,
-        question=question,
-        stage_reports=[report],
-        new_evidence=[],
-        workspace=workspace,
-        expected_summary_digest=hashlib.sha256(selected.summary.encode()).hexdigest(),
-    )
-
-
 @pytest.mark.asyncio
 async def test_proposal_is_persisted_without_mutating_insight(tmp_path):
     store, run, selected, _ = seeded_store(tmp_path)
@@ -1030,6 +1044,77 @@ async def test_stale_proposal_is_rejected_without_mutation(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("summary", "Changed after proposal."),
+        ("detail", "Changed detail after proposal."),
+        ("evidence_type", "list"),
+        ("evidence", ["Changed evidence after proposal."]),
+        ("interpretation", "Changed interpretation after proposal."),
+        ("review_note", "Changed review note after proposal."),
+        ("covered", False),
+        ("input_reason", "Changed input reason after proposal."),
+        ("evidence_ids", []),
+        ("source_ids", ["changed_source"]),
+        ("used_web_fallback", True),
+    ],
+)
+async def test_apply_rejects_any_mutable_state_change_and_keeps_pending_proposal(
+    tmp_path, field, replacement,
+):
+    assert field in MUTABLE_CARD_FIELDS
+    store, run, selected, _ = seeded_store(tmp_path)
+    service = proposal_service(store)
+    proposal = await service.propose(run.id, selected.id)
+    changed = store.get_insight(run.id, selected.id).model_copy(update={field: replacement})
+    store.save_insights(run.id, [changed])
+
+    with pytest.raises(HTTPException) as exc:
+        await service.apply(run.id, selected.id, proposal.id)
+
+    assert exc.value.status_code == 409
+    assert service.load(run.id, selected.id).pending_proposal.id == proposal.id
+
+
+@pytest.mark.asyncio
+async def test_apply_preserves_a_fixed_change_while_applying_the_full_snapshot(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    service = proposal_service(store)
+    proposal = await service.propose(run.id, selected.id)
+    changed = store.get_insight(run.id, selected.id).model_copy(
+        update={"title": "Reviewer-adjusted fixed title"}
+    )
+    store.save_insights(run.id, [changed])
+
+    result = await service.apply(run.id, selected.id, proposal.id)
+
+    assert result.insight.title == "Reviewer-adjusted fixed title"
+    assert result.insight.summary == proposal.after_content.summary
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_a_legacy_summary_only_pending_proposal(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    service = proposal_service(store)
+    workspace = service.load(run.id, selected.id)
+    proposal = InsightRevisionProposal(
+        id="wprop_legacy",
+        proposed_summary="Legacy summary only.",
+        base_summary_digest=hashlib.sha256(selected.summary.encode()).hexdigest(),
+    )
+    workspace.pending_proposal = proposal
+    store.save_insight_workspace(workspace)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.apply(run.id, selected.id, proposal.id)
+
+    assert exc.value.status_code == 409
+    assert "Regenerate" in exc.value.detail
+    assert service.load(run.id, selected.id).pending_proposal == proposal
+
+
+@pytest.mark.asyncio
 async def test_locked_run_allows_send_but_rejects_proposal_and_apply(tmp_path):
     store, run, selected, _ = seeded_store(tmp_path)
     run.status = RunStatus.APPROVED
@@ -1041,124 +1126,160 @@ async def test_locked_run_allows_send_but_rejects_proposal_and_apply(tmp_path):
     assert exc.value.status_code == 409
 
 
-def test_atomic_commit_rolls_back_when_stage_report_write_fails(tmp_path):
+@pytest.mark.asyncio
+async def test_apply_rolls_back_evidence_card_and_workspace_after_evidence_write_fails(tmp_path):
     store, run, selected, _ = seeded_store_with_stage_report(tmp_path)
-    before = store.get_insight(run.id, selected.id)
+    service = proposal_service(store)
+    proposal = await service.propose(run.id, selected.id)
+    before_insight = store.get_insight(run.id, selected.id)
+    before_workspace = service.load(run.id, selected.id)
+    before_evidence_ids = {item.id for item in store.get_evidence(run.id)}
     connection = store._conn()
     connection.execute(
-        "CREATE TRIGGER reject_stage_update BEFORE UPDATE ON stage_reports "
+        "CREATE TRIGGER reject_evidence_insert AFTER INSERT ON evidence "
         "BEGIN SELECT RAISE(ABORT, 'forced rollback'); END"
     )
     with pytest.raises(sqlite3.DatabaseError, match="forced rollback"):
-        store.commit_insight_revision(revision_commit(store, run, selected))
-    assert store.get_insight(run.id, selected.id) == before
-    assert store.get_insight_workspace(run.id, selected.id).applied_revisions == []
+        await service.apply(run.id, selected.id, proposal.id)
+    assert store.get_insight(run.id, selected.id) == before_insight
+    assert {item.id for item in store.get_evidence(run.id)} == before_evidence_ids
+    restored_workspace = service.load(run.id, selected.id)
+    assert restored_workspace.pending_proposal == before_workspace.pending_proposal
+    assert restored_workspace.applied_revisions == before_workspace.applied_revisions
 
 
 @pytest.mark.asyncio
-async def test_apply_promotes_proposal_sources_and_audited_sites_only_after_apply(tmp_path):
+async def test_apply_reconciles_only_selected_full_card_and_preserves_other_documents(tmp_path):
     store, run, selected, _ = seeded_store_with_stage_report(tmp_path)
+    selected = selected.model_copy(update={
+        "detail": "Old selected detail.",
+        "evidence_type": "list",
+        "evidence": ["Old selected rule."],
+        "interpretation": "Old selected interpretation.",
+        "review_note": "Old selected review note.",
+        "reviewer_input": "Reviewer-authored direction.",
+        "reviewer_files": [
+            ReviewerFile(
+                id="rf_selected",
+                filename="reviewer-note.txt",
+                kind="txt",
+                size_bytes=12,
+                markdown="Reviewer-owned attachment.",
+            )
+        ],
+        "tag": VerificationTag.NOT_VERIFIED,
+        "table_titles": ["Selected table"],
+    })
+    store.save_insights(run.id, [selected])
     service = proposal_service(store)
     proposal = await service.propose(run.id, selected.id)
-    before_question = store.get_questions(run.id)[0]
-    assert before_question.web_sites == []
-    assert all(item.id != "ev_proposed" for item in store.get_evidence_for(run.id, before_question.id))
+    before_insights = {item.id: item.model_dump_json() for item in store.get_insights(run.id)}
+    before_questions = [item.model_dump_json() for item in store.get_questions(run.id)]
+    before_reports = [item.model_dump_json() for item in store.get_stage_reports(run.id)]
 
     result = await service.apply(run.id, selected.id, proposal.id)
-    question = store.get_questions(run.id)[0]
-    report = store.get_stage_reports(run.id)[0]
-    assert result.insight.source_ids == ["selected_source", "supplementary_source"]
-    assert result.insight.evidence_ids == ["ev_selected", "ev_proposed"]
-    assert {item.id for item in store.get_evidence_for(run.id, question.id)} == {
-        "ev_selected", "ev_proposed"
-    }
-    assert question.answer_text == "Proposed operational finding."
-    assert question.answer_status is AnswerStatus.ANSWERED
-    assert question.web_sites == [
-        {"url": "https://example.org/proposed", "title": "Proposed", "used": True},
-        {"url": "https://example.org/consulted", "title": "Consulted", "used": False},
-    ]
-    assert report.answers[0]["answer"] == "Proposed operational finding."
+    after_insights = {item.id: item.model_dump_json() for item in store.get_insights(run.id)}
+
+    assert {
+        insight_id
+        for insight_id, before_json in before_insights.items()
+        if after_insights[insight_id] != before_json
+    } == {selected.id}
+    assert [item.model_dump_json() for item in store.get_questions(run.id)] == before_questions
+    assert [item.model_dump_json() for item in store.get_stage_reports(run.id)] == before_reports
+    assert after_insights["ins_other"] == before_insights["ins_other"]
+    for field, value in proposal.after_content.model_dump().items():
+        assert getattr(result.insight, field) == value
+    assert result.insight.reviewer_input == selected.reviewer_input
+    assert result.insight.reviewer_files == selected.reviewer_files
+    assert result.insight.question_ids == selected.question_ids
+    assert result.insight.table_titles == selected.table_titles
     assert result.insight.review_action is ReviewAction.MODIFIED
     assert result.insight.confidence is Confidence.READY
+    assert result.insight.tag is VerificationTag.VERIFIED
+    assert {item.id for item in store.get_evidence(run.id)} >= {"ev_selected", "ev_proposed"}
+    promoted = next(item for item in store.get_evidence(run.id) if item.id == "ev_proposed")
+    assert promoted.question_id in selected.question_ids
+    revision = result.workspace.applied_revisions[-1]
+    assert revision.before_content == proposal.before_content
+    assert revision.after_content == proposal.after_content
+    assert revision.changed_fields == proposal.changed_fields
+    assert revision.source_ids == proposal.source_ids
 
 
 @pytest.mark.asyncio
-async def test_apply_updates_only_the_matching_stage_report_answer_row(tmp_path):
-    store, run, selected, _ = seeded_store_with_stage_report(tmp_path)
-    report = store.get_stage_reports(run.id)[0]
-    report.answers.insert(
-        0,
-        {
-            "question": "An unrelated question in the same stage",
-            "seed": "",
-            "answer": "Unchanged answer.",
-            "status": "not_found",
-            "citations": [],
-        },
-    )
-    store.save_stage_reports(run.id, [report])
+async def test_apply_unlinks_removed_active_evidence_without_deleting_history(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
     service = proposal_service(store)
     proposal = await service.propose(run.id, selected.id)
+    workspace = service.load(run.id, selected.id)
+    removed_links = proposal.after_content.model_copy(
+        update={"evidence_ids": [], "source_ids": []}
+    )
+    workspace.pending_proposal = proposal.model_copy(
+        update={
+            "source_ids": [],
+            "after_content": removed_links,
+        }
+    )
+    store.save_insight_workspace(workspace)
 
-    await service.apply(run.id, selected.id, proposal.id)
+    result = await service.apply(run.id, selected.id, proposal.id)
 
-    rows = store.get_stage_reports(run.id)[0].answers
-    assert rows[0]["answer"] == "Unchanged answer."
-    assert rows[1]["answer"] == "Proposed operational finding."
+    assert result.insight.evidence_ids == []
+    assert result.insight.source_ids == []
+    assert {item.id for item in store.get_evidence(run.id)} == {"ev_selected", "ev_other"}
+    assert [source.id for source in result.workspace.sources] == ["ev_selected", "ev_proposed"]
+    revision = result.workspace.applied_revisions[-1]
+    assert revision.before_content.evidence_ids == ["ev_selected"]
+    assert revision.after_content.evidence_ids == []
 
 
 @pytest.mark.asyncio
-async def test_apply_promotes_assistant_site_audits_after_the_basis_message(tmp_path):
-    store, run, selected, _ = seeded_store_with_stage_report(tmp_path)
-
-    async def proposal_from_first_basis(context, registry, llm_client):
-        draft = await deterministic_proposal(context, registry, llm_client)
-        return ProposalDraft(
-            proposal=draft.proposal.model_copy(
-                update={"basis_message_ids": ["wmsg_basis"]}
-            ),
-            evidence=draft.evidence,
-            sites=draft.sites,
-        )
-
-    service = proposal_service(store, proposal_builder=proposal_from_first_basis)
+async def test_apply_rejects_active_evidence_from_another_insight_question(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    service = proposal_service(store)
+    proposal = await service.propose(run.id, selected.id)
     workspace = service.load(run.id, selected.id)
-    workspace.messages = [
-        InsightWorkspaceMessage(
-            role=WorkspaceMessageRole.ASSISTANT,
-            content="Earlier research.",
-            web_sites=[{"url": "https://example.org/before", "used": False}],
-        ),
-        InsightWorkspaceMessage(
-            id="wmsg_basis",
-            role=WorkspaceMessageRole.USER,
-            content="Revise this finding with the latest research.",
-        ),
-        InsightWorkspaceMessage(
-            role=WorkspaceMessageRole.ASSISTANT,
-            content="Later research consulted a page without a quote.",
-            web_sites=[{"url": "https://example.org/after", "used": False}],
-        ),
-        InsightWorkspaceMessage(
-            role=WorkspaceMessageRole.USER,
-            content="Research a separate follow-up topic.",
-        ),
-        InsightWorkspaceMessage(
-            role=WorkspaceMessageRole.ASSISTANT,
-            content="Separate follow-up research.",
-            web_sites=[{"url": "https://example.org/unrelated", "used": False}],
-        ),
+    workspace.sources = [
+        source.model_copy(update={"question_id": "q_other"})
+        if source.id == "ev_proposed" else source
+        for source in workspace.sources
     ]
     store.save_insight_workspace(workspace)
-    proposal = await service.propose(run.id, selected.id)
 
-    await service.apply(run.id, selected.id, proposal.id)
+    with pytest.raises(HTTPException) as exc:
+        await service.apply(run.id, selected.id, proposal.id)
 
-    sites = store.get_questions(run.id)[0].web_sites
-    assert {site["url"] for site in sites} >= {"https://example.org/after"}
-    assert "https://example.org/before" not in {site["url"] for site in sites}
-    assert "https://example.org/unrelated" not in {site["url"] for site in sites}
+    assert exc.value.status_code == 409
+    assert service.load(run.id, selected.id).pending_proposal.id == proposal.id
+    assert all(item.id != "ev_proposed" for item in store.get_evidence(run.id))
+
+
+@pytest.mark.asyncio
+async def test_propose_canonicalizes_full_snapshot_evidence_ids_before_apply(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    workspace = proposal_service(store).load(run.id, selected.id)
+    workspace.sources.append(
+        InsightWorkspaceSource(
+            id="ev_canonical",
+            question_id=selected.question_ids[0],
+            source_id="supplementary_source",
+            source_name="Supplementary source",
+            tier=3,
+            url="https://example.org/proposed",
+            quote="Supplementary evidence supports an operational update.",
+            origin=EvidenceOrigin.OPEN_WEB,
+        )
+    )
+    store.save_insight_workspace(workspace)
+
+    proposal = await proposal_service(store).propose(run.id, selected.id)
+
+    assert proposal.source_ids == ["ev_selected", "ev_canonical"]
+    assert proposal.after_content.evidence_ids == ["ev_selected", "ev_canonical"]
+    result = await proposal_service(store).apply(run.id, selected.id, proposal.id)
+    assert result.insight.evidence_ids == ["ev_selected", "ev_canonical"]
 
 
 @pytest.mark.asyncio

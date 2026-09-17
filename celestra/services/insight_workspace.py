@@ -2,17 +2,14 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 from collections.abc import AsyncIterator, Callable
 
 from fastapi import HTTPException
 
 from ..models import (
-    AnswerStatus,
     AppliedInsightRevision,
     AppliedRevisionResult,
-    Confidence,
     Evidence,
     InsightWorkspace,
     InsightWorkspaceMessage,
@@ -26,7 +23,14 @@ from ..models import (
     utcnow,
     workspace_id,
 )
-from ..store import InsightRevisionCommit, StaleInsightRevision
+from ..store import InsightCardRevisionCommit, StaleInsightRevision
+from .insight_reconciliation import (
+    MUTABLE_CARD_FIELDS,
+    InsightCardReconciler,
+    insight_card_content,
+    insight_card_digest,
+    is_complete_card_proposal,
+)
 from .insight_research import (
     ProposalUnsupported,
     ResearchContext,
@@ -440,6 +444,17 @@ class InsightWorkspaceService:
                 draft.evidence,
                 draft.source_audit,
             )
+            after_content = draft.proposal.after_content
+            if after_content is not None:
+                after_content = after_content.model_copy(
+                    update={
+                        "evidence_ids": [
+                            source_id_map[source_id]
+                            for source_id in after_content.evidence_ids
+                            if source_id in source_id_map
+                        ]
+                    }
+                )
             proposal = draft.proposal.model_copy(
                 update={
                     "source_ids": [
@@ -448,6 +463,7 @@ class InsightWorkspaceService:
                         if source_id in source_id_map
                     ],
                     "web_sites": self._deduplicated_sites(draft.proposal.web_sites + draft.sites),
+                    "after_content": after_content,
                 }
             )
             workspace.pending_proposal = proposal
@@ -488,49 +504,34 @@ class InsightWorkspaceService:
             proposal = workspace.pending_proposal
             if proposal is None or proposal.id != proposal_id:
                 raise HTTPException(409, "This proposal is no longer available. Regenerate it.")
-
-            current_digest = hashlib.sha256(insight.summary.encode()).hexdigest()
-            if proposal.base_summary_digest != current_digest:
-                raise self._stale_proposal_error()
             if run.is_locked:
                 raise HTTPException(
                     409,
                     "This document is approved and locked. Start a new project to change it.",
                 )
+            if not is_complete_card_proposal(proposal):
+                raise HTTPException(
+                    409,
+                    "This proposal uses the previous format. Regenerate it before applying.",
+                )
+            current_digest = insight_card_digest(insight)
+            if proposal.base_content_digest != current_digest:
+                raise self._stale_proposal_error()
 
-            context = self._research_context(run_id, insight_id, workspace)
-            question = context.question.model_copy(deep=True)
-            previous_summary = insight.summary
+            before_content = insight_card_content(insight)
             source_ids = list(dict.fromkeys(proposal.source_ids))
             sources_by_id = {source.id: source for source in workspace.sources}
-            proposal_sources = [
-                sources_by_id[source_id]
-                for source_id in source_ids
-                if source_id in sources_by_id
-            ]
-            cited_sources = [
-                source.organization or source.source_name for source in proposal_sources
-            ]
-            basis_message_ids = set(proposal.basis_message_ids)
-            assistant_sites = []
-            for index, message in enumerate(workspace.messages):
-                if (
-                    message.id not in basis_message_ids
-                    or message.role is not WorkspaceMessageRole.USER
-                    or message.state is not WorkspaceMessageState.COMPLETED
-                ):
-                    continue
-                for response in workspace.messages[index + 1 :]:
-                    if response.role is WorkspaceMessageRole.USER:
-                        break
-                    if (
-                        response.role is WorkspaceMessageRole.ASSISTANT
-                        and response.state is WorkspaceMessageState.COMPLETED
-                    ):
-                        assistant_sites.extend(response.web_sites)
-            sites = self._deduplicated_sites(
-                [*question.web_sites, *proposal.web_sites, *assistant_sites]
-            )
+            if (
+                source_ids != list(dict.fromkeys(proposal.after_content.evidence_ids))
+                or any(source_id not in sources_by_id for source_id in source_ids)
+            ):
+                raise HTTPException(409, "The proposal sources changed. Regenerate it.")
+            proposal_sources = [sources_by_id[source_id] for source_id in source_ids]
+            if (
+                proposal.after_content.source_ids != [source.source_id for source in proposal_sources]
+                or any(source.question_id not in insight.question_ids for source in proposal_sources)
+            ):
+                raise HTTPException(409, "The proposal sources changed. Regenerate it.")
             latest_input = next(
                 (
                     message.content.strip()[:500]
@@ -545,39 +546,47 @@ class InsightWorkspaceService:
                 "",
             )
             updated_insight = insight.model_copy(deep=True)
-            updated_insight.summary = proposal.proposed_summary[:400]
+            for field in MUTABLE_CARD_FIELDS:
+                setattr(updated_insight, field, getattr(proposal.after_content, field))
+            active_evidence = [
+                Evidence(
+                    id=source.id,
+                    question_id=source.question_id,
+                    source_id=source.source_id,
+                    source_name=source.source_name,
+                    organization=source.organization,
+                    tier=source.tier,
+                    url=source.url,
+                    title=source.title,
+                    published=source.published,
+                    quote=source.quote,
+                    context=source.context,
+                    origin=source.origin,
+                    tag=source.tag,
+                    relevance=source.relevance,
+                    identifiers=source.identifiers,
+                    retrieved_at=source.retrieved_at,
+                )
+                for source in proposal_sources
+            ]
+            derived = InsightCardReconciler.derive_state(
+                updated_insight.covered,
+                updated_insight.input_reason,
+                active_evidence,
+            )
             updated_insight.review_action = ReviewAction.MODIFIED
-            updated_insight.confidence = Confidence.READY
+            updated_insight.confidence = derived.confidence
+            updated_insight.tag = derived.tag
+            updated_insight.covered = derived.covered
+            updated_insight.input_reason = derived.input_reason
             updated_insight.reviewed_at = utcnow()
             updated_insight.revision_note = proposal.change_note[:400]
-            updated_insight.source_ids = list(dict.fromkeys([
-                *insight.source_ids,
-                *(source.source_id for source in proposal_sources),
-            ]))
-            updated_insight.evidence_ids = list(dict.fromkeys([
-                *insight.evidence_ids,
-                *source_ids,
-            ]))
-            updated_insight.used_web_fallback = (
-                insight.used_web_fallback or bool(proposal.web_sites or assistant_sites)
-            )
             updated_insight.user_input = latest_input
-
-            question.answer_text = proposal.proposed_summary
-            question.answer_status = AnswerStatus.ANSWERED
-            question.answer_citations = list(dict.fromkeys(cited_sources))
-            question.used_web_fallback = (
-                question.used_web_fallback or bool(proposal.web_sites or assistant_sites)
-            )
-            question.web_sites = sites
-
-            existing_evidence_ids = {
-                evidence.id for evidence in self.store.get_evidence_for(run_id, question.id)
-            }
+            existing_evidence_ids = {evidence.id for evidence in self.store.get_evidence(run_id)}
             new_evidence = [
                 Evidence(
                     id=source.id,
-                    question_id=question.id,
+                    question_id=source.question_id,
                     source_id=source.source_id,
                     source_name=source.source_name,
                     organization=source.organization,
@@ -597,28 +606,19 @@ class InsightWorkspaceService:
                 if source.id not in existing_evidence_ids
             ]
 
-            changed_reports = []
-            for report in self.store.get_stage_reports(run_id):
-                if report.stage != question.stage:
-                    continue
-                updated_report = report.model_copy(deep=True)
-                for row in updated_report.answers:
-                    if row.get("question") == question.text or (
-                        question.seed_text and row.get("seed") == question.seed_text
-                    ):
-                        row["answer"] = question.answer_text
-                        row["status"] = question.answer_status.value
-                        row["citations"] = question.answer_citations
-                        row["revised"] = True
-                        changed_reports.append(updated_report)
-                        break
-
             workspace.applied_revisions.append(
                 AppliedInsightRevision(
                     proposal_id=proposal.id,
-                    previous_summary=previous_summary,
+                    previous_summary=before_content.summary,
                     applied_summary=updated_insight.summary,
                     source_ids=source_ids,
+                    before_content=before_content,
+                    after_content=proposal.after_content,
+                    changed_fields=proposal.changed_fields,
+                    unchanged_fields=proposal.unchanged_fields,
+                    support_by_field=proposal.support_by_field,
+                    change_reasons=proposal.change_reasons,
+                    base_content_digest=proposal.base_content_digest,
                 )
             )
             workspace.pending_proposal = None
@@ -633,14 +633,12 @@ class InsightWorkspaceService:
             workspace.updated_at = utcnow()
 
             try:
-                self.store.commit_insight_revision(
-                    InsightRevisionCommit(
+                self.store.commit_insight_card_revision(
+                    InsightCardRevisionCommit(
                         insight=updated_insight,
-                        question=question,
-                        stage_reports=changed_reports,
                         new_evidence=new_evidence,
                         workspace=workspace,
-                        expected_summary_digest=current_digest,
+                        expected_content_digest=current_digest,
                     )
                 )
             except StaleInsightRevision as exc:

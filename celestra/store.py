@@ -6,7 +6,6 @@ table is keyed by run_id so a run can be loaded or deleted atomically.
 """
 from __future__ import annotations
 
-import hashlib
 import sqlite3
 import threading
 from collections.abc import Iterable
@@ -25,23 +24,22 @@ from .models import (
     Run,
     StageReport,
 )
+from .services.insight_reconciliation import insight_card_digest
 from .settings import DATA_DIR
 
 T = TypeVar("T")
 
 
 class StaleInsightRevision(Exception):
-    """The finding changed after a proposal captured its base summary."""
+    """The selected finding or pending proposal changed before Apply."""
 
 
 @dataclass(frozen=True)
-class InsightRevisionCommit:
+class InsightCardRevisionCommit:
     insight: Insight
-    question: ResearchQuestion
-    stage_reports: list[StageReport]
     new_evidence: list[Evidence]
     workspace: InsightWorkspace
-    expected_summary_digest: str
+    expected_content_digest: str
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -222,8 +220,8 @@ class Store:
         ).fetchone()
         return InsightWorkspace.model_validate_json(row["doc"]) if row else None
 
-    def commit_insight_revision(self, commit: InsightRevisionCommit) -> None:
-        """Atomically promote an approved workspace proposal into canonical documents."""
+    def commit_insight_card_revision(self, commit: InsightCardRevisionCommit) -> None:
+        """Atomically persist one selected card, its new evidence, and its workspace."""
         connection = self._conn()
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -234,9 +232,36 @@ class Store:
             if row is None:
                 raise StaleInsightRevision("Insight no longer exists")
             current = Insight.model_validate_json(row["doc"])
-            digest = hashlib.sha256(current.summary.encode()).hexdigest()
-            if digest != commit.expected_summary_digest:
-                raise StaleInsightRevision("Insight summary changed")
+            if insight_card_digest(current) != commit.expected_content_digest:
+                raise StaleInsightRevision("Insight content changed")
+
+            workspace_row = connection.execute(
+                "SELECT doc FROM insight_workspaces WHERE run_id=? AND insight_id=?",
+                (commit.insight.run_id, commit.insight.id),
+            ).fetchone()
+            if workspace_row is None:
+                raise StaleInsightRevision("Insight workspace no longer exists")
+            current_workspace = InsightWorkspace.model_validate_json(workspace_row["doc"])
+            applied_proposal_id = (
+                commit.workspace.applied_revisions[-1].proposal_id
+                if commit.workspace.applied_revisions else ""
+            )
+            if (
+                not applied_proposal_id
+                or current_workspace.pending_proposal is None
+                or current_workspace.pending_proposal.id != applied_proposal_id
+            ):
+                raise StaleInsightRevision("Insight proposal changed")
+
+            for evidence in commit.new_evidence:
+                if evidence.question_id not in commit.insight.question_ids:
+                    raise ValueError("New evidence must belong to a linked insight question")
+                question_row = connection.execute(
+                    "SELECT 1 FROM questions WHERE id=? AND run_id=?",
+                    (evidence.question_id, commit.insight.run_id),
+                ).fetchone()
+                if question_row is None:
+                    raise ValueError("New evidence question must belong to the insight run")
 
             connection.execute(
                 "INSERT INTO insights(id,run_id,stage,doc) VALUES(?,?,?,?) "
@@ -244,13 +269,6 @@ class Store:
                 "stage=excluded.stage,doc=excluded.doc",
                 (commit.insight.id, commit.insight.run_id, commit.insight.stage,
                  self._dump(commit.insight)),
-            )
-            connection.execute(
-                "INSERT INTO questions(id,run_id,stage,doc) VALUES(?,?,?,?) "
-                "ON CONFLICT(id) DO UPDATE SET run_id=excluded.run_id,"
-                "stage=excluded.stage,doc=excluded.doc",
-                (commit.question.id, commit.question.run_id, commit.question.stage,
-                 self._dump(commit.question)),
             )
             for evidence in commit.new_evidence:
                 connection.execute(
@@ -260,13 +278,6 @@ class Store:
                     "source_id=excluded.source_id,doc=excluded.doc",
                     (evidence.id, commit.insight.run_id, evidence.question_id,
                      evidence.source_id, self._dump(evidence)),
-                )
-            for report in commit.stage_reports:
-                connection.execute(
-                    "INSERT INTO stage_reports(id,run_id,stage,doc) VALUES(?,?,?,?) "
-                    "ON CONFLICT(id) DO UPDATE SET run_id=excluded.run_id,"
-                    "stage=excluded.stage,doc=excluded.doc",
-                    (report.id, report.run_id, report.stage, self._dump(report)),
                 )
             connection.execute(
                 "INSERT INTO insight_workspaces(id,run_id,insight_id,updated_at,doc) "
