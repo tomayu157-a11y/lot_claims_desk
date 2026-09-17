@@ -1335,6 +1335,31 @@ async def test_store_commit_rejects_an_existing_canonical_evidence_id(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_store_commit_rejects_duplicate_incoming_evidence_ids(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    commit = await pending_card_commit(store, run, selected)
+    template = next(item for item in store.get_evidence(run.id) if item.id == "ev_selected")
+    first = template.model_copy(
+        update={
+            "id": "ev_duplicate_incoming",
+            "quote": "First otherwise-new Evidence record.",
+        }
+    )
+    second = first.model_copy(update={"quote": "Second duplicate Evidence record."})
+    malformed = replace(commit, new_evidence=[first, second])
+    before_evidence = store.get_evidence(run.id)
+    before_insight = store.get_insight(run.id, selected.id)
+    before_workspace = store.get_insight_workspace(run.id, selected.id)
+
+    with pytest.raises(ValueError, match="must be unique"):
+        store.commit_insight_card_revision(malformed)
+
+    assert store.get_evidence(run.id) == before_evidence
+    assert store.get_insight(run.id, selected.id) == before_insight
+    assert store.get_insight_workspace(run.id, selected.id) == before_workspace
+
+
+@pytest.mark.asyncio
 async def test_apply_unlinks_removed_active_evidence_without_deleting_history(tmp_path):
     store, run, selected, _ = seeded_store(tmp_path)
     service = proposal_service(store)
