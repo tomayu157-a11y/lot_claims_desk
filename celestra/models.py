@@ -588,6 +588,7 @@ class WorkspaceEvent(BaseModel):
     @field_serializer("sources")
     def public_sources(self, sources: list[InsightWorkspaceSource]):
         private_fields = {
+            "identifiers",
             "search_provider",
             "search_queries",
             "hydration_status",

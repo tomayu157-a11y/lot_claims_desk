@@ -191,6 +191,7 @@ def seeded(tmp_path):
         url="https://example.org/selected",
         quote="A treatment-free gap can define a new line.",
         origin=EvidenceOrigin.APPROVED_API,
+        identifiers={"member_id": "MEM-privacy-test"},
     )
     other_evidence = Evidence(
         id="ev_workspace_other",
@@ -294,6 +295,8 @@ async def test_message_route_streams_typed_events_in_order(client, seeded):
     assert not ({"search_provider", "search_queries", "hydration_status", "citation_metadata"}
                 & set(completion["sources"][0]))
     assert "sanitized research brief" not in text
+    assert "identifiers" not in completion["sources"][0]
+    assert "MEM-privacy-test" not in text
 
 
 @pytest.mark.asyncio
@@ -319,6 +322,63 @@ async def test_workspace_routes_keep_their_methods_and_ignore_client_supplied_re
     assert applied.status_code == 200
     assert set(applied.json()) == {"card_html", "workspace_html"}
     assert "Client supplied" not in applied.json()["card_html"]
+
+
+@pytest.mark.asyncio
+async def test_azure_and_firecrawl_completion_payloads_share_one_private_free_source_shape(
+    client, monkeypatch, seeded,
+):
+    """Provider audit must not create a provider-specific or identifying SSE source payload."""
+    run_id, insight_id, store = seeded
+
+    def answerer_for(provider):
+        async def answer(context, user_text, registry, on_status, llm_client):
+            await on_status("searching_web_azure" if provider == "azure_web_search" else "azure_unavailable_trying_firecrawl")
+            return ResearchTurnResult(
+                text="Provider-neutral research result.",
+                evidence=context.evidence,
+                citations=[],
+                source_evidence_ids=[item.id for item in context.evidence],
+                searched=True,
+                note="",
+                sites=[],
+                source_audit={
+                    context.evidence[0].url: {
+                        "search_provider": provider,
+                        "search_queries": ["sanitized query secret"],
+                        "hydration_status": "hydrated",
+                        "citation_metadata": [{"raw_response": "provider raw secret"}],
+                        "claims_context": "claims context secret",
+                    },
+                },
+            )
+        return answer
+
+    source_keys = []
+    for provider in ("azure_web_search", "firecrawl"):
+        monkeypatch.setattr(
+            app_mod, "_insight_workspace_service",
+            lambda provider=provider: _service(store, answerer_for(provider)),
+        )
+        response = await client.post(
+            f"/runs/{run_id}/insights/{insight_id}/workspace/messages",
+            json={"message": f"Research through {provider}."},
+        )
+        completion = next(
+            json.loads(frame.split("\ndata: ", 1)[1])
+            for frame in response.text.split("\n\n")
+            if frame.startswith("event: answer_completed")
+        )
+        source_keys.append(set(completion["sources"][0]))
+        assert not ({"identifiers", "search_provider", "search_queries", "hydration_status",
+                    "citation_metadata", "claims_context", "raw_response"}
+                    & set(completion["sources"][0]))
+        assert "sanitized query secret" not in response.text
+        assert "provider raw secret" not in response.text
+        assert "claims context secret" not in response.text
+        assert "MEM-privacy-test" not in response.text
+
+    assert source_keys[0] == source_keys[1]
 
 
 @pytest.mark.asyncio
