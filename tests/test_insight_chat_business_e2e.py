@@ -1,6 +1,7 @@
 """Business acceptance coverage for a complete selected-card reconciliation."""
 from __future__ import annotations
 
+import json
 import re
 
 import httpx
@@ -313,6 +314,22 @@ async def test_insight_chat_reconciles_a_stale_all_rule_without_changing_other_r
         assert azure.briefs == [
             "ALL administrative claims 60-day treatment-free gap same-day combination handling"
         ]
+        answer_completed = next(
+            json.loads(frame.split("\ndata: ", 1)[1])
+            for frame in answer.text.split("\n\n")
+            if frame.startswith("event: answer_completed")
+        )
+        answer_workspace = service.load(run.id, selected.id)
+        answer_sources = {source.id: source for source in answer_workspace.sources}
+        assert answer_completed["source_ids"]
+        assert set(answer_completed["source_ids"]) == {
+            source["id"] for source in answer_completed["sources"]
+        }
+        for public_source in answer_completed["sources"]:
+            validated_source = answer_sources[public_source["id"]]
+            assert public_source["quote"] == validated_source.quote == _WEB_QUOTE
+            assert public_source["url"] == validated_source.url
+            assert public_source["source_name"] == validated_source.source_name
 
         proposal_response = await client.post(
             f"/runs/{run.id}/insights/{selected.id}/workspace/proposal", json={},
@@ -331,6 +348,8 @@ async def test_insight_chat_reconciles_a_stale_all_rule_without_changing_other_r
         workspace = service.load(run.id, selected.id)
         proposal = workspace.pending_proposal
         assert proposal is not None
+        proposed_content = proposal.after_content.model_dump(mode="json")
+        assert ["Treatment-free gap", "90 days"] not in proposed_content["evidence"]["rows"]
         evidence_by_id = {item.id: item for item in workspace.sources}
         for change in proposal.changed_fields:
             if change.field in {"summary", "detail", "evidence", "interpretation"}:
@@ -354,12 +373,18 @@ async def test_insight_chat_reconciles_a_stale_all_rule_without_changing_other_r
         assert exported.status_code == 200
 
     applied = store.get_insight(run.id, selected.id)
+    applied_content = insight_card_content(applied).model_dump(mode="json")
+    assert applied_content == proposed_content
     assert "60" in applied.summary + applied.detail
     assert "90-day" not in applied.summary + applied.detail
     assert any("same-day" in " ".join(map(str, row)).lower() for row in applied.evidence["rows"])
     assert unsupported_restart_row not in applied.evidence["rows"]
+    assert ["Treatment-free gap", "90 days"] not in applied.evidence["rows"]
+    assert applied.review_note == proposed_content["review_note"]
+    assert applied.evidence_ids == proposed_content["evidence_ids"]
+    assert applied.source_ids == proposed_content["source_ids"]
     assert {"cohort", "line", "construction"} <= _tokens(applied.interpretation)
-    assert insight_card_content(applied).model_dump(mode="json") == next(
+    assert proposed_content == next(
         insight_card_content(Insight.model_validate(card)).model_dump(mode="json")
         for card in exported.json()["insights"] if card["id"] == selected.id
     )
