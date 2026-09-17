@@ -528,7 +528,8 @@ class InsightWorkspaceService:
                 raise HTTPException(409, "The proposal sources changed. Regenerate it.")
             proposal_sources = [sources_by_id[source_id] for source_id in source_ids]
             if (
-                proposal.after_content.source_ids != [source.source_id for source in proposal_sources]
+                proposal.after_content.source_ids
+                != list(dict.fromkeys(source.source_id for source in proposal_sources))
                 or any(source.question_id not in insight.question_ids for source in proposal_sources)
             ):
                 raise HTTPException(409, "The proposal sources changed. Regenerate it.")

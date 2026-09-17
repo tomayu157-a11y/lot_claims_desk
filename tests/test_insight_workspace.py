@@ -1435,6 +1435,49 @@ async def test_propose_canonicalizes_full_snapshot_evidence_ids_before_apply(tmp
 
 
 @pytest.mark.asyncio
+async def test_apply_accepts_multiple_evidence_items_from_the_same_canonical_source(tmp_path):
+    """A full-card snapshot stores source IDs once even when it cites two quotes."""
+    store, run, selected, _ = seeded_store(tmp_path)
+
+    async def proposal_with_two_quotes_from_one_source(context, registry, llm_client):
+        draft = await deterministic_proposal(context, registry, llm_client)
+        selected_evidence = context.evidence[0]
+        second_quote = Evidence(
+            id="ev_selected_second_quote",
+            question_id=selected_evidence.question_id,
+            source_id=selected_evidence.source_id,
+            source_name=selected_evidence.source_name,
+            tier=selected_evidence.tier,
+            url=selected_evidence.url,
+            quote="A second quoted passage from the selected source supports the update.",
+            origin=selected_evidence.origin,
+        )
+        after_content = draft.proposal.after_content.model_copy(
+            update={
+                "evidence_ids": [selected_evidence.id, second_quote.id],
+                "source_ids": [selected_evidence.source_id],
+            }
+        )
+        return ProposalDraft(
+            proposal=draft.proposal.model_copy(
+                update={
+                    "source_ids": [selected_evidence.id, second_quote.id],
+                    "after_content": after_content,
+                }
+            ),
+            evidence=[selected_evidence, second_quote],
+        )
+
+    service = proposal_service(store, proposal_builder=proposal_with_two_quotes_from_one_source)
+    proposal = await service.propose(run.id, selected.id)
+
+    result = await service.apply(run.id, selected.id, proposal.id)
+
+    assert result.insight.evidence_ids == ["ev_selected", "ev_selected_second_quote"]
+    assert result.insight.source_ids == ["selected_source"]
+
+
+@pytest.mark.asyncio
 async def test_concurrent_apply_serializes_shared_workspace_lock(tmp_path):
     store, run, selected, _ = seeded_store_with_stage_report(tmp_path)
     shared_locks = {}
