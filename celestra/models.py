@@ -529,8 +529,9 @@ class InsightRevisionProposal(BaseModel):
         if {"applyable", "unsupported_factual_fields"}.issubset(value):
             return value
         normalized = dict(value)
+        if "unsupported_factual_fields" not in normalized:
+            normalized["unsupported_factual_fields"] = []
         normalized["applyable"] = False
-        normalized["unsupported_factual_fields"] = []
         return normalized
 
 

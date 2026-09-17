@@ -950,6 +950,61 @@ def test_workspace_preview_keeps_unsupported_factual_fields_read_only(env, conte
     assert "data-workspace-continue" in out
 
 
+def test_workspace_preview_keeps_hybrid_unsupported_support_warning(env, context):
+    """A supplied factual-support reason survives a legacy partial payload."""
+    source = context["workspace"].sources[0]
+    before = InsightCardContent(summary="Current summary", evidence_ids=[source.id], source_ids=[source.source_id])
+    after = before.model_copy(update={"summary": "Unsupported factual replacement"})
+    workspace_json = context["workspace"].model_dump(mode="json")
+    workspace_json["pending_proposal"] = {
+        "id": "wprop_hybrid_unsupported_preview",
+        "proposed_summary": after.summary,
+        "source_ids": [source.id],
+        "before_content": before.model_dump(mode="json"),
+        "after_content": after.model_dump(mode="json"),
+        "unsupported_factual_fields": ["summary"],
+    }
+    workspace = InsightWorkspace.model_validate(workspace_json)
+
+    out = render_workspace(env, {**context, "workspace": workspace}, locked=False)
+    warning = re.search(
+        r'<p class="workspace-removal-warning" role="status" data-workspace-apply-blocked>(.*?)</p>',
+        out,
+        re.DOTALL,
+    )
+
+    assert warning is not None
+    assert " ".join(warning.group(1).split()) == (
+        "Evidence support is required before this factual update can be applied: Summary. "
+        "Continue researching to support or remove these fields."
+    )
+    assert "This proposal predates evidence-support checks. Regenerate it before applying." not in out
+    assert "data-workspace-apply-url" not in out
+    assert "data-workspace-continue" in out
+
+
+def test_workspace_preview_keeps_missing_unsupported_state_generic(env, context):
+    """An explicit legacy applyable flag cannot enable a proposal without support detail."""
+    source = context["workspace"].sources[0]
+    before = InsightCardContent(summary="Current summary", evidence_ids=[source.id], source_ids=[source.source_id])
+    workspace_json = context["workspace"].model_dump(mode="json")
+    workspace_json["pending_proposal"] = {
+        "id": "wprop_hybrid_applyable_preview",
+        "proposed_summary": "Legacy factual replacement",
+        "source_ids": [source.id],
+        "before_content": before.model_dump(mode="json"),
+        "after_content": before.model_dump(mode="json"),
+        "applyable": True,
+    }
+    workspace = InsightWorkspace.model_validate(workspace_json)
+
+    out = render_workspace(env, {**context, "workspace": workspace}, locked=False)
+
+    assert "This proposal predates evidence-support checks. Regenerate it before applying." in out
+    assert "data-workspace-apply-url" not in out
+    assert "data-workspace-continue" in out
+
+
 def test_workspace_preview_keeps_legacy_complete_requires_input_proposal_read_only(env, context):
     """Persisted proposals from before support-state fields must ask for regeneration."""
     source = context["workspace"].sources[0]

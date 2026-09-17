@@ -270,6 +270,42 @@ def test_workspace_normalizes_a_legacy_complete_requires_input_proposal_to_read_
     assert reloaded.pending_proposal == loaded.pending_proposal
 
 
+def test_workspace_keeps_supplied_unsupported_fields_when_applyable_is_missing():
+    """A partial support-state payload remains blocked without losing its reason."""
+    proposal = InsightRevisionProposal.model_validate({
+        "id": "wprop_hybrid_support_state",
+        "proposed_summary": "Unsupported factual replacement",
+        "unsupported_factual_fields": ["summary"],
+    })
+
+    serialized = proposal.model_dump(mode="json")
+    reloaded = InsightRevisionProposal.model_validate(serialized)
+
+    assert proposal.applyable is False
+    assert proposal.unsupported_factual_fields == ["summary"]
+    assert serialized["applyable"] is False
+    assert serialized["unsupported_factual_fields"] == ["summary"]
+    assert reloaded == proposal
+
+
+def test_workspace_normalizes_missing_unsupported_fields_when_applyable_is_explicit():
+    """An enabled partial support-state payload must not regain an Apply action."""
+    proposal = InsightRevisionProposal.model_validate({
+        "id": "wprop_hybrid_applyable_state",
+        "proposed_summary": "Legacy factual replacement",
+        "applyable": True,
+    })
+
+    serialized = proposal.model_dump(mode="json")
+    reloaded = InsightRevisionProposal.model_validate(serialized)
+
+    assert proposal.applyable is False
+    assert proposal.unsupported_factual_fields == []
+    assert serialized["applyable"] is False
+    assert serialized["unsupported_factual_fields"] == []
+    assert reloaded == proposal
+
+
 def test_workspace_round_trips_a_complete_card_proposal_and_applied_history(tmp_path: Path):
     before = InsightCardContent(
         summary="Before", detail="", evidence_type="", evidence=None, interpretation="",
