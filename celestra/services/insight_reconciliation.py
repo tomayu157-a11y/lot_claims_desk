@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 
 from ..models import (
@@ -30,7 +31,7 @@ MUTABLE_CARD_FIELDS = (
 def insight_card_content(insight: Insight) -> InsightCardContent:
     """Return exactly the content a full-card revision may replace."""
     return InsightCardContent(**{
-        field: getattr(insight, field)
+        field: deepcopy(getattr(insight, field)) if field == "evidence" else getattr(insight, field)
         for field in MUTABLE_CARD_FIELDS
     })
 
@@ -80,6 +81,8 @@ def _validate_table(evidence: object) -> None:
         raise ValueError("table rows must be a non-empty list")
     if any(not isinstance(row, list) or len(row) != len(columns) for row in rows):
         raise ValueError("every table row must match the column width")
+    if any(not _non_empty_text(cell) for row in rows for cell in row):
+        raise ValueError("table row values must be non-empty strings")
 
 
 def _validate_text_items(evidence: object) -> None:

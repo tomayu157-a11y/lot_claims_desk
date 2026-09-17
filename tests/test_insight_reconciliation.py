@@ -140,6 +140,20 @@ def test_evidence_payload_rejects_a_wrong_container_type():
         validate_evidence_payload("metrics", {"label": "Median gap", "value": "60 days"})
 
 
+def test_table_evidence_rejects_blank_row_cells():
+    with pytest.raises(ValueError):
+        validate_evidence_payload("table", {"columns": ["Rule"], "rows": [[""]]})
+
+
+def test_card_snapshot_does_not_share_the_insight_evidence_object():
+    insight = populated_insight(evidence=[{"label": "Median gap", "value": "60 days"}])
+    content = insight_card_content(insight)
+
+    insight.evidence.append({"label": "New gap", "value": "90 days"})
+
+    assert content.evidence == [{"label": "Median gap", "value": "60 days"}]
+
+
 def test_diff_reports_scalar_and_source_link_additions_removals_and_changes():
     before = InsightCardContent(
         summary="", detail="Stale detail", interpretation="Earlier interpretation",
