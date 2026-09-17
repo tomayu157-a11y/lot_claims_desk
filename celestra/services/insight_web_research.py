@@ -23,15 +23,6 @@ class UnsafeSearchBrief(ValueError):
         super().__init__("The research request could not be prepared safely.")
 
 
-_IDENTIFIER_LABEL_TOKEN = (
-    r"(?:patient|member|subscriber|beneficiary)[_. -]?id|"
-    r"claim[_. -]?(?:id|number)|mrn|date[_. -]?of[_. -]?birth|dob|"
-    r"address|email|phone|ssn"
-)
-_IDENTIFIER_LABEL = re.compile(
-    rf"\b(?:{_IDENTIFIER_LABEL_TOKEN})\s*[:=#-]?\s*[^,;|\n]+",
-    re.IGNORECASE,
-)
 _PERSONAL_NAME_LABEL = re.compile(
     r"\b(?:(?:patient|member|subscriber|beneficiary|person|individual|full)[_. -]?name|"
     r"name\s*[:=#-]|name\s+(?=(?-i:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\b))"
@@ -44,11 +35,6 @@ _SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _DATE = re.compile(r"\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b")
 _DOB_LABEL_VALUE = re.compile(
     r"\b(?:date[_ ]?of[_ ]?birth|dob)\s*[:=#-]?\s*[^;|\n]+",
-    re.IGNORECASE,
-)
-_LABELLED_IDENTIFIER_VALUE = re.compile(
-    rf"\b(?:{_IDENTIFIER_LABEL_TOKEN})"
-    r"\s*[:=#-]?\s*([^;|\n]+)",
     re.IGNORECASE,
 )
 _LABELLED_PERSONAL_NAME_VALUE = re.compile(
@@ -74,6 +60,33 @@ _IDENTIFIER_ENTITY_KEYS = frozenset({
 _IDENTIFIER_KEY_TOKENS = frozenset({
     "mrn", "name", "dateofbirth", "dob", "address", "email", "phone", "ssn",
 })
+_IDENTIFIER_ENTITY_ROOT_PATTERN = "|".join(sorted(_IDENTIFIER_ENTITY_ROOTS, key=len, reverse=True))
+_IDENTIFIER_ENTITY_SUFFIX_PATTERN = "|".join(sorted(_IDENTIFIER_ENTITY_SUFFIXES, key=len, reverse=True))
+_ENTITY_IDENTIFIER_LABEL = (
+    rf"(?:{_IDENTIFIER_ENTITY_ROOT_PATTERN})"
+    rf"(?:[_. -]*(?:{_IDENTIFIER_ENTITY_SUFFIX_PATTERN}))?"
+)
+_LABELLED_ENTITY_IDENTIFIER_WITH_DELIMITER = re.compile(
+    rf"(?<![A-Za-z0-9])(?P<label>{_ENTITY_IDENTIFIER_LABEL})\s*[:=#]\s*"
+    r"(?P<value>[^\s,;|\n]+)",
+    re.IGNORECASE,
+)
+_LABELLED_ENTITY_IDENTIFIER_WITH_WHITESPACE = re.compile(
+    rf"(?<![A-Za-z0-9])(?P<label>(?:{_IDENTIFIER_ENTITY_ROOT_PATTERN})"
+    rf"(?:[_.-]+(?:{_IDENTIFIER_ENTITY_SUFFIX_PATTERN})))\s+"
+    r"(?P<value>[^\s,;|\n]+)",
+    re.IGNORECASE,
+)
+_NON_ENTITY_IDENTIFIER_LABEL = re.compile(
+    r"\b(?:mrn|date[_. -]?of[_. -]?birth|dob|address|email|phone|ssn)"
+    r"\s*[:=#-]?\s*[^,;|\n]+",
+    re.IGNORECASE,
+)
+_NON_ENTITY_IDENTIFIER_VALUE = re.compile(
+    r"\b(?:mrn|date[_. -]?of[_. -]?birth|dob|address|email|phone|ssn)"
+    r"\s*[:=#-]?\s*([^,;|\n]+)",
+    re.IGNORECASE,
+)
 _STOPWORDS = frozenset({
     "a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "is",
     "of", "on", "or", "the", "to", "with",
@@ -89,12 +102,13 @@ def sanitize_search_brief(
     safe = search_brief or ""
     if _META_INSTRUCTION.search(safe):
         raise UnsafeSearchBrief()
+    safe = _redact_labelled_identifiers(safe)
     for value in sorted({str(value).strip() for value in identifying_values if str(value).strip()},
                         key=len, reverse=True):
         safe = re.sub(re.escape(value), " ", safe, flags=re.IGNORECASE)
-    for pattern in (
-        _DOB_LABEL_VALUE, _IDENTIFIER_LABEL, _PERSONAL_NAME_LABEL, _EMAIL, _PHONE, _SSN, _DATE,
-    ):
+    for pattern in (_DOB_LABEL_VALUE, _NON_ENTITY_IDENTIFIER_LABEL, _PERSONAL_NAME_LABEL):
+        safe = pattern.sub(" ", safe)
+    for pattern in (_EMAIL, _PHONE, _SSN, _DATE):
         safe = pattern.sub(" ", safe)
     safe = " ".join(re.sub(r"[;,|]+", " ", safe).split())
     terms = [term.lower() for term in re.findall(r"[A-Za-z][A-Za-z0-9-]*", safe)]
@@ -137,6 +151,31 @@ def _is_identifier_key(key: Any) -> bool:
     return normalised in _IDENTIFIER_KEY_TOKENS | _IDENTIFIER_ENTITY_KEYS
 
 
+def _labelled_identifier_matches(value: str) -> Iterable[re.Match[str]]:
+    """Yield only label/value pairs whose normalized label is an identifier key."""
+    for pattern in (
+        _LABELLED_ENTITY_IDENTIFIER_WITH_DELIMITER,
+        _LABELLED_ENTITY_IDENTIFIER_WITH_WHITESPACE,
+    ):
+        for match in pattern.finditer(value):
+            if _is_identifier_key(match.group("label")):
+                yield match
+
+
+def _redact_labelled_identifiers(value: str) -> str:
+    """Remove a classified label and its first value token, leaving following prose intact."""
+    safe = value
+    for pattern in (
+        _LABELLED_ENTITY_IDENTIFIER_WITH_DELIMITER,
+        _LABELLED_ENTITY_IDENTIFIER_WITH_WHITESPACE,
+    ):
+        safe = pattern.sub(
+            lambda match: " " if _is_identifier_key(match.group("label")) else match.group(0),
+            safe,
+        )
+    return safe
+
+
 def _identifying_values(value: Any) -> list[str]:
     values: list[str] = []
 
@@ -167,12 +206,20 @@ def _labelled_values(value: Any) -> list[str]:
             for child in item:
                 visit(child)
         elif isinstance(item, str):
-            for pattern in (_LABELLED_IDENTIFIER_VALUE, _LABELLED_PERSONAL_NAME_VALUE):
-                for match in pattern.finditer(item):
-                    value = match.group(1).strip()
-                    if value:
-                        values.append(value)
-                        values.append(value.split()[0])
+            for match in _labelled_identifier_matches(item):
+                identifier = match.group("value").strip()
+                if identifier:
+                    values.append(identifier)
+            for match in _NON_ENTITY_IDENTIFIER_VALUE.finditer(item):
+                identifier = match.group(1).strip()
+                if identifier:
+                    values.append(identifier)
+                    values.append(identifier.split()[0])
+            for match in _LABELLED_PERSONAL_NAME_VALUE.finditer(item):
+                name = match.group(1).strip()
+                if name:
+                    values.append(name)
+                    values.append(name.split()[0])
 
     visit(value)
     return values
@@ -202,6 +249,7 @@ def _planning_identifier_values(context: ResearchContext, user_text: str) -> lis
 def _sanitize_planning_text(value: Any, identifying_values: Iterable[str]) -> str:
     """Redact untrusted context before sending it to the external planner."""
     safe = str(value or "")
+    safe = _redact_labelled_identifiers(safe)
     for identifying_value in sorted(
         {str(item).strip() for item in identifying_values if str(item).strip()},
         key=len,
@@ -209,9 +257,9 @@ def _sanitize_planning_text(value: Any, identifying_values: Iterable[str]) -> st
     ):
         safe = re.sub(re.escape(identifying_value), " ", safe, flags=re.IGNORECASE)
     safe = _META_INSTRUCTION.sub(" ", safe)
-    for pattern in (
-        _DOB_LABEL_VALUE, _IDENTIFIER_LABEL, _PERSONAL_NAME_LABEL, _EMAIL, _PHONE, _SSN, _DATE,
-    ):
+    for pattern in (_DOB_LABEL_VALUE, _NON_ENTITY_IDENTIFIER_LABEL, _PERSONAL_NAME_LABEL):
+        safe = pattern.sub(" ", safe)
+    for pattern in (_EMAIL, _PHONE, _SSN, _DATE):
         safe = pattern.sub(" ", safe)
     return " ".join(re.sub(r"[;,|]+", " ", safe).split())
 

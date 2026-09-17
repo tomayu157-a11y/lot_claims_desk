@@ -744,3 +744,100 @@ async def test_gateway_retains_aggregate_entity_methodology_context() -> None:
     assert "Adults with ALL" in planner.prompt
     assert "Group sequential claims into treatment episodes." in planner.prompt
     assert "Aggregate cohort count: 12 000" in planner.prompt
+
+
+@pytest.mark.parametrize("label", [
+    "member", "MEMBER_ID", "beneficiaryNo", "subscriber.num", "Claim-Number",
+    "PaTiEnT iDeNtIfIeR",
+])
+def test_sanitize_search_brief_redacts_normalized_entity_labels_without_consuming_business_text(
+    label: str,
+) -> None:
+    assert sanitize_search_brief(
+        f"ALL claims methodology {label}: SENTINEL-123 retains a 60-day treatment-free gap "
+        "at https://example.org/claims",
+    ) == (
+        "ALL claims methodology retains a 60-day treatment-free gap at "
+        "https://example.org/claims"
+    )
+
+
+@pytest.mark.asyncio
+async def test_gateway_redacts_normalized_free_text_identifiers_from_every_planner_source_and_echo() -> None:
+    markers = [
+        "SENTINEL-CARD-001", "SENTINEL-QUESTION-001", "SENTINEL-EVIDENCE-001",
+        "SENTINEL-CONTINUITY-001", "SENTINEL-TRANSCRIPT-001", "SENTINEL-LATEST-001",
+        "SENTINEL-CLAIMS-001", "SENTINEL-ECHO-001",
+    ]
+
+    class Planner:
+        available = True
+
+        def __init__(self) -> None:
+            self.prompt = ""
+
+        async def complete_json(self, system, prompt, max_tokens):
+            self.prompt = prompt
+            return {
+                "needs_web": True,
+                "search_brief": (
+                    "ALL public claims methodology 60-day treatment-free gap "
+                    "https://example.org/claims member: SENTINEL-ECHO-001"
+                ),
+            }
+
+    class Azure:
+        def __init__(self) -> None:
+            self.briefs: list[str] = []
+
+        async def search(self, search_brief, limit, on_status=None):
+            self.briefs.append(search_brief)
+            return AzureWebSearchOutcome.failure("technical failure")
+
+    class Firecrawl:
+        def __init__(self) -> None:
+            self.briefs: list[str] = []
+
+        async def discover(self, context, limit):
+            self.briefs.append(context.extra["search_query"])
+            return ConnectorResult(source_id="open_web", refs=[web_ref()])
+
+    context = research_context(planning_claims_context=[{
+        "methodology": (
+            "beneficiaryNo: SENTINEL-CLAIMS-001. Preserve the 60-day treatment-free gap "
+            "for aggregate cohort methodology."
+        ),
+        "patient_population": "Adults with ALL",
+    }])
+    context.insight.title = "member: SENTINEL-CARD-001. Line-of-therapy methodology"
+    context.insight.summary = "subscriber_num: SENTINEL-CARD-001. Retain a 60-day gap."
+    context.insight.detail = "claim-ID: SENTINEL-CARD-001. Preserve cohort logic."
+    context.insight.interpretation = "beneficiaryNumber: SENTINEL-CARD-001. Review rules."
+    context.question.text = "patientIdentifier: SENTINEL-QUESTION-001. How are lines defined?"
+    context.question.aspects = ["member no: SENTINEL-QUESTION-001. Treatment gap"]
+    context.evidence[0].title = "subscriber.num: SENTINEL-EVIDENCE-001. Evidence title"
+    context.evidence[0].source_name = "claimNumber: SENTINEL-EVIDENCE-001. Source name"
+    context.evidence[0].quote = "beneficiary: SENTINEL-EVIDENCE-001. Evidence quote"
+    context.continuity_summary = "patient: SENTINEL-CONTINUITY-001. Continue methodology review."
+    context.messages = [InsightWorkspaceMessage(
+        role=WorkspaceMessageRole.USER,
+        content="MEMBER id: SENTINEL-TRANSCRIPT-001. Continue research.",
+    )]
+    planner, azure, firecrawl = Planner(), Azure(), Firecrawl()
+
+    outcome = await InsightWebResearchGateway(
+        azure_client=azure, registry={"open_web": firecrawl}, llm_client=planner,
+    ).research(
+        context,
+        "subscriber Number: SENTINEL-LATEST-001. Find public methodology.",
+    )
+
+    expected_brief = (
+        "ALL public claims methodology 60-day treatment-free gap https://example.org/claims"
+    )
+    assert all(marker not in planner.prompt for marker in markers)
+    assert "Preserve the 60-day treatment-free gap" in planner.prompt
+    assert "Adults with ALL" in planner.prompt
+    assert azure.briefs == [expected_brief]
+    assert firecrawl.briefs == [expected_brief]
+    assert outcome.refs == [web_ref()]
