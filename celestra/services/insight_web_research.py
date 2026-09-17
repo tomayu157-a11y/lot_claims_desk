@@ -33,6 +33,18 @@ _EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _PHONE = re.compile(r"\b(?:\+?\d{1,3}[ .-]?)?(?:\(?\d{3}\)?[ .-]?)\d{3}[ .-]?\d{4}\b")
 _SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _DATE = re.compile(r"\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b")
+_TEXTUAL_DOB = re.compile(
+    r"\b(?:date[_ ]?of[_ ]?birth|dob)\s*[:=#-]?\s*"
+    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
+    r"\s+\d{1,2},\s*\d{4}\b",
+    re.IGNORECASE,
+)
+_INSTRUCTION_INJECTION = re.compile(
+    r"\b(?:ignore|disregard|override|bypass)\b[^,;|\n]*"
+    r"(?:instruction|safeguard|policy|prompt)[^,;|\n]*",
+    re.IGNORECASE,
+)
 _STOPWORDS = frozenset({
     "a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "is",
     "of", "on", "or", "the", "to", "with",
@@ -49,9 +61,11 @@ def sanitize_search_brief(
     for value in sorted({str(value).strip() for value in identifying_values if str(value).strip()},
                         key=len, reverse=True):
         safe = re.sub(re.escape(value), " ", safe, flags=re.IGNORECASE)
-    for pattern in (_IDENTIFIER_LABEL, _EMAIL, _PHONE, _SSN, _DATE):
+    for pattern in (
+        _TEXTUAL_DOB, _IDENTIFIER_LABEL, _EMAIL, _PHONE, _SSN, _DATE, _INSTRUCTION_INJECTION,
+    ):
         safe = pattern.sub(" ", safe)
-    safe = " ".join(safe.split())
+    safe = " ".join(re.sub(r"[;,|]+", " ", safe).split())
     terms = [term.lower() for term in re.findall(r"[A-Za-z][A-Za-z0-9-]*", safe)]
     if len([term for term in terms if term not in _STOPWORDS]) < 3:
         raise UnsafeSearchBrief()
@@ -72,6 +86,7 @@ class WebResearchOutcome:
     provider: str = ""
     reason: str = ""
     ok: bool = True
+    retryable: bool = False
 
 
 async def _notify(on_status, status: str) -> None:
@@ -243,7 +258,8 @@ class InsightWebResearchGateway:
         return WebResearchOutcome(
             audits=azure.audits,
             searched=True,
-            provider="firecrawl",
+            provider="azure_web_search+firecrawl",
             ok=False,
+            retryable=True,
             reason="Web research is unavailable right now.",
         )
