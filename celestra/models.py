@@ -6,7 +6,7 @@ import enum
 import hashlib
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -455,15 +455,55 @@ class InsightWorkspaceMessage(BaseModel):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+class InsightCardContent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    summary: str
+    detail: str = ""
+    evidence_type: str = ""
+    evidence: Any = None
+    interpretation: str = ""
+    review_note: str = ""
+    covered: bool = True
+    input_reason: str = ""
+    evidence_ids: list[str] = Field(default_factory=list)
+    source_ids: list[str] = Field(default_factory=list)
+    used_web_fallback: bool = False
+
+
+class InsightCardFieldChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    field: str
+    kind: Literal["added", "removed", "changed"]
+    before: Any = None
+    after: Any = None
+    item_changes: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
+class InsightFieldSupport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    field: str
+    evidence_ids: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+
 class InsightRevisionProposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(default_factory=lambda: new_id("wprop"))
-    proposed_summary: str
-    change_note: str
+    proposed_summary: str = ""
+    change_note: str = ""
     basis_message_ids: list[str] = Field(default_factory=list)
     source_ids: list[str] = Field(default_factory=list)
     web_sites: list[dict[str, Any]] = Field(default_factory=list)
-    base_summary_digest: str
+    base_summary_digest: str = ""
+    before_content: InsightCardContent | None = None
+    after_content: InsightCardContent | None = None
+    changed_fields: list[InsightCardFieldChange] = Field(default_factory=list)
+    unchanged_fields: list[str] = Field(default_factory=list)
+    support_by_field: list[InsightFieldSupport] = Field(default_factory=list)
+    change_reasons: dict[str, str] = Field(default_factory=dict)
+    base_content_digest: str = ""
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -471,9 +511,16 @@ class AppliedInsightRevision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: str = Field(default_factory=lambda: new_id("wrev"))
     proposal_id: str
-    previous_summary: str
-    applied_summary: str
+    previous_summary: str = ""
+    applied_summary: str = ""
     source_ids: list[str] = Field(default_factory=list)
+    before_content: InsightCardContent | None = None
+    after_content: InsightCardContent | None = None
+    changed_fields: list[InsightCardFieldChange] = Field(default_factory=list)
+    unchanged_fields: list[str] = Field(default_factory=list)
+    support_by_field: list[InsightFieldSupport] = Field(default_factory=list)
+    change_reasons: dict[str, str] = Field(default_factory=dict)
+    base_content_digest: str = ""
     applied_at: datetime = Field(default_factory=utcnow)
 
 

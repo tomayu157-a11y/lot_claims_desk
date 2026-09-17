@@ -8,6 +8,9 @@ from celestra.models import (
     AppliedRevisionResult,
     EvidenceOrigin,
     Insight,
+    InsightCardContent,
+    InsightCardFieldChange,
+    InsightFieldSupport,
     InsightRevisionProposal,
     InsightWorkspace,
     InsightWorkspaceMessage,
@@ -17,6 +20,7 @@ from celestra.models import (
     WorkspaceMessageState,
     workspace_id,
 )
+from celestra.services.insight_reconciliation import is_complete_card_proposal
 from celestra.store import Store
 
 
@@ -203,3 +207,84 @@ def test_workspace_round_trips_continuity_proposal_and_applied_revision(tmp_path
     store = Store(tmp_path / "workspace.db")
     store.save_insight_workspace(item)
     assert store.get_insight_workspace("run_one", "ins_one") == item
+
+
+def test_workspace_loads_a_legacy_summary_only_pending_proposal_as_incomplete():
+    legacy_workspace_json = {
+        "id": workspace_id("run_one", "ins_one"),
+        "run_id": "run_one",
+        "insight_id": "ins_one",
+        "pending_proposal": {
+            "id": "wprop_legacy",
+            "proposed_summary": "Legacy proposed summary",
+            "change_note": "Legacy reason",
+            "basis_message_ids": [],
+            "source_ids": [],
+            "web_sites": [],
+            "base_summary_digest": "legacy-digest",
+        },
+    }
+
+    workspace = InsightWorkspace.model_validate(legacy_workspace_json)
+
+    assert workspace.pending_proposal is not None
+    assert workspace.pending_proposal.proposed_summary == "Legacy proposed summary"
+    assert workspace.pending_proposal.after_content is None
+    assert is_complete_card_proposal(workspace.pending_proposal) is False
+
+
+def test_workspace_round_trips_a_complete_card_proposal_and_applied_history(tmp_path: Path):
+    before = InsightCardContent(
+        summary="Before", detail="", evidence_type="", evidence=None, interpretation="",
+        review_note="", covered=True, input_reason="", evidence_ids=[], source_ids=["source_one"],
+        used_web_fallback=False,
+    )
+    after = InsightCardContent(
+        summary="After", detail="", evidence_type="", evidence=None, interpretation="",
+        review_note="", covered=True, input_reason="", evidence_ids=[], source_ids=["source_two"],
+        used_web_fallback=False,
+    )
+    change = InsightCardFieldChange(
+        field="summary", kind="changed", before="Before", after="After",
+        evidence_ids=["ev_one"], reason="New evidence changes the finding.",
+    )
+    support = InsightFieldSupport(
+        field="summary", evidence_ids=["ev_one"], reason="Direct support.",
+    )
+    proposal = InsightRevisionProposal(
+        id="wprop_complete", before_content=before, after_content=after,
+        changed_fields=[change], unchanged_fields=["detail"], support_by_field=[support],
+        change_reasons={"summary": "New evidence changes the finding."},
+        base_content_digest="content-digest",
+    )
+    revision = AppliedInsightRevision(
+        id="wrev_complete", proposal_id=proposal.id, before_content=before, after_content=after,
+        changed_fields=[change],
+        unchanged_fields=["detail"], support_by_field=[support],
+        change_reasons={"summary": "New evidence changes the finding."},
+        base_content_digest="content-digest", source_ids=["ev_one"],
+    )
+    source = workspace().sources[0]
+    item = InsightWorkspace(
+        id=workspace_id("run_one", "ins_one"), run_id="run_one", insight_id="ins_one",
+        sources=[source], pending_proposal=proposal, applied_revisions=[revision],
+    )
+
+    store = Store(tmp_path / "workspace.db")
+    store.save_insight_workspace(item)
+    loaded = store.get_insight_workspace("run_one", "ins_one")
+
+    assert loaded == item
+    assert loaded is not None
+    assert is_complete_card_proposal(loaded.pending_proposal) is True
+    assert loaded.applied_revisions[0].after_content == after
+
+
+def test_partial_card_snapshots_are_not_complete_apply_proposals():
+    proposal = InsightRevisionProposal(
+        before_content=InsightCardContent(summary="Before"),
+        after_content=InsightCardContent(summary="After"),
+        base_content_digest="content-digest",
+    )
+
+    assert is_complete_card_proposal(proposal) is False
