@@ -86,7 +86,14 @@ class InsightCardReconciler:
         covered = not unsupported_fields
         input_reason = "" if covered else "Evidence support is required for the proposed factual update."
         evidence_by_id = {item.id: item for item in selected_evidence}
-        preserved_ids = [item_id for item_id in before.evidence_ids if item_id in evidence_by_id]
+        explicit_evidence_removal = any(
+            change.field == "evidence"
+            and any(item.get("kind") == "removed" for item in change.item_changes)
+            for change in initial_diff.changes
+        )
+        preserved_ids = [] if explicit_evidence_removal else [
+            item_id for item_id in before.evidence_ids if item_id in evidence_by_id
+        ]
         active_ids = _stable_unique([*preserved_ids, *supported_ids])
         active_evidence = [
             evidence_by_id[item_id] for item_id in active_ids if item_id in evidence_by_id

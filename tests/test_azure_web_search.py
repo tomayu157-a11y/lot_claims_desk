@@ -9,7 +9,11 @@ from typing import Self
 import httpx
 import pytest
 
-from celestra.connectors.base import HttpClient
+from celestra.connectors.base import (
+    HttpClient,
+    _PinnedNetworkBackend,
+    _resolve_public_destination,
+)
 from celestra.connectors.firecrawl import FirecrawlConnector
 from celestra.models import EvidenceOrigin
 from celestra.services.azure_web_search import (
@@ -107,6 +111,52 @@ class FakeRestrictedClient:
         assert follow_redirects is False
         self.urls.append(url)
         return self.responses.pop(0)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        return None
+
+
+class RebindingRestrictedClient(FakeRestrictedClient):
+    """Represents an HTTP stack that resolves the hostname again at connect time."""
+
+    async def get(self, url: str, *, follow_redirects: bool) -> FakeRestrictedResponse:
+        host = httpx.URL(url).host
+        self.connect_addresses.append(socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)[0][4][0])
+        return await super().get(url, follow_redirects=follow_redirects)
+
+    def __init__(self, responses: list[FakeRestrictedResponse]) -> None:
+        super().__init__(responses)
+        self.connect_addresses: list[str] = []
+
+
+class FakePinnedRestrictedClient(FakeRestrictedClient):
+    def __init__(self, destination, responses: list[FakeRestrictedResponse]) -> None:
+        super().__init__(responses)
+        self.destination = destination
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args) -> None:
+        return None
+
+
+class RecordingNetworkBackend:
+    def __init__(self) -> None:
+        self.connections: list[tuple[str, int]] = []
+
+    async def connect_tcp(self, host, port, **kwargs):
+        self.connections.append((host, port))
+        return object()
+
+    async def connect_unix_socket(self, path, **kwargs):
+        raise AssertionError("restricted hydration must not use Unix sockets")
+
+    async def sleep(self, seconds) -> None:
+        return None
 
 
 def _address(host: str, address: str):
@@ -317,6 +367,7 @@ async def test_restricted_direct_fetch_rejects_a_redirect_to_a_private_destinati
         FakeRestrictedResponse(302, location="http://private.example/internal"),
     ])
     client._client = restricted
+    client._public_client_factory = lambda destination: restricted
     addresses = {
         "public.example": "93.184.216.34",
         "private.example": "10.0.0.1",
@@ -337,6 +388,7 @@ async def test_restricted_direct_fetch_accepts_a_public_https_destination(monkey
     client = HttpClient()
     restricted = FakeRestrictedClient([FakeRestrictedResponse(200, "Public page text")])
     client._client = restricted
+    client._public_client_factory = lambda destination: restricted
     monkeypatch.setattr(
         socket, "getaddrinfo",
         lambda host, port, **kwargs: [_address(host, "93.184.216.34")],
@@ -344,6 +396,90 @@ async def test_restricted_direct_fetch_accepts_a_public_https_destination(monkey
 
     assert await client.get_public_text("https://public.example/page") == "Public page text"
     assert restricted.urls == ["https://public.example/page"]
+
+
+@pytest.mark.asyncio
+async def test_restricted_direct_fetch_pins_public_resolution_before_a_dns_rebind(monkeypatch) -> None:
+    """Hydration must never give a validated hostname back to a re-resolving client."""
+    client = HttpClient()
+    rebinding = RebindingRestrictedClient([FakeRestrictedResponse(200, "must not be used")])
+    client._client = rebinding
+    calls = 0
+
+    def resolve(host, port, **kwargs):
+        nonlocal calls
+        calls += 1
+        address = "93.184.216.34" if calls == 1 else "10.0.0.1"
+        return [_address(host, address)]
+
+    pinned_clients: list[FakePinnedRestrictedClient] = []
+
+    def pinned_client(destination):
+        fake = FakePinnedRestrictedClient(destination, [FakeRestrictedResponse(200, "Pinned public page")])
+        pinned_clients.append(fake)
+        return fake
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    client._public_client_factory = pinned_client
+
+    assert await client.get_public_text("https://public.example/page") == "Pinned public page"
+    assert calls == 1
+    assert rebinding.connect_addresses == []
+    assert pinned_clients[0].destination.hostname == "public.example"
+    assert str(pinned_clients[0].destination.addresses[0]) == "93.184.216.34"
+    assert pinned_clients[0].urls == ["https://public.example/page"]
+
+
+@pytest.mark.asyncio
+async def test_pinned_network_backend_connects_only_to_the_validated_numeric_address(monkeypatch) -> None:
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, port, **kwargs: [_address(host, "93.184.216.34")],
+    )
+    destination = _resolve_public_destination("https://public.example/page")
+    backend = RecordingNetworkBackend()
+    pinned = _PinnedNetworkBackend(destination, backend=backend)
+
+    await pinned.connect_tcp("public.example", 443)
+
+    assert backend.connections == [("93.184.216.34", 443)]
+
+
+@pytest.mark.asyncio
+async def test_restricted_direct_fetch_pins_each_public_https_redirect_target(monkeypatch) -> None:
+    client = HttpClient()
+    addresses = {
+        "public.example": "93.184.216.34",
+        "redirected.example": "2001:4860:4860::8888",
+    }
+    responses = [
+        FakeRestrictedResponse(302, location="https://redirected.example/final"),
+        FakeRestrictedResponse(200, "Redirected public page"),
+    ]
+    pinned_clients: list[FakePinnedRestrictedClient] = []
+
+    def pinned_client(destination):
+        fake = FakePinnedRestrictedClient(destination, [responses.pop(0)])
+        pinned_clients.append(fake)
+        return fake
+
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, port, **kwargs: [_address(host, addresses[host])],
+    )
+    client._public_client_factory = pinned_client
+
+    assert await client.get_public_text("https://public.example/start") == "Redirected public page"
+    assert [item.destination.hostname for item in pinned_clients] == [
+        "public.example", "redirected.example",
+    ]
+    assert [str(item.destination.addresses[0]) for item in pinned_clients] == [
+        "93.184.216.34", "2001:4860:4860::8888",
+    ]
+    assert pinned_clients[0].urls == ["https://public.example/start"]
+    assert pinned_clients[1].urls == ["https://redirected.example/final"]
 
 
 @pytest.mark.asyncio

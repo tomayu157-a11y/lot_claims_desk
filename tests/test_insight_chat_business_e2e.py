@@ -350,6 +350,8 @@ async def test_insight_chat_reconciles_a_stale_all_rule_without_changing_other_r
         assert proposal is not None
         proposed_content = proposal.after_content.model_dump(mode="json")
         assert ["Treatment-free gap", "90 days"] not in proposed_content["evidence"]["rows"]
+        assert "ev_business_stale" not in proposed_content["evidence_ids"]
+        assert "stale_internal_method" not in proposed_content["source_ids"]
         evidence_by_id = {item.id: item for item in workspace.sources}
         for change in proposal.changed_fields:
             if change.field in {"summary", "detail", "evidence", "interpretation"}:
