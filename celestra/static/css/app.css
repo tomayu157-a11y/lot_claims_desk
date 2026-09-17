@@ -1198,6 +1198,12 @@ ul.checks .ic { flex: 0 0 auto; margin-top: 2px; color: var(--ok); }
 .gate-sub { color: var(--text-2); font-size: 13px; margin-top: 4px; }
 .gate-actions { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .gate-actions .hint { font-size: 12px; color: var(--text-3); max-width: 280px; text-align: right; }
+@media (max-width: 620px) {
+  .gate-actions { flex: 1 1 100%; min-width: 0; align-items: stretch; }
+  .gate-actions form { width: 100%; min-width: 0; }
+  .gate-actions .btn { max-width: 100%; white-space: normal; }
+  .gate-actions .hint { max-width: 100%; text-align: left; }
+}
 .gate-blockers { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .gate-blockers li {
   display: flex; gap: 10px; align-items: flex-start;
@@ -1280,7 +1286,7 @@ textarea.is-invalid { border-color: var(--danger); }
    21. Insight cards (five-part review cards) and the card grid
    -------------------------------------------------------------------------- */
 .insight-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
-@media (max-width: 900px) { .insight-grid { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .insight-grid { grid-template-columns: minmax(0, 1fr); } }
 .insight-grid > [data-hidden="1"] { display: none; }
 
 .icard {
@@ -1310,6 +1316,8 @@ textarea.is-invalid { border-color: var(--danger); }
 .icard-finding { margin: 0; font-size: 13.5px; color: var(--text); line-height: 1.5; }
 
 .icard-status { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2); font-weight: 600; }
+@media (max-width: 620px) { .icard-status { flex-wrap: wrap; } }
+@media (max-width: 620px) { .chip-source { max-width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; } }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
 .status-dot.is-ready { background: var(--ok); }
 .status-dot.is-review { background: var(--warn); }
@@ -1420,6 +1428,22 @@ textarea.is-invalid { border-color: var(--danger); }
 .insight-workspace-preview { position: absolute; inset: 62px 0 0; background: var(--surface); z-index: 2; }
 .insight-workspace-preview[hidden] { display: none; }
 .insight-workspace-preview .insight-workspace-proposal { height: 100%; margin: 0; overflow: auto; padding: 20px; }
+.workspace-current-card, .workspace-proposed-card { display: grid; gap: 10px; }
+.workspace-card-section p { margin: 4px 0 0; }
+.workspace-card-section ul { margin: 5px 0 0; padding-left: 18px; }
+.workspace-change-group { margin: 18px 0; }
+.workspace-change-group h3 { margin: 0 0 8px; font-size: 14px; }
+.workspace-change { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.workspace-change + .workspace-change { margin-top: 8px; }
+.workspace-change p { margin: 5px 0 0; }
+.workspace-item-changes { margin: 8px 0 0; padding-left: 18px; }
+.workspace-item-changes .is-added { color: var(--green-ink); }
+.workspace-item-changes .is-removed { color: var(--danger); }
+.workspace-change-sources { margin-top: 8px; }
+.workspace-removal-warning { margin: 14px 0; padding: 10px 12px; border-left: 3px solid var(--amber-border); background: var(--amber-soft); color: var(--amber-ink); }
+.workspace-unchanged { margin: 16px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.workspace-unchanged summary { cursor: pointer; font-weight: 600; }
+.workspace-unchanged ul { margin: 8px 0 0; padding-left: 18px; }
 .insight-workspace-message { max-width: 88%; margin: 0 0 12px; padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
 .insight-workspace-message.is-user { margin-left: auto; background: var(--primary-soft); border-color: var(--primary-border); }
 .insight-workspace-message.is-failed { border-color: var(--danger); }

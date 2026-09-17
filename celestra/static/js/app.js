@@ -1043,6 +1043,9 @@
       credentials: 'same-origin',
       body: '{}'
     });
+    if (response.url && !sameOriginUrl(response.url)) {
+      throw new Error('Research action is unavailable.');
+    }
     var type = response.headers.get('Content-Type') || '';
     var payload = type.indexOf('application/json') !== -1 ? await response.json() : await response.text();
     if (!response.ok) {
@@ -1195,6 +1198,9 @@
       setWorkspaceBusy(workspace, true);
       try {
         var payload = await workspaceJSON(url);
+        if (!payload || typeof payload.proposal_html !== 'string') {
+          throw new Error('Research returned an invalid view.');
+        }
         var preview = $('[data-workspace-preview]', workspace);
         insertWorkspaceServerHtml(preview, payload.proposal_html);
         preview.hidden = false;

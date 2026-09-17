@@ -10,14 +10,20 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import ipaddress
 import json
 import logging
+import socket
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urljoin, urlparse
 
+import httpcore
 import httpx
+from httpcore._backends.auto import AutoBackend
+from httpcore._backends.base import SOCKET_OPTION
 
 from ..models import EvidenceOrigin, SourceRef
 from ..settings import DATA_DIR, configure_tls, get_settings, system_certs_active
@@ -25,6 +31,81 @@ from ..settings import DATA_DIR, configure_tls, get_settings, system_certs_activ
 log = logging.getLogger("celestra.connector")
 
 USER_AGENT = "Celestra-DeskResearch/1.0 (clinical desk research; contact research@example.org)"
+
+
+@dataclass(frozen=True)
+class _PublicDestination:
+    """One DNS snapshot that restricted hydration is permitted to connect to."""
+
+    url: str
+    hostname: str
+    port: int
+    addresses: tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]
+
+
+class _PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
+    """Connect numeric addresses while httpcore retains the original HTTPS origin.
+
+    httpcore uses the origin hostname for SNI and certificate validation after
+    this backend has opened the TCP connection, so pinning the TCP peer does
+    not weaken TLS hostname validation or alter the HTTP Host header.
+    """
+
+    def __init__(
+        self,
+        destination: _PublicDestination,
+        backend: httpcore.AsyncNetworkBackend | None = None,
+    ) -> None:
+        self._destination = destination
+        self._backend = backend or AutoBackend()
+        self._next_address = 0
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options: tuple[SOCKET_OPTION, ...] | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        if host != self._destination.hostname or port != self._destination.port:
+            raise httpcore.ConnectError("restricted destination changed before connection")
+        address = str(self._destination.addresses[self._next_address])
+        self._next_address = (self._next_address + 1) % len(self._destination.addresses)
+        return await self._backend.connect_tcp(
+            address,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(
+        self,
+        path: str,
+        timeout: float | None = None,
+        socket_options: tuple[SOCKET_OPTION, ...] | None = None,
+    ) -> httpcore.AsyncNetworkStream:
+        raise httpcore.ConnectError("restricted hydration does not use Unix sockets")
+
+    async def sleep(self, seconds: float) -> None:
+        await self._backend.sleep(seconds)
+
+
+class _PinnedPublicTransport(httpx.AsyncHTTPTransport):
+    """HTTPX transport whose TCP backend is pinned to one validated DNS snapshot."""
+
+    def __init__(self, destination: _PublicDestination, verify: Any) -> None:
+        # Restricted hydration cannot delegate destination DNS to an HTTP proxy.
+        # The request URL remains hostname-based, preserving Host and TLS SNI.
+        super().__init__(verify=verify, trust_env=False)
+        ssl_context = self._pool._ssl_context
+        self._pool = httpcore.AsyncConnectionPool(
+            ssl_context=ssl_context,
+            http1=True,
+            http2=False,
+            network_backend=_PinnedNetworkBackend(destination),
+        )
 
 
 @dataclass
@@ -125,6 +206,7 @@ class HttpClient:
         self._sem = asyncio.Semaphore(th["max_concurrent_connectors"])
         self._cache = _DiskCache(DATA_DIR / "cache", th["http_cache_ttl_seconds"])
         self._client: httpx.AsyncClient | None = None
+        self._public_client_factory = self._new_public_client
         del limits
 
     async def client(self) -> httpx.AsyncClient:
@@ -133,9 +215,9 @@ class HttpClient:
             configure_tls()
             verify: Any = s.tls_verify_value()
             if verify is True and system_certs_active():
-                import ssl  # noqa: PLC0415
+                import ssl
 
-                import truststore  # noqa: PLC0415
+                import truststore
 
                 verify = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
             if verify is False:
@@ -225,6 +307,65 @@ class HttpClient:
     async def get_text(self, url: str, **kw: Any) -> str:
         kw["as_json"] = False
         return await self.request("GET", url, **kw)
+
+    async def get_public_text(self, url: str) -> str:
+        """Fetch one public web page using a pinned, public DNS snapshot per hop."""
+        current_url = url
+        async with self._sem:
+            for _ in range(6):
+                destination = _resolve_public_destination(current_url)
+                async with self._public_client_factory(destination) as client:
+                    response = await client.get(current_url, follow_redirects=False)
+                    if response.is_redirect:
+                        location = response.headers.get("location")
+                        if not location:
+                            raise ValueError("redirect destination is missing")
+                        current_url = urljoin(current_url, location)
+                        continue
+                    response.raise_for_status()
+                    return response.text
+        raise ValueError("too many redirects")
+
+    def _new_public_client(self, destination: _PublicDestination) -> httpx.AsyncClient:
+        verify: Any = self._settings.tls_verify_value()
+        if verify is True and system_certs_active():
+            import ssl
+
+            import truststore
+
+            verify = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        return httpx.AsyncClient(
+            transport=_PinnedPublicTransport(destination, verify),
+            timeout=httpx.Timeout(self.timeout, connect=min(self.timeout, 15)),
+            follow_redirects=False,
+            headers={"User-Agent": USER_AGENT},
+        )
+
+
+def _resolve_public_destination(url: str) -> _PublicDestination:
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("destination must use http or https with a hostname")
+    port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    try:
+        addresses = socket.getaddrinfo(
+            parsed.hostname, port,
+            type=socket.SOCK_STREAM,
+        )
+    except OSError as exc:
+        raise ValueError("destination could not be resolved") from exc
+    resolved = {
+        ipaddress.ip_address(record[4][0])
+        for record in addresses
+    }
+    if not resolved or any(not address.is_global for address in resolved):
+        raise ValueError("destination must resolve only to public addresses")
+    return _PublicDestination(
+        url=url,
+        hostname=parsed.hostname,
+        port=port,
+        addresses=tuple(sorted(resolved, key=str)),
+    )
 
 
 http = HttpClient()

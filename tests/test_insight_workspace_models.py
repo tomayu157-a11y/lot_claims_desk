@@ -8,6 +8,9 @@ from celestra.models import (
     AppliedRevisionResult,
     EvidenceOrigin,
     Insight,
+    InsightCardContent,
+    InsightCardFieldChange,
+    InsightFieldSupport,
     InsightRevisionProposal,
     InsightWorkspace,
     InsightWorkspaceMessage,
@@ -17,6 +20,7 @@ from celestra.models import (
     WorkspaceMessageState,
     workspace_id,
 )
+from celestra.services.insight_reconciliation import is_complete_card_proposal
 from celestra.store import Store
 
 
@@ -203,3 +207,160 @@ def test_workspace_round_trips_continuity_proposal_and_applied_revision(tmp_path
     store = Store(tmp_path / "workspace.db")
     store.save_insight_workspace(item)
     assert store.get_insight_workspace("run_one", "ins_one") == item
+
+
+def test_workspace_loads_a_legacy_summary_only_pending_proposal_as_incomplete():
+    legacy_workspace_json = {
+        "id": workspace_id("run_one", "ins_one"),
+        "run_id": "run_one",
+        "insight_id": "ins_one",
+        "pending_proposal": {
+            "id": "wprop_legacy",
+            "proposed_summary": "Legacy proposed summary",
+            "change_note": "Legacy reason",
+            "basis_message_ids": [],
+            "source_ids": [],
+            "web_sites": [],
+            "base_summary_digest": "legacy-digest",
+        },
+    }
+
+    workspace = InsightWorkspace.model_validate(legacy_workspace_json)
+
+    assert workspace.pending_proposal is not None
+    assert workspace.pending_proposal.proposed_summary == "Legacy proposed summary"
+    assert workspace.pending_proposal.after_content is None
+    assert is_complete_card_proposal(workspace.pending_proposal) is False
+
+
+def test_workspace_normalizes_a_legacy_complete_requires_input_proposal_to_read_only():
+    """A pre-support-state factual proposal must not regain an enabled Apply action."""
+    source = workspace().sources[0]
+    before = InsightCardContent(
+        summary="Before", detail="Before detail", evidence_type="metrics",
+        evidence=[{"label": "Current", "value": "1"}], interpretation="Before interpretation",
+        review_note="", covered=True, input_reason="", evidence_ids=[source.id],
+        source_ids=[source.source_id], used_web_fallback=False,
+    )
+    after = before.model_copy(update={
+        "summary": "Unsupported factual replacement",
+        "covered": False,
+        "input_reason": "Evidence support is required for the proposed factual update.",
+    })
+    legacy_workspace_json = workspace().model_dump(mode="json")
+    legacy_workspace_json["pending_proposal"] = {
+        "id": "wprop_legacy_complete",
+        "proposed_summary": after.summary,
+        "source_ids": [source.id],
+        "before_content": before.model_dump(mode="json"),
+        "after_content": after.model_dump(mode="json"),
+        "base_content_digest": "legacy-content-digest",
+    }
+
+    loaded = InsightWorkspace.model_validate(legacy_workspace_json)
+    serialized = loaded.model_dump(mode="json")
+    reloaded = InsightWorkspace.model_validate(serialized)
+
+    assert loaded.pending_proposal is not None
+    assert is_complete_card_proposal(loaded.pending_proposal) is True
+    assert loaded.pending_proposal.applyable is False
+    assert loaded.pending_proposal.unsupported_factual_fields == []
+    assert serialized["pending_proposal"]["applyable"] is False
+    assert serialized["pending_proposal"]["unsupported_factual_fields"] == []
+    assert reloaded.pending_proposal == loaded.pending_proposal
+
+
+def test_workspace_keeps_supplied_unsupported_fields_when_applyable_is_missing():
+    """A partial support-state payload remains blocked without losing its reason."""
+    proposal = InsightRevisionProposal.model_validate({
+        "id": "wprop_hybrid_support_state",
+        "proposed_summary": "Unsupported factual replacement",
+        "unsupported_factual_fields": ["summary"],
+    })
+
+    serialized = proposal.model_dump(mode="json")
+    reloaded = InsightRevisionProposal.model_validate(serialized)
+
+    assert proposal.applyable is False
+    assert proposal.unsupported_factual_fields == ["summary"]
+    assert serialized["applyable"] is False
+    assert serialized["unsupported_factual_fields"] == ["summary"]
+    assert reloaded == proposal
+
+
+def test_workspace_normalizes_missing_unsupported_fields_when_applyable_is_explicit():
+    """An enabled partial support-state payload must not regain an Apply action."""
+    proposal = InsightRevisionProposal.model_validate({
+        "id": "wprop_hybrid_applyable_state",
+        "proposed_summary": "Legacy factual replacement",
+        "applyable": True,
+    })
+
+    serialized = proposal.model_dump(mode="json")
+    reloaded = InsightRevisionProposal.model_validate(serialized)
+
+    assert proposal.applyable is False
+    assert proposal.unsupported_factual_fields == []
+    assert serialized["applyable"] is False
+    assert serialized["unsupported_factual_fields"] == []
+    assert reloaded == proposal
+
+
+def test_workspace_round_trips_a_complete_card_proposal_and_applied_history(tmp_path: Path):
+    before = InsightCardContent(
+        summary="Before", detail="", evidence_type="", evidence=None, interpretation="",
+        review_note="", covered=True, input_reason="", evidence_ids=[], source_ids=["source_one"],
+        used_web_fallback=False,
+    )
+    after = InsightCardContent(
+        summary="After", detail="", evidence_type="", evidence=None, interpretation="",
+        review_note="", covered=True, input_reason="", evidence_ids=[], source_ids=["source_two"],
+        used_web_fallback=False,
+    )
+    change = InsightCardFieldChange(
+        field="summary", kind="changed", before="Before", after="After",
+        evidence_ids=["ev_one"], reason="New evidence changes the finding.",
+    )
+    support = InsightFieldSupport(
+        field="summary", evidence_ids=["ev_one"], reason="Direct support.",
+    )
+    proposal = InsightRevisionProposal(
+        id="wprop_complete", before_content=before, after_content=after,
+        changed_fields=[change], unchanged_fields=["detail"], support_by_field=[support],
+        change_reasons={"summary": "New evidence changes the finding."},
+        applyable=True, unsupported_factual_fields=[],
+        base_content_digest="content-digest",
+    )
+    revision = AppliedInsightRevision(
+        id="wrev_complete", proposal_id=proposal.id, before_content=before, after_content=after,
+        changed_fields=[change],
+        unchanged_fields=["detail"], support_by_field=[support],
+        change_reasons={"summary": "New evidence changes the finding."},
+        base_content_digest="content-digest", source_ids=["ev_one"],
+    )
+    source = workspace().sources[0]
+    item = InsightWorkspace(
+        id=workspace_id("run_one", "ins_one"), run_id="run_one", insight_id="ins_one",
+        sources=[source], pending_proposal=proposal, applied_revisions=[revision],
+    )
+
+    store = Store(tmp_path / "workspace.db")
+    store.save_insight_workspace(item)
+    loaded = store.get_insight_workspace("run_one", "ins_one")
+
+    assert loaded == item
+    assert loaded is not None
+    assert is_complete_card_proposal(loaded.pending_proposal) is True
+    assert loaded.pending_proposal.applyable is True
+    assert loaded.pending_proposal.unsupported_factual_fields == []
+    assert loaded.applied_revisions[0].after_content == after
+
+
+def test_partial_card_snapshots_are_not_complete_apply_proposals():
+    proposal = InsightRevisionProposal(
+        before_content=InsightCardContent(summary="Before"),
+        after_content=InsightCardContent(summary="After"),
+        base_content_digest="content-digest",
+    )
+
+    assert is_complete_card_proposal(proposal) is False

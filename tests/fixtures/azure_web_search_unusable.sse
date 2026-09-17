@@ -1,0 +1,2 @@
+event: response.completed
+data: {"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"Short source citation.","annotations":[{"type":"url_citation","url":"https://example.org/short","title":"Short","start_index":0,"end_index":5}]}]},{"type":"web_search_call","action":{"type":"search","query":"ALL claims line definition","sources":[{"type":"url","url":"https://example.org/short"}]},"results":[{"type":"web_search_result","url":"https://example.org/short","title":"Short","snippet":"Too short."}]}]}}

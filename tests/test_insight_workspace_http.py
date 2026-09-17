@@ -13,6 +13,9 @@ from celestra.models import (
     Evidence,
     EvidenceOrigin,
     Insight,
+    InsightCardContent,
+    InsightCardFieldChange,
+    InsightFieldSupport,
     InsightRevisionProposal,
     ResearchQuestion,
     Run,
@@ -20,6 +23,7 @@ from celestra.models import (
     RunStatus,
     WorkspaceMessageRole,
 )
+from celestra.services.insight_reconciliation import insight_card_digest
 from celestra.services.insight_research import ProposalDraft, ResearchTurnResult
 from celestra.services.insight_workspace import InsightWorkspaceService
 from celestra.services.llm import LLMUnavailable
@@ -28,6 +32,10 @@ from celestra.store import Store
 
 async def _answer(context, user_text, registry, on_status, llm_client):
     await on_status("checking_evidence")
+    await on_status("searching_web_azure")
+    await on_status("azure_unavailable_trying_firecrawl")
+    await on_status("reading_validating_sources")
+    await on_status("research_completed")
     return ResearchTurnResult(
         text="Operational line rules need a treatment-free gap and regimen-change definition.",
         evidence=context.evidence,
@@ -36,6 +44,14 @@ async def _answer(context, user_text, registry, on_status, llm_client):
         searched=False,
         note="",
         sites=[],
+        source_audit={
+            context.evidence[0].url: {
+                "search_provider": "azure_web_search",
+                "search_queries": ["sanitized research brief"],
+                "hydration_status": "hydrated",
+                "citation_metadata": [{"url": context.evidence[0].url}],
+            },
+        },
     )
 
 
@@ -55,6 +71,30 @@ async def _proposal(context, registry, llm_client):
         origin=EvidenceOrigin.OPEN_WEB,
     )
     evidence = [*context.evidence, supplementary]
+    before = InsightCardContent(
+        summary=context.insight.summary,
+        detail=context.insight.detail,
+        evidence_type=context.insight.evidence_type,
+        evidence=context.insight.evidence,
+        interpretation=context.insight.interpretation,
+        review_note=context.insight.review_note,
+        covered=context.insight.covered,
+        input_reason=context.insight.input_reason,
+        evidence_ids=context.insight.evidence_ids,
+        source_ids=context.insight.source_ids,
+        used_web_fallback=context.insight.used_web_fallback,
+    )
+    after = before.model_copy(update={
+        "summary": "Proposed operational finding from scoped research.",
+        "detail": "The selected evidence defines the full operational rule.",
+        "evidence_type": "steps",
+        "evidence": ["Apply a treatment-free gap before a regimen change."],
+        "interpretation": "Use the rule consistently for cohort construction.",
+        "review_note": "Confirm the implementation date with the reviewer.",
+        "evidence_ids": [item.id for item in evidence],
+        "source_ids": [item.source_id for item in evidence],
+        "used_web_fallback": True,
+    })
     return ProposalDraft(
         proposal=InsightRevisionProposal(
             id="wprop_http",
@@ -66,6 +106,26 @@ async def _proposal(context, registry, llm_client):
             ],
             source_ids=[item.id for item in evidence],
             base_summary_digest=hashlib.sha256(context.insight.summary.encode()).hexdigest(),
+            before_content=before,
+            after_content=after,
+            changed_fields=[
+                InsightCardFieldChange(
+                    field="summary",
+                    kind="changed",
+                    before=before.summary,
+                    after=after.summary,
+                    evidence_ids=[item.id for item in evidence],
+                    reason="The selected evidence now defines the operational rule.",
+                ),
+            ],
+            support_by_field=[
+                InsightFieldSupport(field=field, evidence_ids=[item.id for item in evidence])
+                for field in ("summary", "detail", "evidence", "interpretation")
+            ],
+            applyable=True,
+            unsupported_factual_fields=[],
+            unchanged_fields=[],
+            base_content_digest=insight_card_digest(context.insight),
         ),
         evidence=evidence,
         sites=[],
@@ -138,6 +198,7 @@ def seeded(tmp_path):
         url="https://example.org/selected",
         quote="A treatment-free gap can define a new line.",
         origin=EvidenceOrigin.APPROVED_API,
+        identifiers={"member_id": "MEM-privacy-test"},
     )
     other_evidence = Evidence(
         id="ev_workspace_other",
@@ -223,6 +284,108 @@ async def test_message_route_streams_typed_events_in_order(client, seeded):
     frames = [frame for frame in text.split("\n\n") if frame]
     assert all(frame.startswith("event: ") and "\ndata: " in frame for frame in frames)
     assert all(json.loads(frame.split("\ndata: ", 1)[1]) for frame in frames)
+    statuses = [
+        json.loads(frame.split("\ndata: ", 1)[1])["detail"]
+        for frame in frames if frame.startswith("event: research_status")
+    ]
+    assert statuses == [
+        "checking_evidence", "searching_web_azure", "azure_unavailable_trying_firecrawl",
+        "reading_validating_sources", "research_completed",
+    ]
+    assert text.index("azure_unavailable_trying_firecrawl") < text.index("event: answer_completed")
+    completion = json.loads(next(
+        frame.split("\ndata: ", 1)[1] for frame in frames
+        if frame.startswith("event: answer_completed")
+    ))
+    assert completion["sources"]
+    assert {"id", "source_id", "source_name", "url", "quote"} <= set(completion["sources"][0])
+    assert not ({"search_provider", "search_queries", "hydration_status", "citation_metadata"}
+                & set(completion["sources"][0]))
+    assert "sanitized research brief" not in text
+    assert "identifiers" not in completion["sources"][0]
+    assert "MEM-privacy-test" not in text
+
+
+@pytest.mark.asyncio
+async def test_workspace_routes_keep_their_methods_and_ignore_client_supplied_revision_state(client, seeded):
+    """A route change that trusts body-supplied card data must fail this contract."""
+    run_id, insight_id, _ = seeded
+    proposal = await client.post(
+        f"/runs/{run_id}/insights/{insight_id}/workspace/proposal",
+        json={"card": {"summary": "Client supplied"}, "authorization": True},
+    )
+    assert proposal.status_code == 200
+    assert set(proposal.json()) == {"proposal_id", "proposal_html"}
+
+    applied = await client.post(
+        f"/runs/{run_id}/insights/{insight_id}/workspace/proposals/{proposal.json()['proposal_id']}/apply",
+        json={
+            "card": {"summary": "Client supplied"},
+            "authorization": True,
+            "digest": "client-digest",
+            "sources": ["client-source"],
+        },
+    )
+    assert applied.status_code == 200
+    assert set(applied.json()) == {"card_html", "workspace_html"}
+    assert "Client supplied" not in applied.json()["card_html"]
+
+
+@pytest.mark.asyncio
+async def test_azure_and_firecrawl_completion_payloads_share_one_private_free_source_shape(
+    client, monkeypatch, seeded,
+):
+    """Provider audit must not create a provider-specific or identifying SSE source payload."""
+    run_id, insight_id, store = seeded
+
+    def answerer_for(provider):
+        async def answer(context, user_text, registry, on_status, llm_client):
+            await on_status("searching_web_azure" if provider == "azure_web_search" else "azure_unavailable_trying_firecrawl")
+            return ResearchTurnResult(
+                text="Provider-neutral research result.",
+                evidence=context.evidence,
+                citations=[],
+                source_evidence_ids=[item.id for item in context.evidence],
+                searched=True,
+                note="",
+                sites=[],
+                source_audit={
+                    context.evidence[0].url: {
+                        "search_provider": provider,
+                        "search_queries": ["sanitized query secret"],
+                        "hydration_status": "hydrated",
+                        "citation_metadata": [{"raw_response": "provider raw secret"}],
+                        "claims_context": "claims context secret",
+                    },
+                },
+            )
+        return answer
+
+    source_keys = []
+    for provider in ("azure_web_search", "firecrawl"):
+        monkeypatch.setattr(
+            app_mod, "_insight_workspace_service",
+            lambda provider=provider: _service(store, answerer_for(provider)),
+        )
+        response = await client.post(
+            f"/runs/{run_id}/insights/{insight_id}/workspace/messages",
+            json={"message": f"Research through {provider}."},
+        )
+        completion = next(
+            json.loads(frame.split("\ndata: ", 1)[1])
+            for frame in response.text.split("\n\n")
+            if frame.startswith("event: answer_completed")
+        )
+        source_keys.append(set(completion["sources"][0]))
+        assert not ({"identifiers", "search_provider", "search_queries", "hydration_status",
+                    "citation_metadata", "claims_context", "raw_response"}
+                    & set(completion["sources"][0]))
+        assert "sanitized query secret" not in response.text
+        assert "provider raw secret" not in response.text
+        assert "claims context secret" not in response.text
+        assert "MEM-privacy-test" not in response.text
+
+    assert source_keys[0] == source_keys[1]
 
 
 @pytest.mark.asyncio
@@ -250,6 +413,53 @@ async def test_proposal_then_apply_refreshes_card_sources_and_evidence_panel(cli
     assert evidence.status_code == 200
     assert "2 items" in evidence.text
     assert "Supplementary evidence supports an updated operational rule." in evidence.text
+
+
+@pytest.mark.asyncio
+async def test_unsupported_factual_preview_disables_apply_and_route_preserves_state(
+    client, monkeypatch, seeded,
+):
+    run_id, insight_id, store = seeded
+
+    async def unsupported_proposal(context, registry, llm_client):
+        draft = await _proposal(context, registry, llm_client)
+        return ProposalDraft(
+            proposal=draft.proposal.model_copy(update={
+                "support_by_field": [],
+                "applyable": False,
+                "unsupported_factual_fields": ["summary", "detail", "evidence", "interpretation"],
+                "after_content": draft.proposal.after_content.model_copy(update={
+                    "covered": False,
+                    "input_reason": "Evidence support is required for the proposed factual update.",
+                }),
+            }),
+            evidence=draft.evidence,
+            sites=draft.sites,
+        )
+
+    monkeypatch.setattr(app_mod, "_insight_workspace_service", lambda: InsightWorkspaceService(
+        store=store, registry_factory=dict, answerer=_answer, summarizer=_summary,
+        proposal_builder=unsupported_proposal, llm_client=object(), lock_registry={},
+    ))
+    proposed = await client.post(f"/runs/{run_id}/insights/{insight_id}/workspace/proposal", json={})
+    assert proposed.status_code == 200
+    assert "Evidence support is required before this factual update can be applied" in proposed.json()["proposal_html"]
+    assert "Summary, Detail, Structured evidence, Interpretation" in proposed.json()["proposal_html"]
+    assert "data-workspace-apply-url" not in proposed.json()["proposal_html"]
+
+    before_insight = store.get_insight(run_id, insight_id).model_dump_json()
+    before_evidence = [item.model_dump_json() for item in store.get_evidence(run_id)]
+    before_workspace = store.get_insight_workspace(run_id, insight_id).model_dump_json()
+    rejected = await client.post(
+        f"/runs/{run_id}/insights/{insight_id}/workspace/proposals/{proposed.json()['proposal_id']}/apply",
+        json={},
+    )
+
+    assert rejected.status_code == 409
+    assert "Summary, Detail, Structured evidence, Interpretation" in rejected.text
+    assert store.get_insight(run_id, insight_id).model_dump_json() == before_insight
+    assert [item.model_dump_json() for item in store.get_evidence(run_id)] == before_evidence
+    assert store.get_insight_workspace(run_id, insight_id).model_dump_json() == before_workspace
 
 
 @pytest.mark.asyncio
@@ -446,3 +656,27 @@ async def test_stale_proposal_and_failed_research_have_safe_route_contracts(clie
     assert stale.status_code == 409
     assert "event: error\n" in failed.text
     assert failed.text.endswith("\n\n")
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_a_stale_completed_bundle_without_partial_writes(client, seeded):
+    """An export captured before Apply cannot replace the completed applied card."""
+    run_id, insight_id, store = seeded
+    service = _service(store)
+    proposal = await service.propose(run_id, insight_id)
+    stale_bundle = app_mod._export_bundle(store.get_run(run_id))
+    applied = await service.apply(run_id, insight_id, proposal.id)
+    before_run = store.get_run(run_id).model_dump_json()
+    before_questions = [item.model_dump_json() for item in store.get_questions(run_id)]
+    before_reports = [item.model_dump_json() for item in store.get_stage_reports(run_id)]
+
+    response = await client.post(
+        "/projects/import",
+        files={"bundle": ("stale.json", json.dumps(stale_bundle).encode(), "application/json")},
+    )
+
+    assert response.status_code == 409
+    assert store.get_insight(run_id, insight_id).summary == applied.insight.summary
+    assert store.get_run(run_id).model_dump_json() == before_run
+    assert [item.model_dump_json() for item in store.get_questions(run_id)] == before_questions
+    assert [item.model_dump_json() for item in store.get_stage_reports(run_id)] == before_reports

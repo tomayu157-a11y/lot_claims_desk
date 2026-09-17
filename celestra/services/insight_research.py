@@ -1,18 +1,29 @@
 """Insight-scoped research conversation and proposal adapter."""
 from __future__ import annotations
 
-import hashlib
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..models import (
     Evidence,
     Insight,
+    InsightFieldSupport,
     InsightRevisionProposal,
     InsightWorkspaceMessage,
     ResearchQuestion,
     RunConfig,
     WorkspaceMessageRole,
+)
+from .insight_reconciliation import (
+    EDITORIAL_CARD_FIELDS,
+    CardProposalInvalid,
+    DerivedCardState,
+    InsightCardReconciler,
+    insight_card_content,
 )
 from .llm import LLMUnavailable, llm
 from .revision import revise
@@ -22,15 +33,46 @@ class ProposalUnsupported(RuntimeError):
     """Raised when held and supplementary evidence cannot support an update."""
 
 
+class _FieldSupportPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    field: Literal[
+        "summary", "detail", "evidence_type", "evidence", "interpretation", "review_note",
+    ]
+    evidence_ids: list[str]
+    reason: str = ""
+
+
+class _FullCardProposalPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    summary: str
+    detail: str
+    evidence_type: str
+    evidence: Any
+    interpretation: str
+    review_note: str
+    support_by_field: list[_FieldSupportPayload]
+    change_reasons: dict[str, str]
+
+
 @dataclass
 class ResearchContext:
     insight: Insight
-    question: ResearchQuestion
     evidence: list[Evidence]
     config: RunConfig
     continuity_summary: str
     messages: list[InsightWorkspaceMessage]
+    questions: list[ResearchQuestion] = field(default_factory=list)
+    question: ResearchQuestion | None = None
     synonyms: list[str] = field(default_factory=list)
+    planning_claims_context: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.questions:
+            if self.question is None:
+                raise ValueError("an insight research context needs a linked research question")
+            self.questions = [self.question]
+        if self.question is None:
+            self.question = self.questions[0]
 
 
 @dataclass
@@ -42,6 +84,8 @@ class ResearchTurnResult:
     searched: bool
     note: str
     sites: list[dict] = field(default_factory=list)
+    source_audit: dict[str, dict[str, Any]] = field(default_factory=dict)
+    retryable: bool = False
 
 
 @dataclass
@@ -49,6 +93,8 @@ class ProposalDraft:
     proposal: InsightRevisionProposal
     evidence: list[Evidence]
     sites: list[dict] = field(default_factory=list)
+    source_audit: dict[str, dict[str, Any]] = field(default_factory=dict)
+    derived: DerivedCardState | None = None
 
 
 def _completed_transcript(messages: list[InsightWorkspaceMessage]) -> str:
@@ -63,7 +109,11 @@ def _instruction(context: ResearchContext, user_text: str) -> str:
     transcript = _completed_transcript(context.messages)
     insight = context.insight
     config = context.config
-    aspects = ", ".join(context.question.aspects) or "(none)"
+    linked_questions = "\n".join(
+        f"- Question: {question.text}\n  Aspects: {', '.join(question.aspects) or '(none)'}\n"
+        f"  Current answer: {question.answer_text or '(none)'}"
+        for question in context.questions
+    )
     return (
         "Continue the selected insight's research conversation and answer the latest request. "
         "The held evidence is a starting point, not a reason to stop: when the user asks for "
@@ -87,10 +137,7 @@ def _instruction(context: ResearchContext, user_text: str) -> str:
         f"Geography: {config.geography}\n"
         f"Research cutoff: {config.research_cutoff or '(not specified)'}\n"
         f"Additional context: {config.additional_context or '(none)'}\n\n"
-        "Linked research question:\n"
-        f"Question: {context.question.text}\n"
-        f"Aspects: {aspects}\n"
-        f"Current answer: {context.question.answer_text or '(none)'}\n\n"
+        f"Linked research questions:\n{linked_questions}\n\n"
         f"Continuity summary:\n{context.continuity_summary or '(none)'}\n\n"
         f"Recent conversation:\n{transcript or '(none)'}\n\n"
         f"Latest user request:\n{user_text}"
@@ -128,10 +175,12 @@ async def answer_turn(
     registry: dict,
     on_status: Callable[[str], Awaitable[None]],
     llm_client=None,
+    research_gateway=None,
 ) -> ResearchTurnResult:
+    question = context.questions[0]
     result = await revise(
         context.insight,
-        context.question,
+        question,
         context.evidence,
         _instruction(context, user_text),
         context.config,
@@ -141,6 +190,9 @@ async def answer_turn(
         llm_client=llm_client or llm,
         latest_user_request=user_text,
         evidence_required=_requires_evidence(user_text),
+        question_framing="\n\n".join(question.text for question in context.questions),
+        research_context=context,
+        research_gateway=research_gateway,
     )
     return ResearchTurnResult(
         text=result.text or result.note,
@@ -150,6 +202,8 @@ async def answer_turn(
         searched=result.searched,
         note=result.note,
         sites=result.sites,
+        source_audit=result.source_audit,
+        retryable=result.retryable,
     )
 
 
@@ -168,42 +222,78 @@ async def build_proposal(
             and message.state.value == "completed"
         )
     ]
-    instruction = (
-        "Rewrite the current finding from the approved insight-scoped conversation.\n\n"
-        f"Continuity summary:\n{context.continuity_summary or '(none)'}\n\n"
-        f"Conversation:\n{_completed_transcript(context.messages) or '(none)'}"
-    )
-    result = await revise(
-        context.insight,
-        context.question,
-        context.evidence,
-        instruction,
-        context.config,
-        registry,
-        context.synonyms,
-        llm_client=model,
-        evidence_required=True,
-    )
-    if not result.text:
-        if result.provider_unavailable:
-            raise LLMUnavailable(result.note or "The model is unavailable. Try again.")
-        raise ProposalUnsupported(
-            result.note or "The evidence did not support an update."
+    try:
+        raw_payload = await model.complete_json(
+            "Draft a complete, evidence-grounded update for the selected insight card. "
+            "Use concise business language. Return only the requested JSON. Do not set "
+            "identity, covered, input_reason, confidence, tag, source ids, evidence ids, "
+            "web state, review state, or any structural metadata.",
+            _proposal_instruction(context),
+            max_tokens=3000,
         )
+        payload = _FullCardProposalPayload.model_validate(raw_payload)
+    except ValidationError as exc:
+        note = raw_payload.get("note") if isinstance(raw_payload, dict) else ""
+        raise ProposalUnsupported(note or "The model did not return a complete card proposal.") from exc
 
-    digest = hashlib.sha256(context.insight.summary.encode()).hexdigest()
-    proposal = InsightRevisionProposal(
-        proposed_summary=result.text[:400],
-        change_note=(result.note or "Finding rewritten from the conversation.")[:400],
-        basis_message_ids=[message.id for message in basis],
-        source_ids=result.support_evidence_ids,
-        web_sites=result.sites,
-        base_summary_digest=digest,
-    )
+    support = [
+        InsightFieldSupport(
+            field=item.field,
+            evidence_ids=item.evidence_ids,
+            reason=item.reason or payload.change_reasons.get(item.field, ""),
+        )
+        for item in payload.support_by_field
+    ]
+    editorial_content = {
+        field: getattr(payload, field)
+        for field in EDITORIAL_CARD_FIELDS
+    }
+    try:
+        reconciler = InsightCardReconciler()
+        proposal = reconciler.propose(
+            context.insight,
+            context.evidence,
+            editorial_content,
+            support,
+            payload.change_reasons,
+            [message.id for message in basis],
+        )
+    except (CardProposalInvalid, TypeError, ValueError) as exc:
+        raise ProposalUnsupported(str(exc)) from exc
     return ProposalDraft(
         proposal=proposal,
-        evidence=result.evidence,
-        sites=result.sites,
+        evidence=reconciler.active_evidence(proposal.after_content, context.evidence),
+        sites=proposal.web_sites,
+        derived=reconciler.derive_state(
+            proposal.after_content.covered,
+            proposal.after_content.input_reason,
+            reconciler.active_evidence(proposal.after_content, context.evidence),
+        ),
+    )
+
+
+def _proposal_instruction(context: ResearchContext) -> str:
+    current = insight_card_content(context.insight).model_dump(mode="json")
+    evidence_blocks = "\n\n".join(
+        f"[ID: {item.id} | Source: {item.source_name} | URL: {item.url}] {item.quote}"
+        for item in context.evidence
+        if item.quote.strip()
+    )
+    return (
+        "Create one complete replacement for the editorial content of this selected card. "
+        "Every factual statement in a changed summary, detail, evidence, or interpretation "
+        "must list supporting Evidence IDs from the blocks below. Use empty strings or null "
+        "evidence deliberately when removing stale editorial content; never omit a field.\n\n"
+        f"Current mutable card snapshot:\n{json.dumps(current, ensure_ascii=False)}\n\n"
+        f"Continuity summary:\n{context.continuity_summary or '(none)'}\n\n"
+        f"Selected conversation:\n{_completed_transcript(context.messages) or '(none)'}\n\n"
+        f"Selected Evidence:\n{evidence_blocks or '(none)'}\n\n"
+        "Return JSON exactly shaped as: "
+        '{"summary": str, "detail": str, "evidence_type": str, "evidence": object|null, '
+        '"interpretation": str, "review_note": str, "support_by_field": '
+        '[{"field": str, "evidence_ids": [str], "reason": str}], '
+        '"change_reasons": {"field": str}}. '
+        "evidence_type is metrics, table, steps, list, or an empty string."
     )
 
 

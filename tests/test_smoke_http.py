@@ -21,6 +21,7 @@ import celestra.services.orchestrator as orch_mod
 import celestra.store as store_mod
 from celestra.models import RunStatus
 from celestra.store import Store
+from tests.full_card_apply_regression import assert_full_card_apply_regression
 
 FORBIDDEN = re.compile(r"\bbucket", re.I)
 
@@ -39,6 +40,14 @@ async def main() -> int:
         print(f"  {'PASS' if ok else 'FAIL'}  {label}{(' — ' + detail) if detail else ''}")
         if not ok:
             failures.append(label)
+
+    print("\n== deterministic full-card Apply regression ==")
+    try:
+        await assert_full_card_apply_regression()
+    except AssertionError as exc:
+        check("full-card Apply updates only the selected card across review/export/report", False, str(exc))
+    else:
+        check("full-card Apply updates only the selected card across review/export/report", True)
 
     transport = httpx.ASGITransport(app=app_mod.app)
     async with httpx.AsyncClient(

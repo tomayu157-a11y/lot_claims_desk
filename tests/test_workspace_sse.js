@@ -79,6 +79,7 @@ function element() {
     set(html) {
       this._innerHTML = html;
       this.firstChild = { textContent: '' };
+      this.firstElementChild = this;
     }
   });
   Object.defineProperty(value, 'textContent', {
@@ -181,6 +182,186 @@ async function main() {
   assert.equal(flashArea.children.length, 1);
   assert.equal(flashArea.children[0].firstChild.textContent, 'The model is unavailable. Try again.');
 
+  // A cross-origin redirect must never be treated as trusted server HTML.
+  global.fetch = async () => ({
+    ok: true,
+    url: 'https://outside.example/proposal',
+    headers: { get: () => 'application/json' },
+    json: async () => ({ proposal_html: '<p>Untrusted preview</p>' })
+  });
+  listeners
+    .filter((item) => item.type === 'click')
+    .forEach((item) => item.handler({ target: proposalButton, preventDefault() {} }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(preview.hidden, true);
+  assert.equal(preview.innerHTML, '<p>Existing workspace document</p>');
+
+  const continuePreview = element();
+  continuePreview.hidden = false;
+  const continueInput = element();
+  let continueFocuses = 0;
+  continueInput.focus = () => { continueFocuses += 1; };
+  const continueWorkspace = element();
+  continueWorkspace.setAttribute('data-insight-workspace', '');
+  continueWorkspace.querySelector = (selector) => (
+    selector === '[data-workspace-preview]' ? continuePreview :
+      (selector === '[data-workspace-input]' ? continueInput : null)
+  );
+  const continueButton = element();
+  continueButton.closest = (selector) => (
+    selector === '[data-workspace-continue]' ? continueButton :
+      (selector === '[data-insight-workspace]' ? continueWorkspace : null)
+  );
+  listeners
+    .filter((item) => item.type === 'click')
+    .forEach((item) => item.handler({ target: continueButton, preventDefault() {} }));
+  assert.equal(continuePreview.hidden, true);
+  assert.equal(continueFocuses, 1);
+
+  const statusMessages = element();
+  statusMessages.setAttribute('data-workspace-messages', '');
+  const statusComposer = element();
+  statusComposer.setAttribute('data-workspace-composer', '');
+  const statusInput = element();
+  statusInput.setAttribute('data-workspace-input', '');
+  statusInput.value = 'Show the provider status.';
+  statusComposer.appendChild(statusInput);
+  const statusWorkspace = element();
+  statusWorkspace.setAttribute('data-insight-workspace', '');
+  statusWorkspace.setAttribute('data-run-id', 'run_status');
+  statusWorkspace.setAttribute('data-insight-id', 'ins_status');
+  statusWorkspace.appendChild(statusMessages);
+  statusWorkspace.appendChild(statusComposer);
+  let releaseStatusFrame;
+  let statusRead = 0;
+  global.fetch = async () => ({
+    ok: true,
+    body: { getReader() { return { async read() {
+      if (statusRead++ === 0) return {
+        done: false,
+        value: new TextEncoder().encode('event: research_status\ndata: {"detail":"provider_waiting_on_dns"}\n\n')
+      };
+      if (statusRead === 2) {
+        await new Promise((resolve) => { releaseStatusFrame = resolve; });
+        return {
+          done: false,
+          value: new TextEncoder().encode('event: answer_completed\ndata: {"sources":[]}\n\n')
+        };
+      }
+      return { done: true };
+    } }; } }
+  });
+  const submit = listeners.find((item) => item.type === 'submit');
+  submit.handler({ target: statusComposer, preventDefault() {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+  const statusAssistant = statusMessages.children[1];
+  assert.equal(
+    statusAssistant.querySelector('[data-workspace-message-state]').textContent,
+    'Provider Waiting On Dns'
+  );
+  releaseStatusFrame();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const originalQuerySelector = global.document.querySelector;
+  const originalQuerySelectorAll = global.document.querySelectorAll;
+  const applyInput = element();
+  applyInput.setAttribute('data-workspace-input', '');
+  const applyComposer = element();
+  applyComposer.setAttribute('data-workspace-composer', '');
+  applyComposer.appendChild(applyInput);
+  const applyWorkspace = element();
+  applyWorkspace.setAttribute('data-insight-workspace', '');
+  applyWorkspace.setAttribute('data-run-id', 'run_apply');
+  applyWorkspace.setAttribute('data-insight-id', 'ins_apply');
+  applyWorkspace.appendChild(applyComposer);
+  const selectedCard = element();
+  selectedCard.setAttribute('data-insight-id', 'ins_apply');
+  selectedCard.replaceWith = (fresh) => { selectedCard.replacement = fresh; };
+  const otherCard = element();
+  otherCard.setAttribute('data-insight-id', 'ins_other');
+  const gate = element();
+  gate.setAttribute('data-gate-panel', '');
+  gate.setAttribute('data-gate-url', '/gate');
+  gate.replaceWith = (fresh) => { gate.replacement = fresh; };
+  global.document.querySelector = (selector) => (
+    selector === '[data-flash-area]' ? flashArea :
+      (selector === '[data-gate-panel][data-gate-url]' ? gate : null)
+  );
+  global.document.querySelectorAll = (selector) => (
+    selector === '[data-insight-id]' ? [applyWorkspace, selectedCard, otherCard] : []
+  );
+  let openedWorkspace = '';
+  let insightRefreshes = 0;
+  window.Celestra.openModal = (html) => { openedWorkspace = html; };
+  window.Celestra.refreshInsights = () => { insightRefreshes += 1; };
+  const applyButton = element();
+  applyButton.setAttribute('data-workspace-apply-url', '/runs/run_apply/insights/ins_apply/workspace/proposals/wprop/apply');
+  applyButton.closest = (selector) => (
+    selector === '[data-workspace-apply-url]' ? applyButton :
+      (selector === '[data-insight-workspace]' ? applyWorkspace : null)
+  );
+  let applyFetches = 0;
+  global.fetch = async () => {
+    applyFetches += 1;
+    if (applyFetches === 1) {
+      return {
+        ok: true,
+        headers: { get: () => 'application/json' },
+        json: async () => ({ card_html: '<article>Selected replacement</article>', workspace_html: '<section>Reopened workspace</section>' })
+      };
+    }
+    return { ok: true, text: async () => '<section>Refreshed gate</section>' };
+  };
+  listeners
+    .filter((item) => item.type === 'click')
+    .forEach((item) => item.handler({ target: applyButton, preventDefault() {} }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(selectedCard.replacement, 'only the selected card is replaced');
+  assert.equal(otherCard.replacement, undefined);
+  assert.equal(openedWorkspace, '<section>Reopened workspace</section>');
+  assert.ok(gate.replacement, 'gate counts are refreshed after Apply');
+  assert.ok(insightRefreshes >= 2, 'insight counts are refreshed after Apply');
+  global.document.querySelector = originalQuerySelector;
+  global.document.querySelectorAll = originalQuerySelectorAll;
+
+  const failedPreview = element();
+  failedPreview.hidden = false;
+  failedPreview.innerHTML = '<p>Keep this proposal</p>';
+  const failedInput = element();
+  failedInput.setAttribute('data-workspace-input', '');
+  const failedComposer = element();
+  failedComposer.setAttribute('data-workspace-composer', '');
+  failedComposer.appendChild(failedInput);
+  const failedWorkspace = element();
+  failedWorkspace.setAttribute('data-insight-workspace', '');
+  failedWorkspace.setAttribute('data-run-id', 'run_failed');
+  failedWorkspace.setAttribute('data-insight-id', 'ins_failed');
+  failedWorkspace.querySelector = (selector) => (
+    selector === '[data-workspace-preview]' ? failedPreview :
+      (selector === '[data-workspace-composer]' ? failedComposer :
+        (selector === '[data-workspace-input]' ? failedInput : null))
+  );
+  const failedApply = element();
+  failedApply.setAttribute('data-workspace-apply-url', '/runs/run_failed/insights/ins_failed/workspace/proposals/wprop/apply');
+  failedApply.closest = (selector) => (
+    selector === '[data-workspace-apply-url]' ? failedApply :
+      (selector === '[data-insight-workspace]' ? failedWorkspace : null)
+  );
+  global.fetch = async () => ({
+    ok: false,
+    headers: { get: () => 'application/json' },
+    json: async () => ({ detail: 'Apply failed.' })
+  });
+  listeners
+    .filter((item) => item.type === 'click')
+    .forEach((item) => item.handler({ target: failedApply, preventDefault() {} }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(failedPreview.hidden, false);
+  assert.equal(failedPreview.innerHTML, '<p>Keep this proposal</p>');
+  assert.equal(failedComposer.getAttribute('aria-busy'), 'false');
+  assert.equal(failedInput.disabled, false);
+
   const enterMessages = element();
   enterMessages.setAttribute('data-workspace-messages', '');
   const enterComposer = element();
@@ -282,7 +463,6 @@ async function main() {
   const scheduled = [];
   const nativeWindowTimeout = window.setTimeout;
   window.setTimeout = (callback) => { scheduled.push(callback); return scheduled.length; };
-  const submit = listeners.find((item) => item.type === 'submit');
   submit.handler({ target: typingComposer, preventDefault() {} });
   await new Promise((resolve) => setImmediate(resolve));
 

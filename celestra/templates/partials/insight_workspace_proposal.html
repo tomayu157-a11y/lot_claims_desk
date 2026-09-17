@@ -1,28 +1,111 @@
 {% from "partials/icons.html" import icon %}
 {% set proposed = proposal | default({"id": "", "proposed_summary": "", "change_note": "", "source_ids": []}, true) %}
+{% set after = proposed.after_content | default(none, true) %}
+{% set groups = proposal_change_groups | default({"added": [], "removed": [], "changed": []}, true) %}
+{% set source_by_id = proposal_source_by_id | default({}, true) %}
+{% set labels = proposal_field_labels | default({}, true) %}
+{% set unchanged = proposed.unchanged_fields | default([], true) %}
+{% set applyable = proposed.applyable | default(true) %}
+{% set unsupported_fields = proposed.unsupported_factual_fields | default([], true) %}
 <section class="review-note is-revision insight-workspace-proposal" data-workspace-proposal-id="{{ proposed.id }}">
   <p class="eyebrow">PROPOSED UPDATE</p>
-  <div class="icard-label">Proposed finding</div>
+  <div class="icard-label">Complete proposed finding</div>
+  {% if after %}
+  <div class="readonly-block workspace-proposed-card">
+    <div class="workspace-card-section"><strong>Summary</strong><p>{{ after.summary }}</p></div>
+    {% if after.detail %}<div class="workspace-card-section"><strong>Detail</strong><p>{{ after.detail }}</p></div>{% endif %}
+    {% if after.evidence %}
+    <div class="workspace-card-section"><strong>Structured evidence</strong>
+      {% if after.evidence_type == 'metrics' %}
+      <ul>{% for metric in after.evidence %}<li>{{ metric.label }}: {{ metric.value }}</li>{% endfor %}</ul>
+      {% elif after.evidence_type == 'table' %}
+      <ul>{% for row in after.evidence.rows %}<li>{{ row | join(' · ') }}</li>{% endfor %}</ul>
+      {% else %}
+      <ul>{% for item in after.evidence %}<li>{{ item }}</li>{% endfor %}</ul>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% if after.interpretation %}<div class="workspace-card-section"><strong>Interpretation</strong><p>{{ after.interpretation }}</p></div>{% endif %}
+    {% if after.review_note %}<div class="workspace-card-section"><strong>Review note</strong><p>{{ after.review_note }}</p></div>{% endif %}
+  </div>
+  {% else %}
   <div class="readonly-block">{{ proposed.proposed_summary }}</div>
+  {% endif %}
   <div class="icard-label">Why this changes</div>
   <p>{{ proposed.change_note }}</p>
-  {% if proposed.source_ids %}
-  <div class="icard-label">Supporting sources</div>
-  <div class="chip-row" aria-label="Proposal sources">
-    {% for source in available_sources if source.id in proposed.source_ids %}
-      <a class="source-chip" href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.organization or source.source_name }}</a>
-    {% endfor %}
-  </div>
+
+  {% if proposal_has_removals | default(false) %}
+  <p class="workspace-removal-warning" role="status">Content and active source links will be removed from this finding when you apply this update. Historical research remains available.</p>
+  {% endif %}
+
+  {% if not applyable %}
+  <p class="workspace-removal-warning" role="status" data-workspace-apply-blocked>
+    {% if unsupported_fields %}
+    Evidence support is required before this factual update can be applied:
+    {% for field in unsupported_fields %}{{ labels.get(field, field | replace('_', ' ') | title) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    Continue researching to support or remove these fields.
+    {% else %}
+    This proposal predates evidence-support checks. Regenerate it before applying.
+    {% endif %}
+  </p>
+  {% endif %}
+
+  {% for kind, heading in [("added", "Added"), ("removed", "Removed"), ("changed", "Changed")] %}
+    {% if groups[kind] %}
+    <section class="workspace-change-group is-{{ kind }}">
+      <h3>{{ heading }}</h3>
+      {% for change in groups[kind] %}
+      <article class="workspace-change" data-workspace-change="{{ change.field }}">
+        <strong>{{ labels.get(change.field, change.field | replace('_', ' ') | title) }}</strong>
+        {% if change.before is not none %}<p><span class="meta">Current:</span> {{ change.before }}</p>{% endif %}
+        {% if change.after is not none %}<p><span class="meta">Proposed:</span> {{ change.after }}</p>{% endif %}
+        {% if change.item_changes %}
+        <ul class="workspace-item-changes">
+          {% for item in change.item_changes %}
+          <li class="is-{{ item.kind }}"><strong>{{ item.kind | title }}</strong>:
+            {% if item.before is defined and item.before is not none %}{{ item.before }}{% endif %}
+            {% if item.after is defined and item.after is not none %}{% if item.before is defined and item.before is not none %} → {% endif %}{{ item.after }}{% endif %}
+            {% if item.value is defined %}{{ item.value }}{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% if change.reason %}<p class="meta">{{ change.reason }}</p>{% endif %}
+        {% if change.evidence_ids %}
+        <div class="chip-row workspace-change-sources" aria-label="Sources supporting this change">
+          {% for source_id in change.evidence_ids %}
+            {% set source = source_by_id.get(source_id) %}
+            {% if source %}<a class="source-chip" href="{{ source.url }}" target="_blank" rel="noopener noreferrer">{{ source.organization or source.source_name }}</a>{% endif %}
+          {% endfor %}
+        </div>
+        {% endif %}
+      </article>
+      {% endfor %}
+    </section>
+    {% endif %}
+  {% endfor %}
+
+  {% if unchanged %}
+  <details class="workspace-unchanged">
+    <summary>Unchanged sections</summary>
+    <ul>{% for field in unchanged %}<li>{{ labels.get(field, field | replace('_', ' ') | title) }}</li>{% endfor %}</ul>
+  </details>
   {% endif %}
   {% if not locked %}
   <div class="modal-actions">
     <button type="button" class="btn btn-secondary" data-workspace-continue>
       Continue researching
     </button>
-    <button type="button" class="btn btn-primary"
-            data-workspace-apply-url="/runs/{{ run.id }}/insights/{{ insight.id }}/workspace/proposals/{{ proposed.id }}/apply">
-      {{ icon('check', 14) }} Apply update
-    </button>
+    {% if applyable %}
+      <button type="button" class="btn btn-primary"
+              data-workspace-apply-url="/runs/{{ run.id }}/insights/{{ insight.id }}/workspace/proposals/{{ proposed.id }}/apply">
+        {{ icon('check', 14) }} Apply update
+      </button>
+    {% else %}
+      <button type="button" class="btn btn-primary" disabled aria-disabled="true">
+        {{ icon('check', 14) }} Apply update
+      </button>
+    {% endif %}
   </div>
   {% endif %}
 </section>

@@ -14,6 +14,7 @@ import html
 import re
 import sys
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -33,6 +34,8 @@ from celestra.models import (
     Evidence,
     EvidenceOrigin,
     Insight,
+    InsightCardContent,
+    InsightCardFieldChange,
     InsightRevisionProposal,
     InsightTable,
     InsightWorkspace,
@@ -51,6 +54,7 @@ from celestra.models import (
     WorkspaceMessageState,
     workspace_id,
 )
+from celestra.services import orchestrator as orchestrator_mod
 
 TEMPLATES = ROOT / "celestra" / "templates"
 STATIC = ROOT / "celestra" / "static"
@@ -58,6 +62,35 @@ STATIC = ROOT / "celestra" / "static"
 TAG_RE = re.compile(
     r"\[(VERIFIED|GENERAL KNOWLEDGE|ORIGINAL|INFERENCE|NOT VERIFIED|UPDATE(?:[^\]]*)?)\]"
 )
+
+
+class GateFormParser(HTMLParser):
+    """Capture the rendered Review Gate form and its submit controls."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.forms: list[dict[str, object]] = []
+        self._form: dict[str, object] | None = None
+        self._button: dict[str, object] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "form" and "data-gate-form" in attributes:
+            self._form = {"attrs": attributes, "buttons": []}
+            self.forms.append(self._form)
+        elif tag == "button" and self._form is not None:
+            self._button = {"attrs": attributes, "text": []}
+
+    def handle_data(self, data: str) -> None:
+        if self._button is not None:
+            self._button["text"].append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "button" and self._button is not None and self._form is not None:
+            self._form["buttons"].append(self._button)
+            self._button = None
+        elif tag == "form":
+            self._form = None
 
 
 def tagify(value):
@@ -773,6 +806,234 @@ def test_insight_workspace_has_scoped_chat_and_update_controls(env, context):
     assert "This conversation can only use this insight and its research." in out
 
 
+def test_workspace_renders_a_complete_escaped_full_card_preview(env, context):
+    """Dropping a changed card field or trusting template HTML must fail this preview."""
+    selected = context["insight"]
+    source = context["workspace"].sources[0]
+    unrelated = source.model_copy(update={
+        "id": "ev_unrelated",
+        "source_id": "unrelated_source",
+        "organization": "Unrelated source",
+        "url": "https://example.org/unrelated",
+    })
+    before = InsightCardContent(
+        summary="Current summary <script>current()</script>",
+        detail="Current detail",
+        evidence_type="table",
+        evidence={"columns": ["Rule", "Value"], "rows": [["Gap", "90 days"]]},
+        interpretation="Current interpretation",
+        review_note="Current review note",
+        evidence_ids=[source.id],
+        source_ids=[source.source_id],
+    )
+    after = before.model_copy(update={
+        "summary": "Proposed summary <img src=x onerror=alert(1)>",
+        "detail": "Proposed detail",
+        "evidence_type": "metrics",
+        "evidence": [{"label": "Gap", "value": "60 days"}],
+        "interpretation": "Proposed interpretation",
+        "review_note": "Proposed review note",
+        "evidence_ids": [source.id],
+        "source_ids": [source.source_id],
+        "used_web_fallback": True,
+    })
+    proposal = InsightRevisionProposal(
+        id="wprop_complete_preview",
+        proposed_summary=after.summary,
+        change_note="Reconcile the complete finding.",
+        source_ids=[source.id],
+        before_content=before,
+        after_content=after,
+        changed_fields=[
+            InsightCardFieldChange(field="summary", kind="changed", before=before.summary, after=after.summary,
+                                   evidence_ids=[source.id], reason="Supported summary"),
+            InsightCardFieldChange(field="detail", kind="added", before="", after=after.detail,
+                                   evidence_ids=[source.id]),
+            InsightCardFieldChange(field="review_note", kind="removed", before=before.review_note, after=""),
+            InsightCardFieldChange(field="evidence", kind="changed", before=before.evidence, after=after.evidence,
+                                   evidence_ids=[source.id], item_changes=[
+                                       {"kind": "changed", "identity": {"label": "Gap", "occurrence": 0},
+                                        "before": {"label": "Gap", "value": "90 days"},
+                                        "after": {"label": "Gap", "value": "60 days"}},
+                                       {"kind": "removed", "identity": {"row": ["Restart", "yes"], "occurrence": 0},
+                                        "before": ["Restart", "yes"], "after": None},
+                                       {"kind": "added", "value": "Same-day combination", "occurrence": 0},
+                                   ]),
+        ],
+        unchanged_fields=["covered", "input_reason"],
+        applyable=True,
+        unsupported_factual_fields=[],
+        base_content_digest="complete-preview",
+    )
+    workspace = context["workspace"].model_copy(update={"pending_proposal": proposal})
+    insight = selected.model_copy(update={
+        "summary": before.summary,
+        "detail": before.detail,
+        "evidence_type": before.evidence_type,
+        "evidence": before.evidence,
+        "interpretation": before.interpretation,
+        "review_note": before.review_note,
+    })
+
+    out = render_workspace(env, {
+        **context,
+        "insight": insight,
+        "workspace": workspace,
+        "available_sources": [source, unrelated],
+        "proposal_change_groups": {
+            "added": [proposal.changed_fields[1]],
+            "removed": [proposal.changed_fields[2]],
+            "changed": [proposal.changed_fields[0], proposal.changed_fields[3]],
+        },
+        "proposal_has_removals": True,
+        "proposal_source_by_id": {source.id: source, unrelated.id: unrelated},
+        "proposal_field_labels": {},
+    }, locked=False)
+
+    for text in (
+        "Current summary", "Current detail", "Current interpretation", "Current review note",
+        "Proposed summary", "Proposed detail", "Proposed interpretation", "Proposed review note",
+        "Added", "Removed", "Changed", "60 days", "Restart", "Same-day combination",
+        "Content and active source links will be removed", "Unchanged sections",
+    ):
+        assert text in out
+    source_label = source.organization or source.source_name
+    assert source_label in out
+    assert "Unrelated source" in out  # available to the chat, not credited to a change
+    proposal_html = env.get_template("partials/insight_workspace_proposal.html").render(
+        **{**context, "insight": insight, "proposal": proposal,
+           "available_sources": [source, unrelated], "locked": False,
+           "proposal_change_groups": {
+               "added": [proposal.changed_fields[1]],
+               "removed": [proposal.changed_fields[2]],
+               "changed": [proposal.changed_fields[0], proposal.changed_fields[3]],
+           },
+           "proposal_has_removals": True,
+           "proposal_source_by_id": {source.id: source, unrelated.id: unrelated},
+           "proposal_field_labels": {}},
+    )
+    assert "Unrelated source" not in proposal_html
+    assert proposal_html.count(source_label) == 3
+    assert "<details" in out and "Unchanged sections" in out
+    assert out.count("data-workspace-apply-url") == 1
+    assert out.count("data-workspace-continue") == 1
+    assert "<script>current()</script>" not in out
+    assert "&lt;script&gt;current()&lt;/script&gt;" in out
+    assert "<img src=x onerror=alert(1)>" not in out
+    assert "&lt;img src=x onerror=alert(1)&gt;" in out
+
+
+def test_workspace_preview_keeps_unsupported_factual_fields_read_only(env, context):
+    source = context["workspace"].sources[0]
+    before = InsightCardContent(summary="Current summary", evidence_ids=[source.id], source_ids=[source.source_id])
+    after = before.model_copy(update={
+        "summary": "Unsupported factual replacement",
+        "covered": False,
+        "input_reason": "Evidence support is required for the proposed factual update.",
+    })
+    proposal = InsightRevisionProposal(
+        id="wprop_unsupported_preview",
+        proposed_summary=after.summary,
+        source_ids=[source.id],
+        before_content=before,
+        after_content=after,
+        applyable=False,
+        unsupported_factual_fields=["summary"],
+    )
+    workspace = context["workspace"].model_copy(update={"pending_proposal": proposal})
+
+    out = render_workspace(env, {**context, "workspace": workspace}, locked=False)
+
+    assert "Evidence support is required before this factual update can be applied" in out
+    assert "Summary" in out
+    assert "data-workspace-apply-url" not in out
+    assert "data-workspace-continue" in out
+
+
+def test_workspace_preview_keeps_hybrid_unsupported_support_warning(env, context):
+    """A supplied factual-support reason survives a legacy partial payload."""
+    source = context["workspace"].sources[0]
+    before = InsightCardContent(summary="Current summary", evidence_ids=[source.id], source_ids=[source.source_id])
+    after = before.model_copy(update={"summary": "Unsupported factual replacement"})
+    workspace_json = context["workspace"].model_dump(mode="json")
+    workspace_json["pending_proposal"] = {
+        "id": "wprop_hybrid_unsupported_preview",
+        "proposed_summary": after.summary,
+        "source_ids": [source.id],
+        "before_content": before.model_dump(mode="json"),
+        "after_content": after.model_dump(mode="json"),
+        "unsupported_factual_fields": ["summary"],
+    }
+    workspace = InsightWorkspace.model_validate(workspace_json)
+
+    out = render_workspace(env, {**context, "workspace": workspace}, locked=False)
+    warning = re.search(
+        r'<p class="workspace-removal-warning" role="status" data-workspace-apply-blocked>(.*?)</p>',
+        out,
+        re.DOTALL,
+    )
+
+    assert warning is not None
+    assert " ".join(warning.group(1).split()) == (
+        "Evidence support is required before this factual update can be applied: Summary. "
+        "Continue researching to support or remove these fields."
+    )
+    assert "This proposal predates evidence-support checks. Regenerate it before applying." not in out
+    assert "data-workspace-apply-url" not in out
+    assert "data-workspace-continue" in out
+
+
+def test_workspace_preview_keeps_missing_unsupported_state_generic(env, context):
+    """An explicit legacy applyable flag cannot enable a proposal without support detail."""
+    source = context["workspace"].sources[0]
+    before = InsightCardContent(summary="Current summary", evidence_ids=[source.id], source_ids=[source.source_id])
+    workspace_json = context["workspace"].model_dump(mode="json")
+    workspace_json["pending_proposal"] = {
+        "id": "wprop_hybrid_applyable_preview",
+        "proposed_summary": "Legacy factual replacement",
+        "source_ids": [source.id],
+        "before_content": before.model_dump(mode="json"),
+        "after_content": before.model_dump(mode="json"),
+        "applyable": True,
+    }
+    workspace = InsightWorkspace.model_validate(workspace_json)
+
+    out = render_workspace(env, {**context, "workspace": workspace}, locked=False)
+
+    assert "This proposal predates evidence-support checks. Regenerate it before applying." in out
+    assert "data-workspace-apply-url" not in out
+    assert "data-workspace-continue" in out
+
+
+def test_workspace_preview_keeps_legacy_complete_requires_input_proposal_read_only(env, context):
+    """Persisted proposals from before support-state fields must ask for regeneration."""
+    source = context["workspace"].sources[0]
+    before = InsightCardContent(
+        summary="Current summary", evidence_ids=[source.id], source_ids=[source.source_id],
+    )
+    after = before.model_copy(update={
+        "summary": "Unsupported factual replacement",
+        "covered": False,
+        "input_reason": "Evidence support is required for the proposed factual update.",
+    })
+    legacy_workspace_json = context["workspace"].model_dump(mode="json")
+    legacy_workspace_json["pending_proposal"] = {
+        "id": "wprop_legacy_complete_preview",
+        "proposed_summary": after.summary,
+        "source_ids": [source.id],
+        "before_content": before.model_dump(mode="json"),
+        "after_content": after.model_dump(mode="json"),
+        "base_content_digest": "legacy-content-digest",
+    }
+    workspace = InsightWorkspace.model_validate(legacy_workspace_json)
+
+    out = render_workspace(env, {**context, "workspace": workspace}, locked=False)
+
+    assert "This proposal predates evidence-support checks. Regenerate it before applying." in out
+    assert "data-workspace-apply-url" not in out
+    assert "data-workspace-continue" in out
+
+
 def test_insight_workspace_collapses_source_pills_after_the_first_four(env, context):
     first = context["workspace"].sources[0]
     sources = [
@@ -849,6 +1110,134 @@ def test_workspace_css_contains_final_dimensions_and_breakpoint():
     assert "grid-template-columns: 1fr 2fr" in css
     assert "@media (max-width: 900px)" in css
     assert ".insight-workspace-grid" in css
+
+
+def test_mobile_insight_grid_track_can_shrink_within_the_shell():
+    """Changing the mobile grid track to `1fr` must not reintroduce page overflow."""
+    css = (STATIC / "css" / "app.css").read_text(encoding="utf-8")
+    assert re.search(
+        r"@media \(max-width: 900px\)\s*\{\s*"
+        r"\.insight-grid\s*\{\s*"
+        r"grid-template-columns:\s*minmax\(0,\s*1fr\);\s*"
+        r"\}\s*\}",
+        css,
+    ), "the single mobile insight-grid track must be allowed to shrink"
+
+
+def test_narrow_mobile_card_status_can_wrap_within_the_card():
+    """A final-card status row must not push the document past a narrow viewport."""
+    css = (STATIC / "css" / "app.css").read_text(encoding="utf-8")
+    assert re.search(
+        r"@media \(max-width: 620px\)\s*\{\s*"
+        r"\.icard-status\s*\{\s*flex-wrap:\s*wrap;\s*\}\s*\}",
+        css,
+    ), "narrow card status content must wrap rather than overflow"
+
+
+def test_narrow_mobile_source_chip_can_wrap_within_its_card():
+    """A long named source must remain readable without painting beyond a narrow card."""
+    css = (STATIC / "css" / "app.css").read_text(encoding="utf-8")
+    assert re.search(
+        r"@media \(max-width: 620px\)\s*\{\s*"
+        r"\.chip-source\s*\{\s*"
+        r"max-width:\s*100%;\s*min-width:\s*0;\s*"
+        r"white-space:\s*normal;\s*overflow-wrap:\s*anywhere;\s*"
+        r"\}\s*\}",
+        css,
+    ), "a long source chip must wrap inside a narrow card rather than paint outside it"
+
+
+def test_rendered_unlocked_review_gate_preserves_approval_form_contract(env, context):
+    """A narrow-layout change must not alter the Review Gate's approval action."""
+    agents = orchestrator_mod.build_agent_states(orchestrator_mod.all_buckets())
+    for bucket in ("A", "C"):
+        agent = agents[bucket]
+        agents[bucket] = agent.model_copy(update={
+            "status": AgentStatus.COMPLETE,
+            "progress": 1.0,
+            "questions_answered": agent.questions_total,
+            "started_at": NOW,
+            "finished_at": NOW + timedelta(minutes=4),
+            "message": "Discovery research complete",
+        })
+    run = context["run"].model_copy(update={
+        "id": "run_rendered_gate",
+        "status": RunStatus.AWAITING_REVIEW,
+        "agents": agents,
+        "finished_at": None,
+        "approved_at": None,
+        "resume_from_wave": 2,
+        "reviewed_at": None,
+    })
+    insights = [
+        insight.model_copy(update={"review_action": ReviewAction.APPROVED})
+        if insight.needs_decision else insight
+        for insight in context["insights"]
+    ]
+    contradictions = [
+        contradiction.model_copy(update={
+            "review_action": ReviewAction.ACKNOWLEDGED,
+            "reviewer_note": "The discrepancy is recorded for this review.",
+        })
+        if contradiction.severity is ContradictionSeverity.ESCALATED
+        and contradiction.review_action is ReviewAction.PENDING
+        else contradiction
+        for contradiction in context["contradictions"]
+    ]
+    gate = app_mod._gate(run, insights, contradictions, "review")
+
+    assert run.status is RunStatus.AWAITING_REVIEW
+    assert run.phase == "review"
+    assert run.is_locked is False
+    assert run.finished_at is None
+    assert run.resume_from_wave == 2
+    assert all(run.agents[bucket].status is AgentStatus.COMPLETE for bucket in ("A", "C"))
+    assert all(
+        run.agents[bucket].status is AgentStatus.QUEUED
+        for bucket in ("B", "D", "E", "F")
+    )
+    assert gate["blockers"] == []
+    assert gate["available"] is True
+    assert gate["can_proceed"] is True
+
+    parser = GateFormParser()
+    parser.feed(
+        env.get_template("partials/gate_panel.html").render(
+            **{**context, "run": run, "insights": insights,
+               "contradictions": contradictions, "gate": gate}
+        )
+    )
+
+    assert len(parser.forms) == 1
+    form = parser.forms[0]
+    assert form["attrs"]["method"] == "post"
+    assert form["attrs"]["action"] == gate["action_url"]
+    assert "data-gate-form" in form["attrs"]
+    assert len(form["buttons"]) == 1
+    button = form["buttons"][0]
+    assert button["attrs"]["type"] == "submit"
+    assert " ".join("".join(button["text"]).split()) == (
+        "Approve discovery and start Mapping & Synthesis"
+    )
+
+
+def test_narrow_mobile_gate_action_form_and_button_stay_contained():
+    """The review-gate action must wrap inside a narrow panel rather than widen the page."""
+    css = (STATIC / "css" / "app.css").read_text(encoding="utf-8")
+    assert re.search(
+        r"@media \(max-width: 620px\)\s*\{\s*"
+        r"\.gate-actions\s*\{\s*"
+        r"flex:\s*1\s+1\s+100%;\s*min-width:\s*0;\s*align-items:\s*stretch;\s*"
+        r"\}\s*"
+        r"\.gate-actions form\s*\{\s*width:\s*100%;\s*min-width:\s*0;\s*\}\s*"
+        r"\.gate-actions \.btn\s*\{\s*"
+        r"max-width:\s*100%;\s*white-space:\s*normal;\s*"
+        r"\}\s*"
+        r"\.gate-actions \.hint\s*\{\s*"
+        r"max-width:\s*100%;\s*text-align:\s*left;\s*"
+        r"\}\s*\}",
+        css,
+    ), "the narrow review-gate form and action must shrink and wrap within the panel"
 
 
 # ---------------------------------------------------------------------------

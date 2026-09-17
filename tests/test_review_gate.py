@@ -22,6 +22,7 @@ import celestra.store as store_mod
 from celestra.demo import build_registry
 from celestra.models import AgentStatus, RunStatus
 from celestra.store import Store
+from tests.full_card_apply_regression import assert_full_card_apply_regression
 
 failures: list[str] = []
 
@@ -50,6 +51,14 @@ async def main() -> int:
     for mod in (store_mod, orch_mod, app_mod):
         mod.store = store
     app_mod._REGISTRY = build_registry()
+
+    print("\n== deterministic full-card Apply regression ==")
+    try:
+        await assert_full_card_apply_regression()
+    except AssertionError as exc:
+        check("full-card Apply updates only the selected card across review/export/report", False, str(exc))
+    else:
+        check("full-card Apply updates only the selected card across review/export/report", True)
 
     transport = httpx.ASGITransport(app=app_mod.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t",

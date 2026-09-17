@@ -16,7 +16,6 @@ import logging
 import re
 from collections.abc import Awaitable, Callable
 
-from ..connectors.base import RetrievalContext
 from ..models import (
     Answer,
     AnswerStatus,
@@ -25,7 +24,6 @@ from ..models import (
     ResearchQuestion,
     RunConfig,
 )
-from ..settings import get_thresholds
 from .answering import answer_batch
 from .extraction import build_terms
 from .llm import LLMUnavailable, llm
@@ -71,8 +69,11 @@ class RevisionResult:
         "evidence",
         "note",
         "provider_unavailable",
+        "research_blocked",
+        "retryable",
         "searched",
         "sites",
+        "source_audit",
         "status",
         "support_evidence_ids",
         "text",
@@ -87,6 +88,9 @@ class RevisionResult:
         self.searched: bool = False
         self.sites: list[dict] = []
         self.support_evidence_ids: list[str] = []
+        self.source_audit: dict[str, dict] = {}
+        self.retryable: bool = False
+        self.research_blocked: bool = False
         self.note: str = ""
         self.provider_unavailable: bool = False
 
@@ -155,15 +159,17 @@ def _validated_support_ids(result: dict, evidence: list[Evidence]) -> list[str]:
     return supported
 
 
-def _friendly_search_failure(reason: str) -> str:
-    normalized = re.sub(r"\s+", " ", reason or "").strip()
-    lower = normalized.lower()
-    if "credit" in lower and ("exhaust" in lower or "no credit" in lower):
-        return "the configured web search service has no remaining credits"
-    if "rate limit" in lower:
-        return "the web search service is temporarily rate limited"
-    first_sentence = normalized.split(".", 1)[0].strip()
-    return first_sentence[:180] or "the web search service returned an error"
+def _audit_by_url(audits) -> dict[str, dict]:
+    source_audit: dict[str, dict] = {}
+    for audit in audits:
+        source_audit[audit.url] = {
+            "search_provider": audit.provider,
+            "search_queries": list(audit.queries),
+            "hydration_status": audit.hydration_status,
+            "citation_metadata": list(audit.url_citations),
+            "supported_answer": False,
+        }
+    return source_audit
 
 
 async def revise(
@@ -178,6 +184,9 @@ async def revise(
     llm_client=None,
     latest_user_request: str = "",
     evidence_required: bool = True,
+    question_framing: str = "",
+    research_context=None,
+    research_gateway=None,
 ) -> RevisionResult:
     """Apply the instruction, searching the web when the held evidence cannot."""
     status = on_status or _noop_status
@@ -194,69 +203,72 @@ async def revise(
                     "against the finding but not applied.")
         return out
 
-    esc = get_thresholds()["escalation"]
     terms = build_terms(question.text, question.aspects, synonyms or [cfg.indication])
     # 1. Can this be applied from what is already held?
     await status("checking_evidence")
-    needs_more, query = await _needs_more(instruction, question.text,
-                                          question.answer_text, evidence, model)
+    framed_questions = question_framing or question.text
+    needs_more, _ = await _needs_more(instruction, framed_questions,
+                                      question.answer_text, evidence, model)
     needs_more = needs_more or _explicit_research_request(latest_user_request)
 
-    # 2. If not, fall back to the open web for the missing part.
+    # 2. If not, use the insight-scoped Azure-first gateway for the missing part.
     search_failure = ""
     if needs_more:
-        fire = registry.get("open_web")
-        if fire is None:
-            search_failure = "the open-web research connector is unavailable"
+        if research_context is None:
+            search_failure = "web research is unavailable right now"
         else:
-            out.searched = True
-            search_query = query or f"{cfg.indication} {latest_user_request or instruction}"
-            try:
-                await status("searching_web")
-                result = await fire.discover(
-                    RetrievalContext(
-                        indication=cfg.indication,
-                        indication_key=cfg.indication_key,
-                        synonyms=synonyms or [cfg.indication],
-                        geography=cfg.geography,
-                        population=cfg.population,
-                        stage=insight.stage,
-                        question=question.text,
-                        aspects=question.aspects,
-                        cutoff=cfg.research_cutoff,
-                        extra={"search_query": search_query},
-                    ),
-                    esc["open_web_max_results"],
+            if research_gateway is None:
+                from .insight_web_research import InsightWebResearchGateway
+
+                research_gateway = InsightWebResearchGateway(
+                    registry=registry,
+                    llm_client=model,
                 )
-                refs = result.refs if result.ok else []
-                if not result.ok:
-                    search_failure = _friendly_search_failure(result.reason)
+            try:
+                outcome = await research_gateway.research(
+                    research_context,
+                    latest_user_request or instruction,
+                    status,
+                )
+                out.searched = outcome.searched
+                out.source_audit = _audit_by_url(outcome.audits)
+                refs = outcome.refs if outcome.ok else []
+                if not outcome.ok:
+                    search_failure = outcome.reason or "web research is unavailable right now"
+                    out.retryable = outcome.retryable
+                    out.research_blocked = (
+                        "was not started because the request was not safe"
+                        in search_failure.lower()
+                    )
                 elif not refs:
-                    search_failure = "no additional sources were found"
+                    search_failure = outcome.reason or "no additional sources were found"
                 out.sites = [
-                    {"url": r.url, "title": r.title or r.url, "scraped": True, "used": False}
-                    for r in refs
+                    {"url": ref.url, "title": ref.title or ref.url, "scraped": True, "used": False}
+                    for ref in refs
                 ]
-                pages = refs[: esc["open_web_max_scrapes"]]
-                if pages:
+                if refs:
                     answer, extra = await answer_batch(
-                        f"{question.text}\n\nResearch conversation and latest request: {instruction}",
-                        question.aspects, pages, question.id, terms,
+                        f"{framed_questions}\n\nResearch conversation and latest request: {instruction}",
+                        question.aspects,
+                        refs,
+                        question.id,
+                        terms,
                     )
                     if extra:
-                        used = {e.url for e in extra}
+                        used = {item.url for item in extra}
                         for site in out.sites:
                             site["used"] = site["url"] in used
-                        out.evidence = out.evidence + [
-                            e for e in extra
-                            if e.quote[:120].lower()
-                            not in {x.quote[:120].lower() for x in out.evidence}
-                        ]
+                        out.evidence.extend(
+                            item for item in extra
+                            if item.quote[:120].lower()
+                            not in {held.quote[:120].lower() for held in out.evidence}
+                        )
                     if answer is not None:
                         out.answer = answer
             except Exception as exc:  # noqa: BLE001 - a failed search is not fatal
-                log.warning("revision search failed: %s", exc)
-                search_failure = "the web search service returned an unexpected error"
+                log.warning("revision search gateway failed: %s", type(exc).__name__)
+                search_failure = "web research is unavailable right now"
+                out.retryable = True
 
     # 3. Rewrite the answer against the full evidence set.
     listing = "\n".join(
@@ -266,7 +278,7 @@ async def revise(
     try:
         result = await model.complete_json(
             _APPLY_SYSTEM,
-            f"Question: {question.text}\n\nCurrent answer: {question.answer_text or '(none)'}\n\n"
+            f"Linked research questions: {framed_questions}\n\nCurrent answer: {question.answer_text or '(none)'}\n\n"
             f"Evidence available:\n{listing}\n\n"
             f"Web research outcome: {search_failure or 'completed or not requested'}\n\n"
             f"Research conversation and latest request: {instruction}\n\n"
@@ -290,8 +302,15 @@ async def revise(
     result = result or {}
     text = re.sub(r"\s+", " ", str(result.get("answer", ""))).strip()
     out.support_evidence_ids = _validated_support_ids(result, out.evidence)
+    supported_urls = {
+        item.url
+        for item in out.evidence
+        if item.id in out.support_evidence_ids
+    }
+    for url, audit in out.source_audit.items():
+        audit["supported_answer"] = url in supported_urls
     warning = (
-        f"I couldn't complete the requested web research: {search_failure}."
+        f"I couldn't complete the requested web research: {search_failure.rstrip('.')}."
         if search_failure else ""
     )
     if text and evidence_required and not out.support_evidence_ids:

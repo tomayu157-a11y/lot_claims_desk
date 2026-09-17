@@ -6,18 +6,22 @@ import html
 import json
 import logging
 import re
+import weakref
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.formparsers import MultiPartException, MultiPartParser
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
-from .ppt import register_route
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.formparsers import MultiPartException, MultiPartParser
 
 from .events import bus
 from .models import (
@@ -37,8 +41,11 @@ from .models import (
     is_http_url,
     utcnow,
 )
+from .ppt import register_route
 from .services import orchestrator as orch
 from .services.file_store import file_store, storage_key
+from .services.insight_workspace import InsightWorkspaceService
+from .services.llm import llm
 from .services.reviewer_files import (
     MAX_FILE_BYTES,
     MAX_FILES_PER_INSIGHT,
@@ -48,19 +55,17 @@ from .services.reviewer_files import (
     kind_for,
 )
 from .services.scoring import assess_confidence
-from .services.insight_workspace import InsightWorkspaceService
-from .services.llm import llm
 from .settings import (
     BASE_DIR,
     configure_tls,
     ensure_dirs,
     get_framework,
     get_questions,
+    get_settings,
     get_source_registry,
     get_thresholds,
-    get_settings,
 )
-from .store import store
+from .store import StaleInsightRevision, insight_snapshot_digest, store
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,7 +75,9 @@ log = logging.getLogger("celestra")
 
 _RUNNING: dict[str, asyncio.Task] = {}
 _REGISTRY: dict[str, Any] = {}
-_insight_workspace_locks: dict[tuple[str, str], asyncio.Lock] = {}
+_insight_workspace_locks: weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
 
 
 def _insight_workspace_service() -> InsightWorkspaceService:
@@ -727,7 +734,12 @@ async def import_run(request: Request):
     """Load a project exported from another instance. An id already present
     is overwritten with the imported copy, so re-importing is safe."""
     from .models import (
-        Answer, Contradiction, Evidence, QAMetrics, ResearchQuestion, StageReport,
+        Answer,
+        Contradiction,
+        Evidence,
+        QAMetrics,
+        ResearchQuestion,
+        StageReport,
     )
 
     form = await request.form()
@@ -742,15 +754,21 @@ async def import_run(request: Request):
             # A run that was mid-flight elsewhere cannot continue here.
             run.status = RunStatus.FAILED
             run.error = run.error or "imported while still running on the source instance"
-        store.save_run(run)
-        store.save_questions(run.id, [ResearchQuestion.model_validate(x) for x in data.get("questions", [])])
-        store.save_evidence(run.id, [Evidence.model_validate(x) for x in data.get("evidence", [])])
-        store.save_answers(run.id, [Answer.model_validate(x) for x in data.get("answers", [])])
-        store.save_insights(run.id, [Insight.model_validate(x) for x in data.get("insights", [])])
-        store.save_contradictions(run.id, [Contradiction.model_validate(x) for x in data.get("contradictions", [])])
-        store.save_stage_reports(run.id, [StageReport.model_validate(x) for x in data.get("stage_reports", [])])
-        if data.get("qa"):
-            store.save_qa(run.id, QAMetrics.model_validate(data["qa"]))
+        store.import_run_if_current(
+            run,
+            [ResearchQuestion.model_validate(x) for x in data.get("questions", [])],
+            [Evidence.model_validate(x) for x in data.get("evidence", [])],
+            [Answer.model_validate(x) for x in data.get("answers", [])],
+            [Insight.model_validate(x) for x in data.get("insights", [])],
+            [Contradiction.model_validate(x) for x in data.get("contradictions", [])],
+            [StageReport.model_validate(x) for x in data.get("stage_reports", [])],
+            QAMetrics.model_validate(data["qa"]) if data.get("qa") else None,
+        )
+    except StaleInsightRevision as exc:
+        raise HTTPException(
+            409,
+            "This completed project changed after that export. Export it again and retry.",
+        ) from exc
     except Exception as exc:  # noqa: BLE001 - shown to the person
         return templates.TemplateResponse(
             request, "error.html",
@@ -984,12 +1002,32 @@ def _workspace_available_sources(run_id: str, insight: Insight, workspace) -> li
 
 
 def _workspace_template_context(request: Request, run: Run, insight: Insight, workspace) -> dict:
+    available_sources = _workspace_available_sources(run.id, insight, workspace)
+    groups = {"added": [], "removed": [], "changed": []}
+    proposal = workspace.pending_proposal
+    if proposal is not None:
+        for change in proposal.changed_fields:
+            groups[change.kind].append(change)
+    proposal_has_removals = bool(groups["removed"]) or any(
+        any(item.get("kind") == "removed" for item in change.item_changes)
+        for change in proposal.changed_fields
+    ) if proposal is not None else False
     return {
         **base_ctx(request),
         "run": run,
         "insight": insight,
         "workspace": workspace,
-        "available_sources": _workspace_available_sources(run.id, insight, workspace),
+        "available_sources": available_sources,
+        "proposal_change_groups": groups,
+        "proposal_has_removals": proposal_has_removals,
+        "proposal_source_by_id": {source.id: source for source in available_sources},
+        "proposal_field_labels": {
+            "summary": "Summary", "detail": "Detail", "evidence_type": "Evidence format",
+            "evidence": "Structured evidence", "interpretation": "Interpretation",
+            "review_note": "Review note", "covered": "Evidence coverage",
+            "input_reason": "Reason input is needed", "evidence_ids": "Evidence links",
+            "source_ids": "Source links", "used_web_fallback": "Supplementary web evidence",
+        },
         "locked": run.is_locked,
     }
 
@@ -1169,8 +1207,10 @@ async def _apply_insight_action(
     insight = store.get_insight(run_id, insight_id)
     if insight is None:
         raise HTTPException(404, "Insight not found")
+    expected_insight_digest = insight_snapshot_digest(insight)
     text = user_input.strip()[:500]
 
+    reports: list[StageReport] = []
     if action == "approve":
         insight.review_action = ReviewAction.APPROVED
     elif action == "modify":
@@ -1186,7 +1226,7 @@ async def _apply_insight_action(
         insight.reviewer_input = text
         if reviewer_files is not None:
             insight.reviewer_files = reviewer_files
-        _record_reviewer_input(run, insight)
+        reports = _record_reviewer_input(run, insight)
     else:
         raise HTTPException(400, f"Unknown action '{action}'")
 
@@ -1194,11 +1234,22 @@ async def _apply_insight_action(
     # kept on the card so the decision stays explainable.
     insight.confidence = Confidence.READY
     insight.reviewed_at = utcnow()
-    store.save_insights(run_id, [insight])
+    try:
+        if action == "input":
+            store.commit_reviewer_input_if_unchanged(
+                insight, expected_insight_digest, run, reports,
+            )
+        else:
+            store.save_insight_if_unchanged(insight, expected_insight_digest)
+    except StaleInsightRevision as exc:
+        raise HTTPException(
+            409,
+            "The finding changed while your review was being saved. Reopen it and try again.",
+        ) from exc
     return insight
 
 
-def _record_reviewer_input(run: Run, insight: Insight) -> None:
+def _record_reviewer_input(run: Run, insight: Insight) -> list[StageReport]:
     """Attach the reviewer's input to the run, the document and the agents
     that have not run yet. Nothing is rewritten by it."""
     entries = [
@@ -1210,13 +1261,12 @@ def _record_reviewer_input(run: Run, insight: Insight) -> None:
         "input": insight.reviewer_input, "at": utcnow().isoformat(),
     })
     run.context["reviewer_inputs"] = entries
-    store.save_run(run)
-
     question = next(
         (q for q in store.get_questions(run.id) if q.id in set(insight.question_ids)), None
     )
     if question is None:
-        return
+        return []
+    changed_reports = []
     for report in store.get_stage_reports(run.id):
         if report.stage != question.stage:
             continue
@@ -1226,7 +1276,8 @@ def _record_reviewer_input(run: Run, insight: Insight) -> None:
                 row["reviewer_input"] = insight.reviewer_input
                 changed = True
         if changed:
-            store.save_stage_reports(run.id, [report])
+            changed_reports.append(report)
+    return changed_reports
 
 
 # Two files at 1 MB plus the form fields. A larger body is refused before it
@@ -1266,28 +1317,13 @@ class _CappedMultipartParser(MultiPartParser):
         super().on_part_data(data, start, end)
 
 
-class _InsightLock:
-    def __init__(self) -> None:
-        self.lock = asyncio.Lock()
-        self.users = 0
-
-
-_INSIGHT_LOCKS: dict[tuple[str, str], _InsightLock] = {}
-
-
 @asynccontextmanager
 async def _insight_critical_section(run_id: str, insight_id: str):
-    """Serialize one card's persisted reviewer-file state in this worker."""
+    """Serialize direct reviewer writes with the insight workspace in this worker."""
     key = (run_id, insight_id)
-    entry = _INSIGHT_LOCKS.setdefault(key, _InsightLock())
-    entry.users += 1
-    try:
-        async with entry.lock:
-            yield
-    finally:
-        entry.users -= 1
-        if entry.users == 0 and _INSIGHT_LOCKS.get(key) is entry:
-            del _INSIGHT_LOCKS[key]
+    lock = _insight_workspace_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        yield
 
 
 async def _bounded_attach_form(request: Request):
@@ -1370,45 +1406,6 @@ class _AttachError(Exception):
         self.status, self.detail, self.files = status, detail, files or []
 
 
-@dataclass
-class _InputCommitSnapshot:
-    """Persisted reviewer-input documents that need one rollback boundary."""
-    insight: Insight
-    run: Run
-    reports: list[StageReport]
-
-
-def _snapshot_input_commit(run: Run, insight: Insight) -> _InputCommitSnapshot:
-    """Capture only the stage report this reviewer input may change."""
-    question = next(
-        (q for q in store.get_questions(run.id) if q.id in set(insight.question_ids)), None
-    )
-    reports = [] if question is None else [
-        report.model_copy(deep=True)
-        for report in store.get_stage_reports(run.id)
-        if report.stage == question.stage
-    ]
-    return _InputCommitSnapshot(
-        insight=insight.model_copy(deep=True), run=run.model_copy(deep=True), reports=reports,
-    )
-
-
-def _restore_input_commit(run_id: str, snapshot: _InputCommitSnapshot) -> bool:
-    """Best-effort restoration of every document the input action persisted."""
-    restored = True
-    for restore, label in (
-        (lambda: store.save_run(snapshot.run), "run context"),
-        (lambda: store.save_stage_reports(run_id, snapshot.reports), "stage reports"),
-        (lambda: store.save_insights(run_id, [snapshot.insight]), "reviewer file metadata"),
-    ):
-        try:
-            restore()
-        except Exception:
-            restored = False
-            log.exception("could not restore %s for %s", label, snapshot.insight.id)
-    return restored
-
-
 def _original_file_bytes(files: list[ReviewerFile]) -> dict[str, bytes]:
     """Read removable originals before changing their metadata or bytes."""
     try:
@@ -1442,14 +1439,12 @@ def _remove_new_originals(keys: list[str]) -> bool:
 
 
 def _rollback_file_input(
-    run_id: str, deleted: list[ReviewerFile], originals: dict[str, bytes], written: list[str],
-    snapshot: _InputCommitSnapshot | None = None,
+    deleted: list[ReviewerFile], originals: dict[str, bytes], written: list[str],
 ) -> bool:
-    """Compensate attachment bytes and, after an input action, its metadata."""
+    """Compensate attachment bytes after a failed input transaction."""
     restored = _restore_originals(deleted, originals)
     cleaned = _remove_new_originals(written)
-    metadata_restored = snapshot is None or _restore_input_commit(run_id, snapshot)
-    return restored and cleaned and metadata_restored
+    return restored and cleaned
 
 
 async def _apply_input_with_files(
@@ -1531,7 +1526,6 @@ async def _commit_input_with_files(
         raise _AttachError(400, f"A finding can hold {MAX_FILES_PER_INSIGHT} files. "
                                 "Remove one first.")
 
-    snapshot = _snapshot_input_commit(run, insight)
     originals = _original_file_bytes(removed)
     written: list[str] = []
     try:
@@ -1544,7 +1538,7 @@ async def _commit_input_with_files(
                 file_store.delete(file.storage_key)
                 deleted.append(file)
         except Exception as exc:
-            recovered = _rollback_file_input(run_id, deleted, originals, written)
+            recovered = _rollback_file_input(deleted, originals, written)
             detail = "Could not replace the attached files. Previous files remain attached."
             if not recovered:
                 detail = "Could not replace the attached files. Recovery needs attention."
@@ -1554,8 +1548,16 @@ async def _commit_input_with_files(
                 run_id, insight_id, "input", text,
                 reviewer_files=kept + [record for record, _ in new_files],
             )
+        except HTTPException as exc:
+            recovered = _rollback_file_input(deleted, originals, written)
+            if exc.status_code == 409 and recovered:
+                raise
+            detail = "Could not replace the attached files. Previous files remain attached."
+            if not recovered:
+                detail = "Could not replace the attached files. Recovery needs attention."
+            raise _AttachError(500, detail) from exc
         except Exception as exc:
-            recovered = _rollback_file_input(run_id, deleted, originals, written, snapshot)
+            recovered = _rollback_file_input(deleted, originals, written)
             detail = "Could not replace the attached files. Previous files remain attached."
             if not recovered:
                 detail = "Could not replace the attached files. Recovery needs attention."
@@ -1584,6 +1586,7 @@ async def remove_reviewer_file(request: Request, run_id: str, insight_id: str, f
             if target is None:
                 raise HTTPException(404, "File not found")
             original_insight = insight.model_copy(deep=True)
+            expected_insight_digest = insight_snapshot_digest(insight)
             original = _original_file_bytes([target])
             try:
                 file_store.delete(target.storage_key)
@@ -1591,11 +1594,23 @@ async def remove_reviewer_file(request: Request, run_id: str, insight_id: str, f
                 raise _AttachError(500, "Could not remove this file. It remains attached.") from exc
             insight.reviewer_files = [f for f in insight.reviewer_files if f.id != file_id]
             try:
-                store.save_insights(run_id, [insight])
+                store.save_insight_if_unchanged(insight, expected_insight_digest)
+            except StaleInsightRevision as exc:
+                restored = _restore_originals([target], original)
+                if not restored:
+                    raise _AttachError(
+                        500, "Could not remove this file. Recovery needs attention.",
+                    ) from exc
+                raise HTTPException(
+                    409,
+                    "The finding changed while the file was being removed. Reopen it and try again.",
+                ) from exc
             except Exception as exc:
                 restored = _restore_originals([target], original)
                 try:
-                    store.save_insights(run_id, [original_insight])
+                    store.save_insight_if_unchanged(original_insight, expected_insight_digest)
+                except StaleInsightRevision:
+                    log.info("did not restore stale reviewer file metadata for %s", insight_id)
                 except Exception:
                     restored = False
                     log.exception("could not restore reviewer file metadata for %s", insight_id)
@@ -1758,7 +1773,7 @@ async def contradiction_review(request: Request, run_id: str, cid: str):
     item.review_action = mapping[action]
     item.reviewer_note = str(body.get("note", "")).strip()[:500]
     store.save_contradictions(run_id, [item])
-    _settle_conflict_findings(run_id, item)
+    await _settle_conflict_findings(run_id, item)
     return templates.TemplateResponse(
         request, "partials/contradiction_card.html",
         {**base_ctx(request), "contradiction": item, "run_id": run_id,
@@ -1766,13 +1781,13 @@ async def contradiction_review(request: Request, run_id: str, cid: str):
     )
 
 
-def _settle_conflict_findings(run_id: str, decided: Contradiction) -> None:
+async def _settle_conflict_findings(run_id: str, decided: Contradiction) -> None:
     """A finding flagged only because of this conflict is Ready once the
     conflict is decided. Re-assess the undecided findings in its stage."""
     remaining = store.get_contradictions(run_id)
     evidence = store.get_evidence(run_id)
     questions = {q.id: q for q in store.get_questions(run_id)}
-    changed: list[Insight] = []
+    changed: list[tuple[Insight, str]] = []
     for insight in store.get_insights(run_id):
         if insight.stage != decided.stage or insight.review_action.is_decided:
             continue
@@ -1784,10 +1799,18 @@ def _settle_conflict_findings(run_id: str, decided: Contradiction) -> None:
         own = [e for e in evidence if e.id in set(insight.evidence_ids)]
         conf, reason = assess_confidence(question, own, remaining)
         if conf is not insight.confidence or reason != insight.input_reason:
+            expected_insight_digest = insight_snapshot_digest(insight)
             insight.confidence, insight.input_reason = conf, reason
-            changed.append(insight)
-    if changed:
-        store.save_insights(run_id, changed)
+            changed.append((insight, expected_insight_digest))
+    for insight, expected_insight_digest in changed:
+        async with _insight_critical_section(run_id, insight.id):
+            try:
+                store.save_insight_if_unchanged(insight, expected_insight_digest)
+            except StaleInsightRevision as exc:
+                raise HTTPException(
+                    409,
+                    "A finding changed while the contradiction was being settled. Reopen it and try again.",
+                ) from exc
 
 
 @app.get("/runs/{run_id}/report", response_class=HTMLResponse)
