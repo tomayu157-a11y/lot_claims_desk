@@ -54,6 +54,7 @@ from celestra.models import (
     WorkspaceMessageState,
     workspace_id,
 )
+from celestra.services import orchestrator as orchestrator_mod
 
 TEMPLATES = ROOT / "celestra" / "templates"
 STATIC = ROOT / "celestra" / "static"
@@ -1035,9 +1036,25 @@ def test_narrow_mobile_source_chip_can_wrap_within_its_card():
 
 def test_rendered_unlocked_review_gate_preserves_approval_form_contract(env, context):
     """A narrow-layout change must not alter the Review Gate's approval action."""
+    agents = orchestrator_mod.build_agent_states(orchestrator_mod.all_buckets())
+    for bucket in ("A", "C"):
+        agent = agents[bucket]
+        agents[bucket] = agent.model_copy(update={
+            "status": AgentStatus.COMPLETE,
+            "progress": 1.0,
+            "questions_answered": agent.questions_total,
+            "started_at": NOW,
+            "finished_at": NOW + timedelta(minutes=4),
+            "message": "Discovery research complete",
+        })
     run = context["run"].model_copy(update={
         "id": "run_rendered_gate",
         "status": RunStatus.AWAITING_REVIEW,
+        "agents": agents,
+        "finished_at": None,
+        "approved_at": None,
+        "resume_from_wave": 2,
+        "reviewed_at": None,
     })
     insights = [
         insight.model_copy(update={"review_action": ReviewAction.APPROVED})
@@ -1056,6 +1073,16 @@ def test_rendered_unlocked_review_gate_preserves_approval_form_contract(env, con
     ]
     gate = app_mod._gate(run, insights, contradictions, "review")
 
+    assert run.status is RunStatus.AWAITING_REVIEW
+    assert run.phase == "review"
+    assert run.is_locked is False
+    assert run.finished_at is None
+    assert run.resume_from_wave == 2
+    assert all(run.agents[bucket].status is AgentStatus.COMPLETE for bucket in ("A", "C"))
+    assert all(
+        run.agents[bucket].status is AgentStatus.QUEUED
+        for bucket in ("B", "D", "E", "F")
+    )
     assert gate["blockers"] == []
     assert gate["available"] is True
     assert gate["can_proceed"] is True
