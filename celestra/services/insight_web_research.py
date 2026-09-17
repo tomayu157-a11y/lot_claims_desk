@@ -68,14 +68,14 @@ def sanitize_search_brief(
 ) -> str:
     """Remove identifying content and reject briefs with too little research intent."""
     safe = search_brief or ""
+    if _META_INSTRUCTION.search(safe):
+        raise UnsafeSearchBrief()
     for value in sorted({str(value).strip() for value in identifying_values if str(value).strip()},
                         key=len, reverse=True):
         safe = re.sub(re.escape(value), " ", safe, flags=re.IGNORECASE)
     for pattern in (_DOB_LABEL_VALUE, _IDENTIFIER_LABEL, _EMAIL, _PHONE, _SSN, _DATE):
         safe = pattern.sub(" ", safe)
     safe = " ".join(re.sub(r"[;,|]+", " ", safe).split())
-    if _META_INSTRUCTION.search(safe):
-        raise UnsafeSearchBrief()
     terms = [term.lower() for term in re.findall(r"[A-Za-z][A-Za-z0-9-]*", safe)]
     if len([term for term in terms if term not in _STOPWORDS]) < 3:
         raise UnsafeSearchBrief()
