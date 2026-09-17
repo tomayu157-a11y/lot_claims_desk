@@ -23,7 +23,11 @@ from ..models import (
     utcnow,
     workspace_id,
 )
-from ..store import InsightCardRevisionCommit, StaleInsightRevision
+from ..store import (
+    InsightCardRevisionCommit,
+    StaleInsightRevision,
+    insight_snapshot_digest,
+)
 from .insight_reconciliation import (
     MUTABLE_CARD_FIELDS,
     InsightCardReconciler,
@@ -667,6 +671,7 @@ class InsightWorkspaceService:
                         new_evidence=new_evidence,
                         workspace=workspace,
                         expected_content_digest=current_digest,
+                        expected_insight_digest=insight_snapshot_digest(insight),
                     )
                 )
             except StaleInsightRevision as exc:

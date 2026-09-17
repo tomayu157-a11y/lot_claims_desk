@@ -6,6 +6,8 @@ table is keyed by run_id so a run can be loaded or deleted atomically.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import threading
 from collections.abc import Iterable
@@ -51,12 +53,20 @@ class StaleInsightRevision(Exception):
     """The selected finding or pending proposal changed before Apply."""
 
 
+def insight_snapshot_digest(insight: Insight) -> str:
+    """Return a stable digest of the complete persisted insight document."""
+    payload = insight.model_dump(mode="json")
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class InsightCardRevisionCommit:
     insight: Insight
     new_evidence: list[Evidence]
     workspace: InsightWorkspace
     expected_content_digest: str
+    expected_insight_digest: str
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
@@ -251,6 +261,8 @@ class Store:
             current = Insight.model_validate_json(row["doc"])
             if insight_card_digest(current) != commit.expected_content_digest:
                 raise StaleInsightRevision("Insight content changed")
+            if insight_snapshot_digest(current) != commit.expected_insight_digest:
+                raise StaleInsightRevision("Insight changed")
             if any(
                 getattr(commit.insight, field) != getattr(current, field)
                 for field in _FIXED_INSIGHT_REVISION_FIELDS

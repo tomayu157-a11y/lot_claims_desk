@@ -40,7 +40,7 @@ from celestra.services.insight_reconciliation import (
 )
 from celestra.services.insight_research import ProposalDraft, ResearchTurnResult
 from celestra.services.insight_workspace import InsightWorkspaceService
-from celestra.store import InsightCardRevisionCommit, Store
+from celestra.store import InsightCardRevisionCommit, Store, insight_snapshot_digest
 
 
 def seeded_store(tmp_path):
@@ -1028,6 +1028,7 @@ async def pending_card_commit(store, run, selected):
         new_evidence=[],
         workspace=workspace,
         expected_content_digest=insight_card_digest(current),
+        expected_insight_digest=insight_snapshot_digest(current),
     )
 
 
@@ -1159,6 +1160,42 @@ async def test_apply_preserves_a_fixed_change_while_applying_the_full_snapshot(t
 
     assert result.insight.title == "Reviewer-adjusted fixed title"
     assert result.insight.summary == proposal.after_content.summary
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_a_reviewer_decision_committed_after_its_read(tmp_path, monkeypatch):
+    """The transaction must not overwrite a human decision made after Apply read the card."""
+    store, run, selected, _ = seeded_store(tmp_path)
+    service = proposal_service(store)
+    proposal = await service.propose(run.id, selected.id)
+    before_evidence = [item.model_dump_json() for item in store.get_evidence(run.id)]
+    before_workspace = service.load(run.id, selected.id).model_dump_json()
+    original_commit = store.commit_insight_card_revision
+    reviewer_state = None
+
+    def reviewer_wins(commit):
+        nonlocal reviewer_state
+        reviewer_state = store.get_insight(run.id, selected.id).model_copy(update={
+            "review_action": ReviewAction.APPROVED,
+            "confidence": Confidence.READY,
+            "tag": VerificationTag.UPDATE,
+            "reviewed_at": commit.insight.reviewed_at,
+            "revision_note": "Human reviewer approved the current card.",
+            "user_input": "Keep the current finding.",
+        })
+        store.save_insights(run.id, [reviewer_state])
+        original_commit(commit)
+
+    monkeypatch.setattr(store, "commit_insight_card_revision", reviewer_wins)
+
+    with pytest.raises(HTTPException) as exc:
+        await service.apply(run.id, selected.id, proposal.id)
+
+    assert exc.value.status_code == 409
+    persisted = store.get_insight(run.id, selected.id)
+    assert persisted == reviewer_state
+    assert [item.model_dump_json() for item in store.get_evidence(run.id)] == before_evidence
+    assert service.load(run.id, selected.id).model_dump_json() == before_workspace
 
 
 @pytest.mark.asyncio
