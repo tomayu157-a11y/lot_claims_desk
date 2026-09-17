@@ -1280,7 +1280,7 @@ textarea.is-invalid { border-color: var(--danger); }
    21. Insight cards (five-part review cards) and the card grid
    -------------------------------------------------------------------------- */
 .insight-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
-@media (max-width: 900px) { .insight-grid { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .insight-grid { grid-template-columns: minmax(0, 1fr); } }
 .insight-grid > [data-hidden="1"] { display: none; }
 
 .icard {
@@ -1310,6 +1310,7 @@ textarea.is-invalid { border-color: var(--danger); }
 .icard-finding { margin: 0; font-size: 13.5px; color: var(--text); line-height: 1.5; }
 
 .icard-status { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2); font-weight: 600; }
+@media (max-width: 620px) { .icard-status { flex-wrap: wrap; } }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
 .status-dot.is-ready { background: var(--ok); }
 .status-dot.is-review { background: var(--warn); }

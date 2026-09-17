@@ -968,6 +968,28 @@ def test_workspace_css_contains_final_dimensions_and_breakpoint():
     assert ".insight-workspace-grid" in css
 
 
+def test_mobile_insight_grid_track_can_shrink_within_the_shell():
+    """Changing the mobile grid track to `1fr` must not reintroduce page overflow."""
+    css = (STATIC / "css" / "app.css").read_text(encoding="utf-8")
+    assert re.search(
+        r"@media \(max-width: 900px\)\s*\{\s*"
+        r"\.insight-grid\s*\{\s*"
+        r"grid-template-columns:\s*minmax\(0,\s*1fr\);\s*"
+        r"\}\s*\}",
+        css,
+    ), "the single mobile insight-grid track must be allowed to shrink"
+
+
+def test_narrow_mobile_card_status_can_wrap_within_the_card():
+    """A final-card status row must not push the document past a narrow viewport."""
+    css = (STATIC / "css" / "app.css").read_text(encoding="utf-8")
+    assert re.search(
+        r"@media \(max-width: 620px\)\s*\{\s*"
+        r"\.icard-status\s*\{\s*flex-wrap:\s*wrap;\s*\}\s*\}",
+        css,
+    ), "narrow card status content must wrap rather than overflow"
+
+
 # ---------------------------------------------------------------------------
 # static asset checks
 # ---------------------------------------------------------------------------
