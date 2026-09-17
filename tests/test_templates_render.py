@@ -10,10 +10,12 @@ reach rendered output. The execution units are AGENTS in the UI.
 """
 from __future__ import annotations
 
+import copy
 import html
 import re
 import sys
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -60,6 +62,35 @@ STATIC = ROOT / "celestra" / "static"
 TAG_RE = re.compile(
     r"\[(VERIFIED|GENERAL KNOWLEDGE|ORIGINAL|INFERENCE|NOT VERIFIED|UPDATE(?:[^\]]*)?)\]"
 )
+
+
+class GateFormParser(HTMLParser):
+    """Capture the rendered Review Gate form and its submit controls."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.forms: list[dict[str, object]] = []
+        self._form: dict[str, object] | None = None
+        self._button: dict[str, object] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "form" and "data-gate-form" in attributes:
+            self._form = {"attrs": attributes, "buttons": []}
+            self.forms.append(self._form)
+        elif tag == "button" and self._form is not None:
+            self._button = {"attrs": attributes, "text": []}
+
+    def handle_data(self, data: str) -> None:
+        if self._button is not None:
+            self._button["text"].append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "button" and self._button is not None and self._form is not None:
+            self._form["buttons"].append(self._button)
+            self._button = None
+        elif tag == "form":
+            self._form = None
 
 
 def tagify(value):
@@ -1001,6 +1032,37 @@ def test_narrow_mobile_source_chip_can_wrap_within_its_card():
         r"\}\s*\}",
         css,
     ), "a long source chip must wrap inside a narrow card rather than paint outside it"
+
+
+def test_rendered_unlocked_review_gate_preserves_approval_form_contract(env, context):
+    """A narrow-layout change must not alter the Review Gate's approval action."""
+    rendered_context = copy.deepcopy(context)
+    rendered_context["run"].id = "run_rendered_gate"
+    rendered_context["gate"].update(
+        blockers=[],
+        available=True,
+        done=False,
+        mode="review",
+        action_url="/runs/run_rendered_gate/continue",
+        action_label="Approve discovery and start Mapping & Synthesis",
+    )
+
+    parser = GateFormParser()
+    parser.feed(
+        env.get_template("partials/gate_panel.html").render(**rendered_context)
+    )
+
+    assert len(parser.forms) == 1
+    form = parser.forms[0]
+    assert form["attrs"]["method"] == "post"
+    assert form["attrs"]["action"] == "/runs/run_rendered_gate/continue"
+    assert "data-gate-form" in form["attrs"]
+    assert len(form["buttons"]) == 1
+    button = form["buttons"][0]
+    assert button["attrs"]["type"] == "submit"
+    assert " ".join("".join(button["text"]).split()) == (
+        "Approve discovery and start Mapping & Synthesis"
+    )
 
 
 def test_narrow_mobile_gate_action_form_and_button_stay_contained():
