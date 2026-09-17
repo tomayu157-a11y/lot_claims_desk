@@ -499,22 +499,25 @@ async def main() -> int:
         before_replace_save = STORE.get_insight(run.id, card.id)
         before_replace_run = STORE.get_run(run.id)
         replacement_save_store = FailingFileStore(original_store, set())
+        original_commit_reviewer_input = STORE.commit_reviewer_input_if_unchanged
         replacement_save_attempts = 0
 
-        def fail_replacement_save_once(insight, expected_insight_digest: str) -> None:
+        def fail_replacement_save_once(
+            insight, expected_insight_digest: str, input_run, reports,
+        ) -> None:
             nonlocal replacement_save_attempts
             replacement_save_attempts += 1
             if replacement_save_attempts == 1:
                 raise OSError("forced metadata save failure")
-            original_save_if_unchanged(insight, expected_insight_digest)
+            original_commit_reviewer_input(insight, expected_insight_digest, input_run, reports)
 
-        STORE.save_insight_if_unchanged = fail_replacement_save_once
+        STORE.commit_reviewer_input_if_unchanged = fail_replacement_save_once
         app_mod.file_store = replacement_save_store
         try:
             r = await c.post(url, data={"user_input": "replace", "keep_file_ids": []},
                              files=[("files", ("replacement.txt", b"replacement", "text/plain"))])
         finally:
-            STORE.save_insight_if_unchanged = original_save_if_unchanged
+            STORE.commit_reviewer_input_if_unchanged = original_commit_reviewer_input
             app_mod.file_store = original_store
         replacement_save_after = STORE.get_insight(run.id, card.id)
         replacement_save_run = STORE.get_run(run.id)

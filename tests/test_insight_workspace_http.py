@@ -656,3 +656,27 @@ async def test_stale_proposal_and_failed_research_have_safe_route_contracts(clie
     assert stale.status_code == 409
     assert "event: error\n" in failed.text
     assert failed.text.endswith("\n\n")
+
+
+@pytest.mark.asyncio
+async def test_import_rejects_a_stale_completed_bundle_without_partial_writes(client, seeded):
+    """An export captured before Apply cannot replace the completed applied card."""
+    run_id, insight_id, store = seeded
+    service = _service(store)
+    proposal = await service.propose(run_id, insight_id)
+    stale_bundle = app_mod._export_bundle(store.get_run(run_id))
+    applied = await service.apply(run_id, insight_id, proposal.id)
+    before_run = store.get_run(run_id).model_dump_json()
+    before_questions = [item.model_dump_json() for item in store.get_questions(run_id)]
+    before_reports = [item.model_dump_json() for item in store.get_stage_reports(run_id)]
+
+    response = await client.post(
+        "/projects/import",
+        files={"bundle": ("stale.json", json.dumps(stale_bundle).encode(), "application/json")},
+    )
+
+    assert response.status_code == 409
+    assert store.get_insight(run_id, insight_id).summary == applied.insight.summary
+    assert store.get_run(run_id).model_dump_json() == before_run
+    assert [item.model_dump_json() for item in store.get_questions(run_id)] == before_questions
+    assert [item.model_dump_json() for item in store.get_stage_reports(run_id)] == before_reports

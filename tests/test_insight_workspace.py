@@ -28,6 +28,7 @@ from celestra.models import (
     Run,
     RunConfig,
     RunStatus,
+    StageReport,
     VerificationTag,
     WorkspaceEventType,
     WorkspaceMessageRole,
@@ -1228,6 +1229,49 @@ async def test_stale_reviewer_write_cannot_overwrite_applied_workspace_revision(
     persisted = apply_store.get_insight(run.id, selected.id)
     assert persisted.summary == applied.insight.summary
     assert service.load(run.id, selected.id).applied_revisions[-1].proposal_id == proposal.id
+
+
+@pytest.mark.asyncio
+async def test_reviewer_input_commit_rejects_stale_card_without_writing_context_or_report(tmp_path):
+    """A stale Add Input cannot persist its document-side effects before its card CAS."""
+    apply_store, run, selected, _ = seeded_store(tmp_path)
+    reviewer_store = Store(apply_store.path)
+    report = StageReport(
+        run_id=run.id,
+        stage=selected.stage,
+        bucket=selected.bucket,
+        name="Line-of-therapy evidence",
+        core_question="Which operational rule applies?",
+        agent_name="Treatment Evidence Agent",
+        answers=[{"question": "Which gap and regimen-change rules are needed?"}],
+    )
+    apply_store.save_stage_reports(run.id, [report])
+    service = proposal_service(apply_store)
+    proposal = await service.propose(run.id, selected.id)
+    stale_card = reviewer_store.get_insight(run.id, selected.id)
+    stale_run = reviewer_store.get_run(run.id)
+    stale_card.review_action = ReviewAction.INPUT_ADDED
+    stale_card.reviewer_input = "Use the clinical reviewer's gap definition."
+    stale_card.confidence = Confidence.READY
+    stale_run.context["reviewer_inputs"] = [{"insight_id": selected.id, "input": stale_card.reviewer_input}]
+    stale_report = reviewer_store.get_stage_reports(run.id)[0]
+    stale_report.answers[0]["reviewer_input"] = stale_card.reviewer_input
+    applied = await service.apply(run.id, selected.id, proposal.id)
+    before_run = apply_store.get_run(run.id).model_dump_json()
+    before_reports = [item.model_dump_json() for item in apply_store.get_stage_reports(run.id)]
+
+    with pytest.raises(StaleInsightRevision):
+        reviewer_store.commit_reviewer_input_if_unchanged(
+            stale_card,
+            insight_snapshot_digest(selected),
+            stale_run,
+            [stale_report],
+        )
+
+    persisted = apply_store.get_insight(run.id, selected.id)
+    assert persisted.summary == applied.insight.summary
+    assert apply_store.get_run(run.id).model_dump_json() == before_run
+    assert [item.model_dump_json() for item in apply_store.get_stage_reports(run.id)] == before_reports
 
 
 @pytest.mark.asyncio

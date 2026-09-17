@@ -24,6 +24,7 @@ from .models import (
     QAMetrics,
     ResearchQuestion,
     Run,
+    RunStatus,
     StageReport,
 )
 from .services.insight_reconciliation import insight_card_digest
@@ -166,6 +167,17 @@ class Store:
     # -- generic document tables ----------------------------------------
     def _save_many(self, table: str, run_id: str, items: Iterable[Any],
                    extra_cols: tuple[str, ...] = ()) -> None:
+        with self._conn() as connection:
+            self._save_many_in_transaction(connection, table, run_id, items, extra_cols)
+
+    def _save_many_in_transaction(
+        self,
+        connection: sqlite3.Connection,
+        table: str,
+        run_id: str,
+        items: Iterable[Any],
+        extra_cols: tuple[str, ...] = (),
+    ) -> None:
         rows = []
         for it in items:
             extras = tuple(getattr(it, col, "") for col in extra_cols)
@@ -175,12 +187,11 @@ class Store:
         cols = ("id", "run_id", *extra_cols, "doc")
         ph = ",".join("?" * len(cols))
         assign = ",".join(f"{c}=excluded.{c}" for c in cols if c != "id")
-        with self._conn() as c:
-            c.executemany(
-                f"INSERT INTO {table}({','.join(cols)}) VALUES({ph}) "
-                f"ON CONFLICT(id) DO UPDATE SET {assign}",
-                rows,
-            )
+        connection.executemany(
+            f"INSERT INTO {table}({','.join(cols)}) VALUES({ph}) "
+            f"ON CONFLICT(id) DO UPDATE SET {assign}",
+            rows,
+        )
 
     def _load_many(self, table: str, run_id: str, model: type[T], where: str = "") -> list[T]:
         sql = f"SELECT doc FROM {table} WHERE run_id=?{where}"
@@ -244,6 +255,116 @@ class Store:
                 "stage=excluded.stage,doc=excluded.doc",
                 (insight.id, insight.run_id, insight.stage, self._dump(insight)),
             )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    def commit_reviewer_input_if_unchanged(
+        self,
+        insight: Insight,
+        expected_insight_digest: str,
+        run: Run,
+        reports: Iterable[StageReport],
+    ) -> None:
+        """Atomically attach reviewer context, its report rows, and one finding."""
+        connection = self._conn()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT doc FROM insights WHERE run_id=? AND id=?",
+                (insight.run_id, insight.id),
+            ).fetchone()
+            if row is None:
+                raise StaleInsightRevision("Insight no longer exists")
+            current = Insight.model_validate_json(row["doc"])
+            if insight_snapshot_digest(current) != expected_insight_digest:
+                raise StaleInsightRevision("Insight changed")
+            connection.execute(
+                "INSERT INTO runs(id,reference,status,indication,created_at,doc) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                "reference=excluded.reference,status=excluded.status,doc=excluded.doc",
+                (run.id, run.reference, run.status.value, run.config.indication,
+                 run.created_at.isoformat(), self._dump(run)),
+            )
+            self._save_many_in_transaction(
+                connection, "stage_reports", run.id, reports, ("stage",),
+            )
+            connection.execute(
+                "INSERT INTO insights(id,run_id,stage,doc) VALUES(?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET run_id=excluded.run_id,"
+                "stage=excluded.stage,doc=excluded.doc",
+                (insight.id, insight.run_id, insight.stage, self._dump(insight)),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    def import_run_if_current(
+        self,
+        run: Run,
+        questions: Iterable[ResearchQuestion],
+        evidence: Iterable[Evidence],
+        answers: Iterable[Answer],
+        insights: Iterable[Insight],
+        contradictions: Iterable[Contradiction],
+        reports: Iterable[StageReport],
+        qa: QAMetrics | None,
+    ) -> None:
+        """Import one bundle atomically, refusing a changed completed finding."""
+        questions = list(questions)
+        evidence = list(evidence)
+        answers = list(answers)
+        insights = list(insights)
+        contradictions = list(contradictions)
+        reports = list(reports)
+        connection = self._conn()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            existing_row = connection.execute(
+                "SELECT doc FROM runs WHERE id=?", (run.id,),
+            ).fetchone()
+            if existing_row is not None:
+                existing = Run.model_validate_json(existing_row["doc"])
+                if existing.status is RunStatus.COMPLETED:
+                    current_cards = {
+                        item.id: insight_snapshot_digest(item)
+                        for item in self.get_insights(run.id)
+                    }
+                    imported_cards = {
+                        item.id: insight_snapshot_digest(item)
+                        for item in insights
+                    }
+                    if current_cards != imported_cards:
+                        raise StaleInsightRevision("Completed insight changed since export")
+            connection.execute(
+                "INSERT INTO runs(id,reference,status,indication,created_at,doc) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
+                "reference=excluded.reference,status=excluded.status,doc=excluded.doc",
+                (run.id, run.reference, run.status.value, run.config.indication,
+                 run.created_at.isoformat(), self._dump(run)),
+            )
+            self._save_many_in_transaction(connection, "questions", run.id, questions, ("stage",))
+            self._save_many_in_transaction(
+                connection, "evidence", run.id, evidence, ("question_id", "source_id"),
+            )
+            self._save_many_in_transaction(
+                connection, "answers", run.id, answers, ("question_id", "stage"),
+            )
+            self._save_many_in_transaction(connection, "insights", run.id, insights, ("stage",))
+            self._save_many_in_transaction(
+                connection, "contradictions", run.id, contradictions, ("stage",),
+            )
+            self._save_many_in_transaction(
+                connection, "stage_reports", run.id, reports, ("stage",),
+            )
+            if qa is not None:
+                connection.execute(
+                    "INSERT INTO qa(run_id,doc) VALUES(?,?) "
+                    "ON CONFLICT(run_id) DO UPDATE SET doc=excluded.doc",
+                    (run.id, self._dump(qa)),
+                )
             connection.commit()
         except Exception:
             connection.rollback()
