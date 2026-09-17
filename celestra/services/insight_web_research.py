@@ -33,18 +33,28 @@ _EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 _PHONE = re.compile(r"\b(?:\+?\d{1,3}[ .-]?)?(?:\(?\d{3}\)?[ .-]?)\d{3}[ .-]?\d{4}\b")
 _SSN = re.compile(r"\b\d{3}-\d{2}-\d{4}\b")
 _DATE = re.compile(r"\b(?:\d{4}[-/]\d{1,2}[-/]\d{1,2}|\d{1,2}[-/]\d{1,2}[-/]\d{2,4})\b")
-_TEXTUAL_DOB = re.compile(
-    r"\b(?:date[_ ]?of[_ ]?birth|dob)\s*[:=#-]?\s*"
-    r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
-    r"jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
-    r"\s+\d{1,2},\s*\d{4}\b",
+_DOB_LABEL_VALUE = re.compile(
+    r"\b(?:date[_ ]?of[_ ]?birth|dob)\s*[:=#-]?\s*[^;|\n]+",
     re.IGNORECASE,
 )
-_INSTRUCTION_INJECTION = re.compile(
-    r"\b(?:ignore|disregard|override|bypass)\b[^,;|\n]*"
-    r"(?:instruction|safeguard|policy|prompt)[^,;|\n]*",
+_LABELLED_IDENTIFIER_VALUE = re.compile(
+    r"\b(?:patient[_ ]?id|member[_ ]?id|claim[_ ]?id|subscriber[_ ]?id|"
+    r"beneficiary[_ ]?id|mrn|name|date[_ ]?of[_ ]?birth|dob|address|email|phone|ssn)"
+    r"\s*[:=#-]?\s*([^;|\n]+)",
     re.IGNORECASE,
 )
+_META_INSTRUCTION = re.compile(
+    r"\b(?:ignore|disregard|override|bypass|follow)\b[^,;|\n]*"
+    r"\b(?:instruction|directions|safeguard|policy|prompt)\b|"
+    r"\b(?:export|exfiltrate|reveal|send)\b[^,;|\n]*"
+    r"\b(?:patient|member|claim|personal|private)\s+(?:data|details|record)\b|"
+    r"\b(?:system\s+prompt|prompt\s+injection|jailbreak)\b",
+    re.IGNORECASE,
+)
+_IDENTIFIER_KEYS = frozenset({
+    "patient_id", "member_id", "claim_id", "subscriber_id", "beneficiary_id",
+    "mrn", "name", "date_of_birth", "dob", "address", "email", "phone", "ssn",
+})
 _STOPWORDS = frozenset({
     "a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "is",
     "of", "on", "or", "the", "to", "with",
@@ -61,11 +71,11 @@ def sanitize_search_brief(
     for value in sorted({str(value).strip() for value in identifying_values if str(value).strip()},
                         key=len, reverse=True):
         safe = re.sub(re.escape(value), " ", safe, flags=re.IGNORECASE)
-    for pattern in (
-        _TEXTUAL_DOB, _IDENTIFIER_LABEL, _EMAIL, _PHONE, _SSN, _DATE, _INSTRUCTION_INJECTION,
-    ):
+    for pattern in (_DOB_LABEL_VALUE, _IDENTIFIER_LABEL, _EMAIL, _PHONE, _SSN, _DATE):
         safe = pattern.sub(" ", safe)
     safe = " ".join(re.sub(r"[;,|]+", " ", safe).split())
+    if _META_INSTRUCTION.search(safe):
+        raise UnsafeSearchBrief()
     terms = [term.lower() for term in re.findall(r"[A-Za-z][A-Za-z0-9-]*", safe)]
     if len([term for term in terms if term not in _STOPWORDS]) < 3:
         raise UnsafeSearchBrief()
@@ -97,11 +107,7 @@ async def _notify(on_status, status: str) -> None:
         await result
 
 
-def _identifying_values(rows: list[dict[str, Any]]) -> list[str]:
-    identifying_keys = {
-        "patient_id", "member_id", "claim_id", "subscriber_id", "beneficiary_id",
-        "mrn", "name", "date_of_birth", "dob", "address", "email", "phone", "ssn",
-    }
+def _identifying_values(value: Any) -> list[str]:
     values: list[str] = []
 
     def visit(value: Any, key: str = "") -> None:
@@ -111,12 +117,54 @@ def _identifying_values(rows: list[dict[str, Any]]) -> list[str]:
         elif isinstance(value, list):
             for item in value:
                 visit(item, key)
-        elif key in identifying_keys and value is not None:
+        elif key in _IDENTIFIER_KEYS and value is not None:
             text = str(value).strip()
             if text:
                 values.append(text)
 
-    visit(rows)
+    visit(value)
+    return values
+
+
+def _labelled_values(value: Any) -> list[str]:
+    values: list[str] = []
+
+    def visit(item: Any) -> None:
+        if isinstance(item, dict):
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+        elif isinstance(item, str):
+            for match in _LABELLED_IDENTIFIER_VALUE.finditer(item):
+                value = match.group(1).strip()
+                if value:
+                    values.append(value)
+                    values.append(value.split()[0])
+
+    visit(value)
+    return values
+
+
+def _planning_identifier_values(context: ResearchContext, user_text: str) -> list[str]:
+    inputs: list[Any] = [
+        context.insight.model_dump(),
+        context.question.model_dump(),
+        [item.model_dump() for item in context.evidence],
+        context.continuity_summary,
+        [
+            message.content
+            for message in context.messages
+            if message.state.value == "completed"
+        ],
+        user_text,
+        context.planning_claims_context,
+    ]
+    values: list[str] = []
+    for item in inputs:
+        values.extend(_identifying_values(item))
+        values.extend(_labelled_values(item))
     return values
 
 
@@ -196,7 +244,7 @@ class InsightWebResearchGateway:
         try:
             brief = sanitize_search_brief(
                 plan.search_brief,
-                identifying_values=_identifying_values(context.planning_claims_context),
+                identifying_values=_planning_identifier_values(context, user_text),
             )
         except UnsafeSearchBrief:
             await _notify(on_status, "search_blocked_privacy")
