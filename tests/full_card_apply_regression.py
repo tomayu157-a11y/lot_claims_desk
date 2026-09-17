@@ -21,6 +21,7 @@ from celestra.models import (
     RunStatus,
     StageReport,
 )
+from celestra.services import qa as qa_mod
 from celestra.services.insight_reconciliation import (
     diff_card_content,
     insight_card_content,
@@ -167,8 +168,17 @@ async def assert_full_card_apply_regression() -> None:
         before_other = store.get_insight(run.id, other.id).model_dump_json()
         previous_store = app_mod.store
         previous_service = app_mod._insight_workspace_service
+        previous_complete_json = qa_mod.llm.complete_json
+
+        async def deterministic_qa_model_response(*_args, **_kwargs) -> dict[str, object]:
+            return {
+                "readiness": "Deterministic approval readiness for regression coverage.",
+                "sme_checklist": ["Verify the approved evidence before use."],
+            }
+
         app_mod.store = store
         app_mod._insight_workspace_service = lambda: service
+        qa_mod.llm.complete_json = deterministic_qa_model_response
         try:
             transport = httpx.ASGITransport(app=app_mod.app)
             async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -197,14 +207,25 @@ async def assert_full_card_apply_regression() -> None:
                 exported_card = next(card for card in exported.json()["insights"] if card["id"] == selected.id)
                 assert insight_card_content(Insight.model_validate(exported_card)) == expected_content
 
-                run.status = RunStatus.APPROVED
-                store.save_run(run)
+                approval = await client.post(f"/runs/{run.id}/approve")
+                assert approval.status_code == 303
+                assert approval.headers["location"].endswith("/report")
+
+                approved_run = store.get_run(run.id)
+                assert approved_run.status is RunStatus.APPROVED
+                assert approved_run.is_locked
+                assert approved_run.approved_at is not None
+                approval_qa = store.get_qa(run.id)
+                assert approval_qa is not None
+                assert any(item["check"] == "Reviewer sign-off" for item in approval_qa.checklist)
+
                 approved_report = await client.get(f"/runs/{run.id}/findings")
                 assert approved_report.status_code == 200
                 assert "Use a 60-day gap." in approved_report.text
 
             applied_card = store.get_insight(run.id, selected.id)
             assert insight_card_content(applied_card) == expected_content
+            assert applied_card.review_action.value == "modified"
             assert ["Treatment-free gap", "90 days"] not in applied_card.evidence["rows"]
             assert [item.model_dump_json() for item in store.get_questions(run.id)] == before_questions
             assert [item.model_dump_json() for item in store.get_stage_reports(run.id)] == before_reports
@@ -212,4 +233,5 @@ async def assert_full_card_apply_regression() -> None:
         finally:
             app_mod.store = previous_store
             app_mod._insight_workspace_service = previous_service
+            qa_mod.llm.complete_json = previous_complete_json
             store._conn().close()
