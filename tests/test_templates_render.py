@@ -990,6 +990,19 @@ def test_narrow_mobile_card_status_can_wrap_within_the_card():
     ), "narrow card status content must wrap rather than overflow"
 
 
+def test_narrow_mobile_source_chip_can_wrap_within_its_card():
+    """A long named source must remain readable without painting beyond a narrow card."""
+    css = (STATIC / "css" / "app.css").read_text(encoding="utf-8")
+    assert re.search(
+        r"@media \(max-width: 620px\)\s*\{\s*"
+        r"\.chip-source\s*\{\s*"
+        r"max-width:\s*100%;\s*min-width:\s*0;\s*"
+        r"white-space:\s*normal;\s*overflow-wrap:\s*anywhere;\s*"
+        r"\}\s*\}",
+        css,
+    ), "a long source chip must wrap inside a narrow card rather than paint outside it"
+
+
 # ---------------------------------------------------------------------------
 # static asset checks
 # ---------------------------------------------------------------------------

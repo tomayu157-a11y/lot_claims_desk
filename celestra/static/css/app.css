@@ -1311,6 +1311,7 @@ textarea.is-invalid { border-color: var(--danger); }
 
 .icard-status { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2); font-weight: 600; }
 @media (max-width: 620px) { .icard-status { flex-wrap: wrap; } }
+@media (max-width: 620px) { .chip-source { max-width: 100%; min-width: 0; white-space: normal; overflow-wrap: anywhere; } }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
 .status-dot.is-ready { background: var(--ok); }
 .status-dot.is-review { background: var(--warn); }
