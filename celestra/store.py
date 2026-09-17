@@ -281,7 +281,11 @@ class Store:
             ):
                 raise StaleInsightRevision("Insight proposal changed")
 
+            new_evidence_ids: set[str] = set()
             for evidence in commit.new_evidence:
+                if evidence.id in new_evidence_ids:
+                    raise ValueError("New evidence IDs must be unique")
+                new_evidence_ids.add(evidence.id)
                 if evidence.question_id not in commit.insight.question_ids:
                     raise ValueError("New evidence must belong to a linked insight question")
                 question_row = connection.execute(
@@ -290,6 +294,12 @@ class Store:
                 ).fetchone()
                 if question_row is None:
                     raise ValueError("New evidence question must belong to the insight run")
+                evidence_row = connection.execute(
+                    "SELECT 1 FROM evidence WHERE id=?",
+                    (evidence.id,),
+                ).fetchone()
+                if evidence_row is not None:
+                    raise ValueError("New evidence ID already exists")
 
             connection.execute(
                 "INSERT INTO insights(id,run_id,stage,doc) VALUES(?,?,?,?) "
@@ -301,9 +311,7 @@ class Store:
             for evidence in commit.new_evidence:
                 connection.execute(
                     "INSERT INTO evidence(id,run_id,question_id,source_id,doc) "
-                    "VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET "
-                    "run_id=excluded.run_id,question_id=excluded.question_id,"
-                    "source_id=excluded.source_id,doc=excluded.doc",
+                    "VALUES(?,?,?,?,?)",
                     (evidence.id, commit.insight.run_id, evidence.question_id,
                      evidence.source_id, self._dump(evidence)),
                 )
