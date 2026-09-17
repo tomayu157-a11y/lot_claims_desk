@@ -921,6 +921,33 @@ def test_workspace_renders_a_complete_escaped_full_card_preview(env, context):
     assert "&lt;img src=x onerror=alert(1)&gt;" in out
 
 
+def test_workspace_preview_keeps_unsupported_factual_fields_read_only(env, context):
+    source = context["workspace"].sources[0]
+    before = InsightCardContent(summary="Current summary", evidence_ids=[source.id], source_ids=[source.source_id])
+    after = before.model_copy(update={
+        "summary": "Unsupported factual replacement",
+        "covered": False,
+        "input_reason": "Evidence support is required for the proposed factual update.",
+    })
+    proposal = InsightRevisionProposal(
+        id="wprop_unsupported_preview",
+        proposed_summary=after.summary,
+        source_ids=[source.id],
+        before_content=before,
+        after_content=after,
+        applyable=False,
+        unsupported_factual_fields=["summary"],
+    )
+    workspace = context["workspace"].model_copy(update={"pending_proposal": proposal})
+
+    out = render_workspace(env, {**context, "workspace": workspace}, locked=False)
+
+    assert "Evidence support is required before this factual update can be applied" in out
+    assert "Summary" in out
+    assert "data-workspace-apply-url" not in out
+    assert "data-workspace-continue" in out
+
+
 def test_insight_workspace_collapses_source_pills_after_the_first_four(env, context):
     first = context["workspace"].sources[0]
     sources = [

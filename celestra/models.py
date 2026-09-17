@@ -515,6 +515,8 @@ class InsightRevisionProposal(BaseModel):
     unchanged_fields: list[str] = Field(default_factory=list)
     support_by_field: list[InsightFieldSupport] = Field(default_factory=list)
     change_reasons: dict[str, str] = Field(default_factory=dict)
+    applyable: bool = True
+    unsupported_factual_fields: list[str] = Field(default_factory=list)
     base_content_digest: str = ""
     created_at: datetime = Field(default_factory=utcnow)
 

@@ -139,6 +139,8 @@ def test_reconciler_marks_missing_replacement_support_as_requiring_input():
 
     assert proposal.after_content.covered is False
     assert proposal.after_content.input_reason == "Evidence support is required for the proposed factual update."
+    assert proposal.applyable is False
+    assert proposal.unsupported_factual_fields == ["summary", "evidence", "interpretation"]
     derived = InsightCardReconciler().derive_state(
         proposal.after_content.covered,
         proposal.after_content.input_reason,
@@ -146,6 +148,27 @@ def test_reconciler_marks_missing_replacement_support_as_requiring_input():
     )
     assert derived.confidence is Confidence.REQUIRES_INPUT
     assert derived.tag is VerificationTag.NOT_VERIFIED
+
+
+def test_reconciler_keeps_a_review_note_only_update_applyable_without_evidence():
+    insight = populated_insight(
+        evidence_ids=[], source_ids=[], covered=True, input_reason="",
+    )
+    editorial = {
+        "summary": insight.summary,
+        "detail": insight.detail,
+        "evidence_type": insight.evidence_type,
+        "evidence": insight.evidence,
+        "interpretation": insight.interpretation,
+        "review_note": "Clarified for the next reviewer.",
+    }
+
+    proposal = InsightCardReconciler().propose(
+        insight, [], editorial, [], {"review_note": "Editorial clarification."}, [],
+    )
+
+    assert proposal.applyable is True
+    assert proposal.unsupported_factual_fields == []
 
 
 def test_reconciler_derives_general_knowledge_for_supplementary_only_support():

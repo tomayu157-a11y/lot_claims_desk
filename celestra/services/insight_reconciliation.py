@@ -82,15 +82,7 @@ class InsightCardReconciler:
         self._validate_editorial_reasons(initial_diff.changes, change_reasons)
 
         supported_ids = self._active_support_ids(selected_evidence, support)
-        factual_changes = [
-            change.field
-            for change in initial_diff.changes
-            if change.field not in {"evidence_type", "review_note"}
-        ]
-        unsupported_fields = [
-            field for field in factual_changes
-            if not support.get(field, InsightFieldSupport(field=field)).evidence_ids
-        ]
+        unsupported_fields = self.unsupported_factual_fields(before, candidate, support)
         covered = not unsupported_fields
         input_reason = "" if covered else "Evidence support is required for the proposed factual update."
         evidence_by_id = {item.id: item for item in selected_evidence}
@@ -137,6 +129,8 @@ class InsightCardReconciler:
             unchanged_fields=diff.unchanged_fields,
             support_by_field=support_models,
             change_reasons=change_reasons,
+            applyable=not unsupported_fields,
+            unsupported_factual_fields=unsupported_fields,
             base_summary_digest=hashlib.sha256(insight.summary.encode()).hexdigest(),
             base_content_digest=insight_card_digest(insight),
         )
@@ -221,6 +215,43 @@ class InsightCardReconciler:
     ) -> list[Evidence]:
         active_ids = set(after.evidence_ids)
         return [item for item in selected_evidence if item.id in active_ids]
+
+    @staticmethod
+    def unsupported_factual_fields(
+        before: InsightCardContent,
+        after: InsightCardContent,
+        support_by_field: dict[str, InsightFieldSupport] | list[InsightFieldSupport],
+    ) -> list[str]:
+        """Return non-removal factual changes that lack server-validated support.
+
+        A factual removal is allowed to leave the affected content empty and
+        require input. A non-empty factual replacement must identify support.
+        Review notes and evidence-format presentation changes are editorial.
+        """
+        support = (
+            support_by_field
+            if isinstance(support_by_field, dict)
+            else {item.field: item for item in support_by_field}
+        )
+        unsupported: list[str] = []
+        for change in diff_card_content(before, after).changes:
+            if change.field not in {"summary", "detail", "evidence", "interpretation"}:
+                continue
+            if not InsightCardReconciler._is_factual_replacement(change):
+                continue
+            if not support.get(change.field, InsightFieldSupport(field=change.field)).evidence_ids:
+                unsupported.append(change.field)
+        return unsupported
+
+    @staticmethod
+    def _is_factual_replacement(change: InsightCardFieldChange) -> bool:
+        if change.field == "evidence":
+            if _is_empty(change.after):
+                return False
+            return not change.item_changes or any(
+                item.get("kind") in {"added", "changed"} for item in change.item_changes
+            )
+        return isinstance(change.after, str) and bool(change.after.strip())
 
 
 def _stable_unique(values: Iterable[str]) -> list[str]:

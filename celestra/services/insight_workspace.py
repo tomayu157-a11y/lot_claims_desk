@@ -514,6 +514,23 @@ class InsightWorkspaceService:
                     409,
                     "This proposal uses the previous format. Regenerate it before applying.",
                 )
+            unsupported_fields = InsightCardReconciler.unsupported_factual_fields(
+                proposal.before_content,
+                proposal.after_content,
+                proposal.support_by_field,
+            )
+            if unsupported_fields:
+                labels = {
+                    "summary": "Summary",
+                    "detail": "Detail",
+                    "evidence": "Structured evidence",
+                    "interpretation": "Interpretation",
+                }
+                raise HTTPException(
+                    409,
+                    "Evidence support is required before this factual update can be applied: "
+                    + ", ".join(labels[field] for field in unsupported_fields) + ".",
+                )
             current_digest = insight_card_digest(insight)
             if proposal.base_content_digest != current_digest:
                 raise self._stale_proposal_error()

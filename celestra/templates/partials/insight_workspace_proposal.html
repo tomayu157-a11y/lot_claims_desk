@@ -5,6 +5,8 @@
 {% set source_by_id = proposal_source_by_id | default({}, true) %}
 {% set labels = proposal_field_labels | default({}, true) %}
 {% set unchanged = proposed.unchanged_fields | default([], true) %}
+{% set applyable = proposed.applyable | default(true) %}
+{% set unsupported_fields = proposed.unsupported_factual_fields | default([], true) %}
 <section class="review-note is-revision insight-workspace-proposal" data-workspace-proposal-id="{{ proposed.id }}">
   <p class="eyebrow">PROPOSED UPDATE</p>
   <div class="icard-label">Complete proposed finding</div>
@@ -34,6 +36,14 @@
 
   {% if proposal_has_removals | default(false) %}
   <p class="workspace-removal-warning" role="status">Content and active source links will be removed from this finding when you apply this update. Historical research remains available.</p>
+  {% endif %}
+
+  {% if not applyable %}
+  <p class="workspace-removal-warning" role="status" data-workspace-apply-blocked>
+    Evidence support is required before this factual update can be applied:
+    {% for field in unsupported_fields %}{{ labels.get(field, field | replace('_', ' ') | title) }}{% if not loop.last %}, {% endif %}{% endfor %}.
+    Continue researching to support or remove these fields.
+  </p>
   {% endif %}
 
   {% for kind, heading in [("added", "Added"), ("removed", "Removed"), ("changed", "Changed")] %}
@@ -82,10 +92,16 @@
     <button type="button" class="btn btn-secondary" data-workspace-continue>
       Continue researching
     </button>
-    <button type="button" class="btn btn-primary"
-            data-workspace-apply-url="/runs/{{ run.id }}/insights/{{ insight.id }}/workspace/proposals/{{ proposed.id }}/apply">
-      {{ icon('check', 14) }} Apply update
-    </button>
+    {% if applyable %}
+      <button type="button" class="btn btn-primary"
+              data-workspace-apply-url="/runs/{{ run.id }}/insights/{{ insight.id }}/workspace/proposals/{{ proposed.id }}/apply">
+        {{ icon('check', 14) }} Apply update
+      </button>
+    {% else %}
+      <button type="button" class="btn btn-primary" disabled aria-disabled="true">
+        {{ icon('check', 14) }} Apply update
+      </button>
+    {% endif %}
   </div>
   {% endif %}
 </section>

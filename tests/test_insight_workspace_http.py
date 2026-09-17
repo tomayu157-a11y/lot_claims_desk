@@ -15,6 +15,7 @@ from celestra.models import (
     Insight,
     InsightCardContent,
     InsightCardFieldChange,
+    InsightFieldSupport,
     InsightRevisionProposal,
     ResearchQuestion,
     Run,
@@ -116,6 +117,10 @@ async def _proposal(context, registry, llm_client):
                     evidence_ids=[item.id for item in evidence],
                     reason="The selected evidence now defines the operational rule.",
                 ),
+            ],
+            support_by_field=[
+                InsightFieldSupport(field=field, evidence_ids=[item.id for item in evidence])
+                for field in ("summary", "detail", "evidence", "interpretation")
             ],
             unchanged_fields=[],
             base_content_digest=insight_card_digest(context.insight),
@@ -406,6 +411,53 @@ async def test_proposal_then_apply_refreshes_card_sources_and_evidence_panel(cli
     assert evidence.status_code == 200
     assert "2 items" in evidence.text
     assert "Supplementary evidence supports an updated operational rule." in evidence.text
+
+
+@pytest.mark.asyncio
+async def test_unsupported_factual_preview_disables_apply_and_route_preserves_state(
+    client, monkeypatch, seeded,
+):
+    run_id, insight_id, store = seeded
+
+    async def unsupported_proposal(context, registry, llm_client):
+        draft = await _proposal(context, registry, llm_client)
+        return ProposalDraft(
+            proposal=draft.proposal.model_copy(update={
+                "support_by_field": [],
+                "applyable": False,
+                "unsupported_factual_fields": ["summary", "detail", "evidence", "interpretation"],
+                "after_content": draft.proposal.after_content.model_copy(update={
+                    "covered": False,
+                    "input_reason": "Evidence support is required for the proposed factual update.",
+                }),
+            }),
+            evidence=draft.evidence,
+            sites=draft.sites,
+        )
+
+    monkeypatch.setattr(app_mod, "_insight_workspace_service", lambda: InsightWorkspaceService(
+        store=store, registry_factory=dict, answerer=_answer, summarizer=_summary,
+        proposal_builder=unsupported_proposal, llm_client=object(), lock_registry={},
+    ))
+    proposed = await client.post(f"/runs/{run_id}/insights/{insight_id}/workspace/proposal", json={})
+    assert proposed.status_code == 200
+    assert "Evidence support is required before this factual update can be applied" in proposed.json()["proposal_html"]
+    assert "Summary, Detail, Structured evidence, Interpretation" in proposed.json()["proposal_html"]
+    assert "data-workspace-apply-url" not in proposed.json()["proposal_html"]
+
+    before_insight = store.get_insight(run_id, insight_id).model_dump_json()
+    before_evidence = [item.model_dump_json() for item in store.get_evidence(run_id)]
+    before_workspace = store.get_insight_workspace(run_id, insight_id).model_dump_json()
+    rejected = await client.post(
+        f"/runs/{run_id}/insights/{insight_id}/workspace/proposals/{proposed.json()['proposal_id']}/apply",
+        json={},
+    )
+
+    assert rejected.status_code == 409
+    assert "Summary, Detail, Structured evidence, Interpretation" in rejected.text
+    assert store.get_insight(run_id, insight_id).model_dump_json() == before_insight
+    assert [item.model_dump_json() for item in store.get_evidence(run_id)] == before_evidence
+    assert store.get_insight_workspace(run_id, insight_id).model_dump_json() == before_workspace
 
 
 @pytest.mark.asyncio

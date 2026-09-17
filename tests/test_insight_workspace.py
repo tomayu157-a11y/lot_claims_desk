@@ -16,6 +16,7 @@ from celestra.models import (
     EvidenceOrigin,
     Insight,
     InsightCardContent,
+    InsightFieldSupport,
     InsightRevisionProposal,
     InsightWorkspaceMessage,
     InsightWorkspaceSource,
@@ -938,6 +939,10 @@ async def deterministic_proposal(context, registry, llm_client):
             after_content=after,
             changed_fields=card_diff.changes,
             unchanged_fields=card_diff.unchanged_fields,
+            support_by_field=[
+                InsightFieldSupport(field=field, evidence_ids=[item.id for item in [*context.evidence, supplementary]])
+                for field in ("summary", "detail", "evidence", "interpretation")
+            ],
             change_reasons={
                 change.field: "Scoped evidence supports this full-card update."
                 for change in card_diff.changes
@@ -1022,6 +1027,41 @@ async def pending_card_commit(store, run, selected):
         workspace=workspace,
         expected_content_digest=insight_card_digest(current),
     )
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_unsupported_factual_proposal_without_mutating_anything(tmp_path):
+    """A requires-input factual preview is inspectable, but it never becomes a card revision."""
+    store, run, selected, _ = seeded_store(tmp_path)
+
+    async def unsupported_proposal(context, registry, llm_client):
+        draft = await deterministic_proposal(context, registry, llm_client)
+        return replace(
+            draft,
+            proposal=draft.proposal.model_copy(update={
+                "support_by_field": [],
+                "applyable": False,
+                "unsupported_factual_fields": ["summary", "detail", "evidence", "interpretation"],
+                "after_content": draft.proposal.after_content.model_copy(update={
+                    "covered": False,
+                    "input_reason": "Evidence support is required for the proposed factual update.",
+                }),
+            }),
+        )
+
+    service = proposal_service(store, proposal_builder=unsupported_proposal)
+    proposal = await service.propose(run.id, selected.id)
+    before_insight = store.get_insight(run.id, selected.id).model_dump_json()
+    before_evidence = [item.model_dump_json() for item in store.get_evidence(run.id)]
+    before_workspace = service.load(run.id, selected.id).model_dump_json()
+
+    with pytest.raises(HTTPException, match="Summary, Detail, Structured evidence, Interpretation") as exc:
+        await service.apply(run.id, selected.id, proposal.id)
+
+    assert exc.value.status_code == 409
+    assert store.get_insight(run.id, selected.id).model_dump_json() == before_insight
+    assert [item.model_dump_json() for item in store.get_evidence(run.id)] == before_evidence
+    assert service.load(run.id, selected.id).model_dump_json() == before_workspace
 
 
 @pytest.mark.asyncio
