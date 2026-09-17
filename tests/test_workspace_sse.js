@@ -181,6 +181,20 @@ async function main() {
   assert.equal(flashArea.children.length, 1);
   assert.equal(flashArea.children[0].firstChild.textContent, 'The model is unavailable. Try again.');
 
+  // A cross-origin redirect must never be treated as trusted server HTML.
+  global.fetch = async () => ({
+    ok: true,
+    url: 'https://outside.example/proposal',
+    headers: { get: () => 'application/json' },
+    json: async () => ({ proposal_html: '<p>Untrusted preview</p>' })
+  });
+  listeners
+    .filter((item) => item.type === 'click')
+    .forEach((item) => item.handler({ target: proposalButton, preventDefault() {} }));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(preview.hidden, true);
+  assert.equal(preview.innerHTML, '<p>Existing workspace document</p>');
+
   const enterMessages = element();
   enterMessages.setAttribute('data-workspace-messages', '');
   const enterComposer = element();

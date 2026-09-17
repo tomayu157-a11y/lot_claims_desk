@@ -13,6 +13,8 @@ from celestra.models import (
     Evidence,
     EvidenceOrigin,
     Insight,
+    InsightCardContent,
+    InsightCardFieldChange,
     InsightRevisionProposal,
     ResearchQuestion,
     Run,
@@ -20,6 +22,7 @@ from celestra.models import (
     RunStatus,
     WorkspaceMessageRole,
 )
+from celestra.services.insight_reconciliation import insight_card_digest
 from celestra.services.insight_research import ProposalDraft, ResearchTurnResult
 from celestra.services.insight_workspace import InsightWorkspaceService
 from celestra.services.llm import LLMUnavailable
@@ -28,6 +31,10 @@ from celestra.store import Store
 
 async def _answer(context, user_text, registry, on_status, llm_client):
     await on_status("checking_evidence")
+    await on_status("searching_web_azure")
+    await on_status("azure_unavailable_trying_firecrawl")
+    await on_status("reading_validating_sources")
+    await on_status("research_completed")
     return ResearchTurnResult(
         text="Operational line rules need a treatment-free gap and regimen-change definition.",
         evidence=context.evidence,
@@ -36,6 +43,14 @@ async def _answer(context, user_text, registry, on_status, llm_client):
         searched=False,
         note="",
         sites=[],
+        source_audit={
+            context.evidence[0].url: {
+                "search_provider": "azure_web_search",
+                "search_queries": ["sanitized research brief"],
+                "hydration_status": "hydrated",
+                "citation_metadata": [{"url": context.evidence[0].url}],
+            },
+        },
     )
 
 
@@ -55,6 +70,30 @@ async def _proposal(context, registry, llm_client):
         origin=EvidenceOrigin.OPEN_WEB,
     )
     evidence = [*context.evidence, supplementary]
+    before = InsightCardContent(
+        summary=context.insight.summary,
+        detail=context.insight.detail,
+        evidence_type=context.insight.evidence_type,
+        evidence=context.insight.evidence,
+        interpretation=context.insight.interpretation,
+        review_note=context.insight.review_note,
+        covered=context.insight.covered,
+        input_reason=context.insight.input_reason,
+        evidence_ids=context.insight.evidence_ids,
+        source_ids=context.insight.source_ids,
+        used_web_fallback=context.insight.used_web_fallback,
+    )
+    after = before.model_copy(update={
+        "summary": "Proposed operational finding from scoped research.",
+        "detail": "The selected evidence defines the full operational rule.",
+        "evidence_type": "steps",
+        "evidence": ["Apply a treatment-free gap before a regimen change."],
+        "interpretation": "Use the rule consistently for cohort construction.",
+        "review_note": "Confirm the implementation date with the reviewer.",
+        "evidence_ids": [item.id for item in evidence],
+        "source_ids": [item.source_id for item in evidence],
+        "used_web_fallback": True,
+    })
     return ProposalDraft(
         proposal=InsightRevisionProposal(
             id="wprop_http",
@@ -66,6 +105,20 @@ async def _proposal(context, registry, llm_client):
             ],
             source_ids=[item.id for item in evidence],
             base_summary_digest=hashlib.sha256(context.insight.summary.encode()).hexdigest(),
+            before_content=before,
+            after_content=after,
+            changed_fields=[
+                InsightCardFieldChange(
+                    field="summary",
+                    kind="changed",
+                    before=before.summary,
+                    after=after.summary,
+                    evidence_ids=[item.id for item in evidence],
+                    reason="The selected evidence now defines the operational rule.",
+                ),
+            ],
+            unchanged_fields=[],
+            base_content_digest=insight_card_digest(context.insight),
         ),
         evidence=evidence,
         sites=[],
@@ -223,6 +276,49 @@ async def test_message_route_streams_typed_events_in_order(client, seeded):
     frames = [frame for frame in text.split("\n\n") if frame]
     assert all(frame.startswith("event: ") and "\ndata: " in frame for frame in frames)
     assert all(json.loads(frame.split("\ndata: ", 1)[1]) for frame in frames)
+    statuses = [
+        json.loads(frame.split("\ndata: ", 1)[1])["detail"]
+        for frame in frames if frame.startswith("event: research_status")
+    ]
+    assert statuses == [
+        "checking_evidence", "searching_web_azure", "azure_unavailable_trying_firecrawl",
+        "reading_validating_sources", "research_completed",
+    ]
+    assert text.index("azure_unavailable_trying_firecrawl") < text.index("event: answer_completed")
+    completion = json.loads(next(
+        frame.split("\ndata: ", 1)[1] for frame in frames
+        if frame.startswith("event: answer_completed")
+    ))
+    assert completion["sources"]
+    assert {"id", "source_id", "source_name", "url", "quote"} <= set(completion["sources"][0])
+    assert not ({"search_provider", "search_queries", "hydration_status", "citation_metadata"}
+                & set(completion["sources"][0]))
+    assert "sanitized research brief" not in text
+
+
+@pytest.mark.asyncio
+async def test_workspace_routes_keep_their_methods_and_ignore_client_supplied_revision_state(client, seeded):
+    """A route change that trusts body-supplied card data must fail this contract."""
+    run_id, insight_id, _ = seeded
+    proposal = await client.post(
+        f"/runs/{run_id}/insights/{insight_id}/workspace/proposal",
+        json={"card": {"summary": "Client supplied"}, "authorization": True},
+    )
+    assert proposal.status_code == 200
+    assert set(proposal.json()) == {"proposal_id", "proposal_html"}
+
+    applied = await client.post(
+        f"/runs/{run_id}/insights/{insight_id}/workspace/proposals/{proposal.json()['proposal_id']}/apply",
+        json={
+            "card": {"summary": "Client supplied"},
+            "authorization": True,
+            "digest": "client-digest",
+            "sources": ["client-source"],
+        },
+    )
+    assert applied.status_code == 200
+    assert set(applied.json()) == {"card_html", "workspace_html"}
+    assert "Client supplied" not in applied.json()["card_html"]
 
 
 @pytest.mark.asyncio

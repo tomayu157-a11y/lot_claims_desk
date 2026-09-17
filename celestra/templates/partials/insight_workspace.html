@@ -15,7 +15,23 @@
     <div class="insight-workspace-grid">
       <aside class="insight-workspace-context">
         <div class="icard-label">Current finding</div>
-        <div class="readonly-block" data-workspace-current>{{ insight.summary }}</div>
+        <div class="readonly-block workspace-current-card" data-workspace-current>
+          <div class="workspace-card-section"><strong>Summary</strong><p>{{ insight.summary }}</p></div>
+          {% if insight.detail %}<div class="workspace-card-section"><strong>Detail</strong><p>{{ insight.detail }}</p></div>{% endif %}
+          {% if insight.evidence %}
+          <div class="workspace-card-section"><strong>Structured evidence</strong>
+            {% if insight.evidence_type == 'metrics' %}
+            <ul>{% for metric in insight.evidence %}<li>{{ metric.label }}: {{ metric.value }}</li>{% endfor %}</ul>
+            {% elif insight.evidence_type == 'table' %}
+            <ul>{% for row in insight.evidence.rows %}<li>{{ row | join(' · ') }}</li>{% endfor %}</ul>
+            {% else %}
+            <ul>{% for item in insight.evidence %}<li>{{ item }}</li>{% endfor %}</ul>
+            {% endif %}
+          </div>
+          {% endif %}
+          {% if insight.interpretation %}<div class="workspace-card-section"><strong>Interpretation</strong><p>{{ insight.interpretation }}</p></div>{% endif %}
+          {% if insight.review_note %}<div class="workspace-card-section"><strong>Review note</strong><p>{{ insight.review_note }}</p></div>{% endif %}
+        </div>
         <div class="icard-label">Research available to this chat</div>
         <div class="chip-row workspace-source-list" data-workspace-sources data-source-list>
           {% for source in available_sources %}

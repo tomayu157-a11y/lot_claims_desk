@@ -984,12 +984,32 @@ def _workspace_available_sources(run_id: str, insight: Insight, workspace) -> li
 
 
 def _workspace_template_context(request: Request, run: Run, insight: Insight, workspace) -> dict:
+    available_sources = _workspace_available_sources(run.id, insight, workspace)
+    groups = {"added": [], "removed": [], "changed": []}
+    proposal = workspace.pending_proposal
+    if proposal is not None:
+        for change in proposal.changed_fields:
+            groups[change.kind].append(change)
+    proposal_has_removals = bool(groups["removed"]) or any(
+        any(item.get("kind") == "removed" for item in change.item_changes)
+        for change in proposal.changed_fields
+    ) if proposal is not None else False
     return {
         **base_ctx(request),
         "run": run,
         "insight": insight,
         "workspace": workspace,
-        "available_sources": _workspace_available_sources(run.id, insight, workspace),
+        "available_sources": available_sources,
+        "proposal_change_groups": groups,
+        "proposal_has_removals": proposal_has_removals,
+        "proposal_source_by_id": {source.id: source for source in available_sources},
+        "proposal_field_labels": {
+            "summary": "Summary", "detail": "Detail", "evidence_type": "Evidence format",
+            "evidence": "Structured evidence", "interpretation": "Interpretation",
+            "review_note": "Review note", "covered": "Evidence coverage",
+            "input_reason": "Reason input is needed", "evidence_ids": "Evidence links",
+            "source_ids": "Source links", "used_web_fallback": "Supplementary web evidence",
+        },
         "locked": run.is_locked,
     }
 

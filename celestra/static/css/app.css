@@ -1420,6 +1420,22 @@ textarea.is-invalid { border-color: var(--danger); }
 .insight-workspace-preview { position: absolute; inset: 62px 0 0; background: var(--surface); z-index: 2; }
 .insight-workspace-preview[hidden] { display: none; }
 .insight-workspace-preview .insight-workspace-proposal { height: 100%; margin: 0; overflow: auto; padding: 20px; }
+.workspace-current-card, .workspace-proposed-card { display: grid; gap: 10px; }
+.workspace-card-section p { margin: 4px 0 0; }
+.workspace-card-section ul { margin: 5px 0 0; padding-left: 18px; }
+.workspace-change-group { margin: 18px 0; }
+.workspace-change-group h3 { margin: 0 0 8px; font-size: 14px; }
+.workspace-change { padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.workspace-change + .workspace-change { margin-top: 8px; }
+.workspace-change p { margin: 5px 0 0; }
+.workspace-item-changes { margin: 8px 0 0; padding-left: 18px; }
+.workspace-item-changes .is-added { color: var(--green-ink); }
+.workspace-item-changes .is-removed { color: var(--danger); }
+.workspace-change-sources { margin-top: 8px; }
+.workspace-removal-warning { margin: 14px 0; padding: 10px 12px; border-left: 3px solid var(--amber-border); background: var(--amber-soft); color: var(--amber-ink); }
+.workspace-unchanged { margin: 16px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.workspace-unchanged summary { cursor: pointer; font-weight: 600; }
+.workspace-unchanged ul { margin: 8px 0 0; padding-left: 18px; }
 .insight-workspace-message { max-width: 88%; margin: 0 0 12px; padding: 11px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
 .insight-workspace-message.is-user { margin-left: auto; background: var(--primary-soft); border-color: var(--primary-border); }
 .insight-workspace-message.is-failed { border-color: var(--danger); }

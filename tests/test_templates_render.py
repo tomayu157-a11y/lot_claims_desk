@@ -33,6 +33,8 @@ from celestra.models import (
     Evidence,
     EvidenceOrigin,
     Insight,
+    InsightCardContent,
+    InsightCardFieldChange,
     InsightRevisionProposal,
     InsightTable,
     InsightWorkspace,
@@ -771,6 +773,121 @@ def test_insight_workspace_has_scoped_chat_and_update_controls(env, context):
     assert "data-workspace-send" in out
     assert "data-workspace-propose" in out
     assert "This conversation can only use this insight and its research." in out
+
+
+def test_workspace_renders_a_complete_escaped_full_card_preview(env, context):
+    """Dropping a changed card field or trusting template HTML must fail this preview."""
+    selected = context["insight"]
+    source = context["workspace"].sources[0]
+    unrelated = source.model_copy(update={
+        "id": "ev_unrelated",
+        "source_id": "unrelated_source",
+        "organization": "Unrelated source",
+        "url": "https://example.org/unrelated",
+    })
+    before = InsightCardContent(
+        summary="Current summary <script>current()</script>",
+        detail="Current detail",
+        evidence_type="table",
+        evidence={"columns": ["Rule", "Value"], "rows": [["Gap", "90 days"]]},
+        interpretation="Current interpretation",
+        review_note="Current review note",
+        evidence_ids=[source.id],
+        source_ids=[source.source_id],
+    )
+    after = before.model_copy(update={
+        "summary": "Proposed summary <img src=x onerror=alert(1)>",
+        "detail": "Proposed detail",
+        "evidence_type": "metrics",
+        "evidence": [{"label": "Gap", "value": "60 days"}],
+        "interpretation": "Proposed interpretation",
+        "review_note": "Proposed review note",
+        "evidence_ids": [source.id],
+        "source_ids": [source.source_id],
+        "used_web_fallback": True,
+    })
+    proposal = InsightRevisionProposal(
+        id="wprop_complete_preview",
+        proposed_summary=after.summary,
+        change_note="Reconcile the complete finding.",
+        source_ids=[source.id],
+        before_content=before,
+        after_content=after,
+        changed_fields=[
+            InsightCardFieldChange(field="summary", kind="changed", before=before.summary, after=after.summary,
+                                   evidence_ids=[source.id], reason="Supported summary"),
+            InsightCardFieldChange(field="detail", kind="added", before="", after=after.detail,
+                                   evidence_ids=[source.id]),
+            InsightCardFieldChange(field="review_note", kind="removed", before=before.review_note, after=""),
+            InsightCardFieldChange(field="evidence", kind="changed", before=before.evidence, after=after.evidence,
+                                   evidence_ids=[source.id], item_changes=[
+                                       {"kind": "changed", "identity": {"label": "Gap", "occurrence": 0},
+                                        "before": {"label": "Gap", "value": "90 days"},
+                                        "after": {"label": "Gap", "value": "60 days"}},
+                                       {"kind": "removed", "identity": {"row": ["Restart", "yes"], "occurrence": 0},
+                                        "before": ["Restart", "yes"], "after": None},
+                                       {"kind": "added", "value": "Same-day combination", "occurrence": 0},
+                                   ]),
+        ],
+        unchanged_fields=["covered", "input_reason"],
+        base_content_digest="complete-preview",
+    )
+    workspace = context["workspace"].model_copy(update={"pending_proposal": proposal})
+    insight = selected.model_copy(update={
+        "summary": before.summary,
+        "detail": before.detail,
+        "evidence_type": before.evidence_type,
+        "evidence": before.evidence,
+        "interpretation": before.interpretation,
+        "review_note": before.review_note,
+    })
+
+    out = render_workspace(env, {
+        **context,
+        "insight": insight,
+        "workspace": workspace,
+        "available_sources": [source, unrelated],
+        "proposal_change_groups": {
+            "added": [proposal.changed_fields[1]],
+            "removed": [proposal.changed_fields[2]],
+            "changed": [proposal.changed_fields[0], proposal.changed_fields[3]],
+        },
+        "proposal_has_removals": True,
+        "proposal_source_by_id": {source.id: source, unrelated.id: unrelated},
+        "proposal_field_labels": {},
+    }, locked=False)
+
+    for text in (
+        "Current summary", "Current detail", "Current interpretation", "Current review note",
+        "Proposed summary", "Proposed detail", "Proposed interpretation", "Proposed review note",
+        "Added", "Removed", "Changed", "60 days", "Restart", "Same-day combination",
+        "Content and active source links will be removed", "Unchanged sections",
+    ):
+        assert text in out
+    source_label = source.organization or source.source_name
+    assert source_label in out
+    assert "Unrelated source" in out  # available to the chat, not credited to a change
+    proposal_html = env.get_template("partials/insight_workspace_proposal.html").render(
+        **{**context, "insight": insight, "proposal": proposal,
+           "available_sources": [source, unrelated], "locked": False,
+           "proposal_change_groups": {
+               "added": [proposal.changed_fields[1]],
+               "removed": [proposal.changed_fields[2]],
+               "changed": [proposal.changed_fields[0], proposal.changed_fields[3]],
+           },
+           "proposal_has_removals": True,
+           "proposal_source_by_id": {source.id: source, unrelated.id: unrelated},
+           "proposal_field_labels": {}},
+    )
+    assert "Unrelated source" not in proposal_html
+    assert proposal_html.count(source_label) == 3
+    assert "<details" in out and "Unchanged sections" in out
+    assert out.count("data-workspace-apply-url") == 1
+    assert out.count("data-workspace-continue") == 1
+    assert "<script>current()</script>" not in out
+    assert "&lt;script&gt;current()&lt;/script&gt;" in out
+    assert "<img src=x onerror=alert(1)>" not in out
+    assert "&lt;img src=x onerror=alert(1)&gt;" in out
 
 
 def test_insight_workspace_collapses_source_pills_after_the_first_four(env, context):
