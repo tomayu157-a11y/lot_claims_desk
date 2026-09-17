@@ -23,9 +23,18 @@ class UnsafeSearchBrief(ValueError):
         super().__init__("The research request could not be prepared safely.")
 
 
+_IDENTIFIER_LABEL_TOKEN = (
+    r"(?:patient|member|subscriber|beneficiary)[_. -]?id|"
+    r"claim[_. -]?(?:id|number)|mrn|date[_. -]?of[_. -]?birth|dob|"
+    r"address|email|phone|ssn"
+)
 _IDENTIFIER_LABEL = re.compile(
-    r"\b(?:patient[_ ]?id|member[_ ]?id|claim[_ ]?id|subscriber[_ ]?id|"
-    r"beneficiary[_ ]?id|mrn|name|date[_ ]?of[_ ]?birth|dob|address|email|phone|ssn)"
+    rf"\b(?:{_IDENTIFIER_LABEL_TOKEN})\s*[:=#-]?\s*[^,;|\n]+",
+    re.IGNORECASE,
+)
+_PERSONAL_NAME_LABEL = re.compile(
+    r"\b(?:(?:patient|member|subscriber|beneficiary|person|individual|full)[_. -]?name|"
+    r"name\s*[:=#-]|name\s+(?=(?-i:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\b))"
     r"\s*[:=#-]?\s*[^,;|\n]+",
     re.IGNORECASE,
 )
@@ -38,22 +47,27 @@ _DOB_LABEL_VALUE = re.compile(
     re.IGNORECASE,
 )
 _LABELLED_IDENTIFIER_VALUE = re.compile(
-    r"\b(?:patient[_ ]?id|member[_ ]?id|claim[_ ]?id|subscriber[_ ]?id|"
-    r"beneficiary[_ ]?id|mrn|name|date[_ ]?of[_ ]?birth|dob|address|email|phone|ssn)"
+    rf"\b(?:{_IDENTIFIER_LABEL_TOKEN})"
+    r"\s*[:=#-]?\s*([^;|\n]+)",
+    re.IGNORECASE,
+)
+_LABELLED_PERSONAL_NAME_VALUE = re.compile(
+    r"\b(?:(?:patient|member|subscriber|beneficiary|person|individual|full)[_. -]?name|"
+    r"name\s*[:=#-]|name\s+(?=(?-i:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})\b))"
     r"\s*[:=#-]?\s*([^;|\n]+)",
     re.IGNORECASE,
 )
 _META_INSTRUCTION = re.compile(
     r"\b(?:ignore|disregard|override|bypass|follow)\b[^,;|\n]*"
-    r"\b(?:instruction|directions|safeguard|policy|prompt)\b|"
+    r"\b(?:instructions?|directions?|safeguards?|polic(?:y|ies)|prompts?)\b[^,;|\n]*|"
     r"\b(?:export|exfiltrate|reveal|send)\b[^,;|\n]*"
     r"\b(?:patient|member|claim|personal|private)\s+(?:data|details|record)\b|"
     r"\b(?:system\s+prompt|prompt\s+injection|jailbreak)\b",
     re.IGNORECASE,
 )
-_IDENTIFIER_KEYS = frozenset({
-    "patient_id", "member_id", "claim_id", "subscriber_id", "beneficiary_id",
-    "mrn", "name", "date_of_birth", "dob", "address", "email", "phone", "ssn",
+_IDENTIFIER_KEY_TOKENS = frozenset({
+    "patientid", "memberid", "claimid", "claimnumber", "subscriberid", "beneficiaryid",
+    "mrn", "name", "dateofbirth", "dob", "address", "email", "phone", "ssn",
 })
 _STOPWORDS = frozenset({
     "a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "is",
@@ -73,7 +87,9 @@ def sanitize_search_brief(
     for value in sorted({str(value).strip() for value in identifying_values if str(value).strip()},
                         key=len, reverse=True):
         safe = re.sub(re.escape(value), " ", safe, flags=re.IGNORECASE)
-    for pattern in (_DOB_LABEL_VALUE, _IDENTIFIER_LABEL, _EMAIL, _PHONE, _SSN, _DATE):
+    for pattern in (
+        _DOB_LABEL_VALUE, _IDENTIFIER_LABEL, _PERSONAL_NAME_LABEL, _EMAIL, _PHONE, _SSN, _DATE,
+    ):
         safe = pattern.sub(" ", safe)
     safe = " ".join(re.sub(r"[;,|]+", " ", safe).split())
     terms = [term.lower() for term in re.findall(r"[A-Za-z][A-Za-z0-9-]*", safe)]
@@ -107,6 +123,14 @@ async def _notify(on_status, status: str) -> None:
         await result
 
 
+def _normalised_key(value: Any) -> str:
+    return "".join(re.findall(r"[a-z0-9]+", str(value).lower()))
+
+
+def _is_identifier_key(key: Any) -> bool:
+    return _normalised_key(key) in _IDENTIFIER_KEY_TOKENS
+
+
 def _identifying_values(value: Any) -> list[str]:
     values: list[str] = []
 
@@ -117,7 +141,7 @@ def _identifying_values(value: Any) -> list[str]:
         elif isinstance(value, list):
             for item in value:
                 visit(item, key)
-        elif key in _IDENTIFIER_KEYS and value is not None:
+        elif _is_identifier_key(key) and value is not None:
             text = str(value).strip()
             if text:
                 values.append(text)
@@ -137,11 +161,12 @@ def _labelled_values(value: Any) -> list[str]:
             for child in item:
                 visit(child)
         elif isinstance(item, str):
-            for match in _LABELLED_IDENTIFIER_VALUE.finditer(item):
-                value = match.group(1).strip()
-                if value:
-                    values.append(value)
-                    values.append(value.split()[0])
+            for pattern in (_LABELLED_IDENTIFIER_VALUE, _LABELLED_PERSONAL_NAME_VALUE):
+                for match in pattern.finditer(item):
+                    value = match.group(1).strip()
+                    if value:
+                        values.append(value)
+                        values.append(value.split()[0])
 
     visit(value)
     return values
@@ -178,7 +203,9 @@ def _sanitize_planning_text(value: Any, identifying_values: Iterable[str]) -> st
     ):
         safe = re.sub(re.escape(identifying_value), " ", safe, flags=re.IGNORECASE)
     safe = _META_INSTRUCTION.sub(" ", safe)
-    for pattern in (_DOB_LABEL_VALUE, _IDENTIFIER_LABEL, _EMAIL, _PHONE, _SSN, _DATE):
+    for pattern in (
+        _DOB_LABEL_VALUE, _IDENTIFIER_LABEL, _PERSONAL_NAME_LABEL, _EMAIL, _PHONE, _SSN, _DATE,
+    ):
         safe = pattern.sub(" ", safe)
     return " ".join(re.sub(r"[;,|]+", " ", safe).split())
 
@@ -189,7 +216,7 @@ def _sanitize_planning_data(value: Any, identifying_values: Iterable[str]) -> An
         return {
             key: _sanitize_planning_data(item, identifying_values)
             for key, item in value.items()
-            if str(key).lower() not in _IDENTIFIER_KEYS
+            if not _is_identifier_key(key)
         }
     if isinstance(value, list):
         return [_sanitize_planning_data(item, identifying_values) for item in value]
