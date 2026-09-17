@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from ..models import (
     Evidence,
@@ -31,6 +32,7 @@ class ResearchContext:
     continuity_summary: str
     messages: list[InsightWorkspaceMessage]
     synonyms: list[str] = field(default_factory=list)
+    planning_claims_context: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
