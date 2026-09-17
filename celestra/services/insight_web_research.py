@@ -187,17 +187,18 @@ class InsightWebResearchGateway:
             await _notify(on_status, "search_blocked_privacy")
             return WebResearchOutcome(ok=False, reason="Web research was not started because the request was not safe.")
 
+        limit = get_thresholds()["escalation"]["open_web_max_results"]
         await _notify(on_status, "searching_web_azure")
-        azure = await self.azure_client.search(
-            brief, get_thresholds()["escalation"]["open_web_max_results"],
-        )
+        azure = await self.azure_client.search(brief, limit)
         await _notify(on_status, "reading_validating_sources")
         if azure.ok and azure.refs:
             await _notify(on_status, "evaluating_support")
             await _notify(on_status, "research_completed")
             return WebResearchOutcome(
-                refs=azure.refs, audits=azure.audits, searched=True,
-                provider="azure_web_search", reason="",
+                refs=azure.refs,
+                audits=azure.audits,
+                searched=True,
+                provider="azure_web_search",
             )
 
         await _notify(on_status, "azure_unavailable_trying_firecrawl")
@@ -206,9 +207,13 @@ class InsightWebResearchGateway:
             await _notify(on_status, "evaluating_support")
             await _notify(on_status, "research_failed")
             return WebResearchOutcome(
-                audits=azure.audits, searched=True, provider="azure_web_search",
-                ok=False, reason="Web research is unavailable right now.",
+                audits=azure.audits,
+                searched=True,
+                provider="azure_web_search",
+                ok=False,
+                reason="Web research is unavailable right now.",
             )
+
         result = await firecrawl.discover(
             RetrievalContext(
                 indication=context.config.indication,
@@ -222,7 +227,7 @@ class InsightWebResearchGateway:
                 cutoff=context.config.research_cutoff,
                 extra={"search_query": brief},
             ),
-            get_thresholds()["escalation"]["open_web_max_results"],
+            limit,
         )
         await _notify(on_status, "evaluating_support")
         if result.ok and result.refs:
@@ -231,10 +236,14 @@ class InsightWebResearchGateway:
                 refs=result.refs,
                 audits=[*azure.audits, *_firecrawl_audits(result.refs)],
                 searched=True,
-                provider="firecrawl", reason="",
+                provider="firecrawl",
             )
+
         await _notify(on_status, "research_failed")
         return WebResearchOutcome(
-            audits=azure.audits, searched=True, provider="firecrawl", ok=False,
+            audits=azure.audits,
+            searched=True,
+            provider="firecrawl",
+            ok=False,
             reason="Web research is unavailable right now.",
         )
