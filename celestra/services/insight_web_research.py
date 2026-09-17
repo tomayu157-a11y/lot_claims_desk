@@ -44,9 +44,9 @@ _LABELLED_PERSONAL_NAME_VALUE = re.compile(
     re.IGNORECASE,
 )
 _META_INSTRUCTION = re.compile(
-    r"\b(?:ignore|disregard|override|bypass|follow)\b[^,;|\n]*"
-    r"\b(?:instructions?|directions?|safeguards?|polic(?:y|ies)|prompts?)\b[^,;|\n]*|"
-    r"\b(?:export|exfiltrate|reveal|send)\b[^,;|\n]*"
+    r"\b(?:ignore|disregard|override|bypass|follow)\b[^,;|]*"
+    r"\b(?:instructions?|directions?|safeguards?|polic(?:y|ies)|prompts?)\b[^,;|]*|"
+    r"\b(?:export|exfiltrate|reveal|send)\b[^,;|]*"
     r"\b(?:patient|member|claim|personal|private)\s+(?:data|details|record)\b|"
     r"\b(?:system\s+prompt|prompt\s+injection|jailbreak)\b",
     re.IGNORECASE,
@@ -60,21 +60,11 @@ _IDENTIFIER_ENTITY_KEYS = frozenset({
 _IDENTIFIER_KEY_TOKENS = frozenset({
     "mrn", "name", "dateofbirth", "dob", "address", "email", "phone", "ssn",
 })
-_IDENTIFIER_ENTITY_ROOT_PATTERN = "|".join(sorted(_IDENTIFIER_ENTITY_ROOTS, key=len, reverse=True))
-_IDENTIFIER_ENTITY_SUFFIX_PATTERN = "|".join(sorted(_IDENTIFIER_ENTITY_SUFFIXES, key=len, reverse=True))
-_ENTITY_IDENTIFIER_LABEL = (
-    rf"(?:{_IDENTIFIER_ENTITY_ROOT_PATTERN})"
-    rf"(?:[_. -]*(?:{_IDENTIFIER_ENTITY_SUFFIX_PATTERN}))?"
-)
-_LABELLED_ENTITY_IDENTIFIER_WITH_DELIMITER = re.compile(
-    rf"(?<![A-Za-z0-9])(?P<label>{_ENTITY_IDENTIFIER_LABEL})\s*[:=#]\s*"
-    r"(?P<value>[^\s,;|\n]+)",
-    re.IGNORECASE,
-)
-_LABELLED_ENTITY_IDENTIFIER_WITH_WHITESPACE = re.compile(
-    rf"(?<![A-Za-z0-9])(?P<label>(?:{_IDENTIFIER_ENTITY_ROOT_PATTERN})"
-    rf"(?:[_.-]+(?:{_IDENTIFIER_ENTITY_SUFFIX_PATTERN})))\s+"
-    r"(?P<value>[^\s,;|\n]+)",
+_LABELLED_FIELD = re.compile(
+    r"(?<![A-Za-z0-9_.-])"
+    r"(?P<label>[A-Za-z]+(?:[_.-][A-Za-z]+|\s+[A-Za-z]+)?)"
+    r"(?P<separator>\s*(?:[:=#-])\s*|\s+)"
+    r"(?P<value>[^\s,;|\r\n]+)",
     re.IGNORECASE,
 )
 _NON_ENTITY_IDENTIFIER_LABEL = re.compile(
@@ -102,12 +92,12 @@ def sanitize_search_brief(
     safe = search_brief or ""
     if _META_INSTRUCTION.search(safe):
         raise UnsafeSearchBrief()
+    for pattern in (_DOB_LABEL_VALUE, _NON_ENTITY_IDENTIFIER_LABEL, _PERSONAL_NAME_LABEL):
+        safe = pattern.sub(" ", safe)
     safe = _redact_labelled_identifiers(safe)
     for value in sorted({str(value).strip() for value in identifying_values if str(value).strip()},
                         key=len, reverse=True):
         safe = re.sub(re.escape(value), " ", safe, flags=re.IGNORECASE)
-    for pattern in (_DOB_LABEL_VALUE, _NON_ENTITY_IDENTIFIER_LABEL, _PERSONAL_NAME_LABEL):
-        safe = pattern.sub(" ", safe)
     for pattern in (_EMAIL, _PHONE, _SSN, _DATE):
         safe = pattern.sub(" ", safe)
     safe = " ".join(re.sub(r"[;,|]+", " ", safe).split())
@@ -152,28 +142,31 @@ def _is_identifier_key(key: Any) -> bool:
 
 
 def _labelled_identifier_matches(value: str) -> Iterable[re.Match[str]]:
-    """Yield only label/value pairs whose normalized label is an identifier key."""
-    for pattern in (
-        _LABELLED_ENTITY_IDENTIFIER_WITH_DELIMITER,
-        _LABELLED_ENTITY_IDENTIFIER_WITH_WHITESPACE,
-    ):
-        for match in pattern.finditer(value):
-            if _is_identifier_key(match.group("label")):
-                yield match
+    """Scan labelled fields and yield those classified as identifiers.
+
+    The scanner advances one character after an unrelated candidate so that a
+    long ordinary phrase cannot hide a later labelled identifier. Classification
+    remains centralized in ``_is_identifier_key`` instead of encoding each key
+    spelling in a pattern alternative.
+    """
+    start = 0
+    while match := _LABELLED_FIELD.search(value, start):
+        if _is_identifier_key(match.group("label")):
+            yield match
+            start = match.end()
+        else:
+            start = match.start() + 1
 
 
 def _redact_labelled_identifiers(value: str) -> str:
     """Remove a classified label and its first value token, leaving following prose intact."""
-    safe = value
-    for pattern in (
-        _LABELLED_ENTITY_IDENTIFIER_WITH_DELIMITER,
-        _LABELLED_ENTITY_IDENTIFIER_WITH_WHITESPACE,
-    ):
-        safe = pattern.sub(
-            lambda match: " " if _is_identifier_key(match.group("label")) else match.group(0),
-            safe,
-        )
-    return safe
+    parts: list[str] = []
+    cursor = 0
+    for match in _labelled_identifier_matches(value):
+        parts.extend((value[cursor:match.start()], " "))
+        cursor = match.end()
+    parts.append(value[cursor:])
+    return "".join(parts)
 
 
 def _identifying_values(value: Any) -> list[str]:
@@ -249,6 +242,8 @@ def _planning_identifier_values(context: ResearchContext, user_text: str) -> lis
 def _sanitize_planning_text(value: Any, identifying_values: Iterable[str]) -> str:
     """Redact untrusted context before sending it to the external planner."""
     safe = str(value or "")
+    for pattern in (_DOB_LABEL_VALUE, _NON_ENTITY_IDENTIFIER_LABEL, _PERSONAL_NAME_LABEL):
+        safe = pattern.sub(" ", safe)
     safe = _redact_labelled_identifiers(safe)
     for identifying_value in sorted(
         {str(item).strip() for item in identifying_values if str(item).strip()},
@@ -257,8 +252,6 @@ def _sanitize_planning_text(value: Any, identifying_values: Iterable[str]) -> st
     ):
         safe = re.sub(re.escape(identifying_value), " ", safe, flags=re.IGNORECASE)
     safe = _META_INSTRUCTION.sub(" ", safe)
-    for pattern in (_DOB_LABEL_VALUE, _NON_ENTITY_IDENTIFIER_LABEL, _PERSONAL_NAME_LABEL):
-        safe = pattern.sub(" ", safe)
     for pattern in (_EMAIL, _PHONE, _SSN, _DATE):
         safe = pattern.sub(" ", safe)
     return " ".join(re.sub(r"[;,|]+", " ", safe).split())
@@ -328,6 +321,22 @@ def _firecrawl_audits(refs: list[SourceRef], brief: str) -> list[WebSourceAudit]
         )
         for ref in refs
     ]
+
+
+def _firecrawl_context(brief: str) -> RetrievalContext:
+    """Make the public brief the complete connector context for external fallback."""
+    return RetrievalContext(
+        indication=brief,
+        indication_key="",
+        synonyms=[],
+        geography="",
+        population="",
+        stage="",
+        question=brief,
+        aspects=[],
+        cutoff="",
+        extra={"search_query": brief},
+    )
 
 
 class InsightWebResearchGateway:
@@ -402,21 +411,7 @@ class InsightWebResearchGateway:
                 reason="Web research is unavailable right now.",
             )
 
-        result = await firecrawl.discover(
-            RetrievalContext(
-                indication=context.config.indication,
-                indication_key=context.config.indication_key,
-                synonyms=context.synonyms or [context.config.indication],
-                geography=context.config.geography,
-                population=context.config.population,
-                stage=context.insight.stage,
-                question=context.question.text,
-                aspects=context.question.aspects,
-                cutoff=context.config.research_cutoff,
-                extra={"search_query": brief},
-            ),
-            limit,
-        )
+        result = await firecrawl.discover(_firecrawl_context(brief), limit)
         await _notify(on_status, "evaluating_support")
         if result.ok and result.refs:
             await _notify(on_status, "research_completed")
