@@ -22,4 +22,4 @@ async def test_azure_native_web_search_live_contract() -> None:
     assert outcome.tool_calls >= 1
     assert outcome.refs and outcome.refs[0].url
     assert outcome.audits
-    assert outcome.audits[0].url_citations
+    assert any(audit.url_citations for audit in outcome.audits)

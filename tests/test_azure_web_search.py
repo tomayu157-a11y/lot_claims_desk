@@ -160,6 +160,46 @@ async def test_native_search_transport_or_stream_failure_returns_one_typed_failu
 
 
 @pytest.mark.asyncio
+async def test_transport_failure_does_not_expose_provider_diagnostics_or_credentials() -> None:
+    sentinel = "transport-secret-must-not-leak"
+    stream = FakeStreamingClient(SUCCESS_LINES, failure=httpx.ConnectError(sentinel))
+    statuses: list[str] = []
+
+    outcome = await AzureWebSearchClient(
+        settings=azure_settings(), streaming_client=stream, direct_http=FakeDirectHttp(""),
+    ).search(QUERY, limit=1, on_status=statuses.append)
+
+    user_visible = "\n".join([outcome.reason, *statuses, json.dumps(outcome.request_body)])
+    assert outcome.reason == "native web search failed: connection failure"
+    assert sentinel not in user_visible
+    assert "test-key" not in user_visible
+
+
+@pytest.mark.asyncio
+async def test_normalization_uses_matching_citation_title_before_url_fallback() -> None:
+    payload = {
+        "type": "response.completed",
+        "response": {"output": [
+            {"type": "message", "content": [{"type": "output_text", "annotations": [
+                {"type": "url_citation", "url": "https://example.org/citation-title",
+                 "title": "Citation supplied title"},
+            ]}]},
+            {"type": "web_search_call", "action": {"type": "search", "query": QUERY}, "results": [
+                {"type": "web_search_result", "url": "https://example.org/citation-title",
+                 "title": "", "snippet": "Long enough result snippet. " * 10},
+            ]},
+        ]},
+    }
+    outcome = await AzureWebSearchClient(
+        settings=azure_settings(), streaming_client=FakeStreamingClient([f"data: {json.dumps(payload)}"]),
+        direct_http=FakeDirectHttp("<body>Direct page text without a title. " * 20 + "</body>"),
+    ).search(QUERY, limit=1)
+
+    assert outcome.ok is True
+    assert outcome.refs[0].title == "Citation supplied title"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("selector", ["main", "article", "div#content", "div.content", "body"])
 async def test_direct_hydration_uses_the_document_content_preference_order(selector: str) -> None:
     body = "Usable direct page text. " * 20

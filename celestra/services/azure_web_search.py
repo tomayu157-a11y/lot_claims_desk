@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 import httpx
 
 from ..connectors._util import clean, clip
-from ..connectors.base import describe_http_error, http
+from ..connectors.base import http
 from ..models import EvidenceOrigin, SourceRef
 from ..settings import Settings, get_settings
 from .web_page_hydration import hydrate_web_page
@@ -156,6 +156,24 @@ def _by_url(records: Iterable[dict[str, Any]]) -> dict[str, list[dict[str, Any]]
     return grouped
 
 
+def _safe_failure_reason(exc: Exception) -> str:
+    """Map transport failures to a finite UI-safe vocabulary."""
+    if isinstance(exc, httpx.TimeoutException):
+        return "timed out"
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        if 400 <= status < 500:
+            return "request rejected"
+        if 500 <= status < 600:
+            return "provider unavailable"
+        return "provider request failed"
+    if isinstance(exc, (httpx.TransportError, OSError)):
+        return "connection failure"
+    if isinstance(exc, ValueError):
+        return "invalid provider response"
+    return "provider request failed"
+
+
 async def normalize_azure_sources(
     stream: AzureResponsesStream,
     *,
@@ -175,9 +193,11 @@ async def normalize_azure_sources(
         hydration = await hydrate_web_page(url, snippet=snippet, http_client=http_client)
         if hydration.status == "unusable":
             continue
-        title = clean(result.get("title")) or clean(hydration.title) or url
         source_audit = consulted.get(url, [])
         citation_audit = citations.get(url, [])
+        citation_title = next((clean(citation.get("title")) for citation in citation_audit
+                               if clean(citation.get("title"))), "")
+        title = clean(result.get("title")) or clean(hydration.title) or citation_title or url
         text = hydration.text[:20_000]
         refs.append(SourceRef(
             source_id="open_web",
@@ -274,8 +294,9 @@ class AzureWebSearchClient:
         except AzureWebSearchParseError as exc:
             return AzureWebSearchOutcome.failure(str(exc), request_body=request_body)
         except (httpx.HTTPError, OSError, TypeError, ValueError) as exc:
-            detail = describe_http_error(exc) if isinstance(exc, httpx.HTTPError) else type(exc).__name__
-            return AzureWebSearchOutcome.failure(detail, request_body=request_body)
+            return AzureWebSearchOutcome.failure(
+                _safe_failure_reason(exc), request_body=request_body,
+            )
 
         if not refs:
             return AzureWebSearchOutcome.failure("no usable text", request_body=request_body)
