@@ -40,9 +40,13 @@
 
   {% if not applyable %}
   <p class="workspace-removal-warning" role="status" data-workspace-apply-blocked>
+    {% if unsupported_fields %}
     Evidence support is required before this factual update can be applied:
     {% for field in unsupported_fields %}{{ labels.get(field, field | replace('_', ' ') | title) }}{% if not loop.last %}, {% endif %}{% endfor %}.
     Continue researching to support or remove these fields.
+    {% else %}
+    This proposal predates evidence-support checks. Regenerate it before applying.
+    {% endif %}
   </p>
   {% endif %}
 

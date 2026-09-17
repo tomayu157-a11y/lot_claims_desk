@@ -520,6 +520,19 @@ class InsightRevisionProposal(BaseModel):
     base_content_digest: str = ""
     created_at: datetime = Field(default_factory=utcnow)
 
+    @model_validator(mode="before")
+    @classmethod
+    def fail_closed_for_legacy_support_state(cls, value: Any) -> Any:
+        """Keep persisted proposals from before support-state tracking read-only."""
+        if not isinstance(value, dict):
+            return value
+        if {"applyable", "unsupported_factual_fields"}.issubset(value):
+            return value
+        normalized = dict(value)
+        normalized["applyable"] = False
+        normalized["unsupported_factual_fields"] = []
+        return normalized
+
 
 class AppliedInsightRevision(BaseModel):
     model_config = ConfigDict(extra="forbid")

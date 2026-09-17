@@ -14,6 +14,7 @@ from celestra.models import (
     EvidenceOrigin,
     Insight,
     InsightCardContent,
+    InsightFieldSupport,
     InsightRevisionProposal,
     ResearchQuestion,
     Run,
@@ -151,6 +152,12 @@ async def assert_full_card_apply_regression() -> None:
                     after_content=after,
                     changed_fields=diff.changes,
                     unchanged_fields=diff.unchanged_fields,
+                    support_by_field=[
+                        InsightFieldSupport(field=field, evidence_ids=[evidence.id])
+                        for field in ("summary", "detail", "evidence", "interpretation")
+                    ],
+                    applyable=True,
+                    unsupported_factual_fields=[],
                     base_content_digest=insight_card_digest(context.insight),
                 ),
                 evidence=context.evidence,

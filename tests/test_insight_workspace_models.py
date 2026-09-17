@@ -233,6 +233,43 @@ def test_workspace_loads_a_legacy_summary_only_pending_proposal_as_incomplete():
     assert is_complete_card_proposal(workspace.pending_proposal) is False
 
 
+def test_workspace_normalizes_a_legacy_complete_requires_input_proposal_to_read_only():
+    """A pre-support-state factual proposal must not regain an enabled Apply action."""
+    source = workspace().sources[0]
+    before = InsightCardContent(
+        summary="Before", detail="Before detail", evidence_type="metrics",
+        evidence=[{"label": "Current", "value": "1"}], interpretation="Before interpretation",
+        review_note="", covered=True, input_reason="", evidence_ids=[source.id],
+        source_ids=[source.source_id], used_web_fallback=False,
+    )
+    after = before.model_copy(update={
+        "summary": "Unsupported factual replacement",
+        "covered": False,
+        "input_reason": "Evidence support is required for the proposed factual update.",
+    })
+    legacy_workspace_json = workspace().model_dump(mode="json")
+    legacy_workspace_json["pending_proposal"] = {
+        "id": "wprop_legacy_complete",
+        "proposed_summary": after.summary,
+        "source_ids": [source.id],
+        "before_content": before.model_dump(mode="json"),
+        "after_content": after.model_dump(mode="json"),
+        "base_content_digest": "legacy-content-digest",
+    }
+
+    loaded = InsightWorkspace.model_validate(legacy_workspace_json)
+    serialized = loaded.model_dump(mode="json")
+    reloaded = InsightWorkspace.model_validate(serialized)
+
+    assert loaded.pending_proposal is not None
+    assert is_complete_card_proposal(loaded.pending_proposal) is True
+    assert loaded.pending_proposal.applyable is False
+    assert loaded.pending_proposal.unsupported_factual_fields == []
+    assert serialized["pending_proposal"]["applyable"] is False
+    assert serialized["pending_proposal"]["unsupported_factual_fields"] == []
+    assert reloaded.pending_proposal == loaded.pending_proposal
+
+
 def test_workspace_round_trips_a_complete_card_proposal_and_applied_history(tmp_path: Path):
     before = InsightCardContent(
         summary="Before", detail="", evidence_type="", evidence=None, interpretation="",
@@ -255,6 +292,7 @@ def test_workspace_round_trips_a_complete_card_proposal_and_applied_history(tmp_
         id="wprop_complete", before_content=before, after_content=after,
         changed_fields=[change], unchanged_fields=["detail"], support_by_field=[support],
         change_reasons={"summary": "New evidence changes the finding."},
+        applyable=True, unsupported_factual_fields=[],
         base_content_digest="content-digest",
     )
     revision = AppliedInsightRevision(
@@ -277,6 +315,8 @@ def test_workspace_round_trips_a_complete_card_proposal_and_applied_history(tmp_
     assert loaded == item
     assert loaded is not None
     assert is_complete_card_proposal(loaded.pending_proposal) is True
+    assert loaded.pending_proposal.applyable is True
+    assert loaded.pending_proposal.unsupported_factual_fields == []
     assert loaded.applied_revisions[0].after_content == after
 
 

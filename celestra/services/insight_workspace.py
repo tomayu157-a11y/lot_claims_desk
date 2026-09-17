@@ -531,6 +531,11 @@ class InsightWorkspaceService:
                     "Evidence support is required before this factual update can be applied: "
                     + ", ".join(labels[field] for field in unsupported_fields) + ".",
                 )
+            if not proposal.applyable:
+                raise HTTPException(
+                    409,
+                    "This proposal cannot be applied. Regenerate it before applying.",
+                )
             current_digest = insight_card_digest(insight)
             if proposal.base_content_digest != current_digest:
                 raise self._stale_proposal_error()

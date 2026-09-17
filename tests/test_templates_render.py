@@ -861,6 +861,8 @@ def test_workspace_renders_a_complete_escaped_full_card_preview(env, context):
                                    ]),
         ],
         unchanged_fields=["covered", "input_reason"],
+        applyable=True,
+        unsupported_factual_fields=[],
         base_content_digest="complete-preview",
     )
     workspace = context["workspace"].model_copy(update={"pending_proposal": proposal})
@@ -944,6 +946,35 @@ def test_workspace_preview_keeps_unsupported_factual_fields_read_only(env, conte
 
     assert "Evidence support is required before this factual update can be applied" in out
     assert "Summary" in out
+    assert "data-workspace-apply-url" not in out
+    assert "data-workspace-continue" in out
+
+
+def test_workspace_preview_keeps_legacy_complete_requires_input_proposal_read_only(env, context):
+    """Persisted proposals from before support-state fields must ask for regeneration."""
+    source = context["workspace"].sources[0]
+    before = InsightCardContent(
+        summary="Current summary", evidence_ids=[source.id], source_ids=[source.source_id],
+    )
+    after = before.model_copy(update={
+        "summary": "Unsupported factual replacement",
+        "covered": False,
+        "input_reason": "Evidence support is required for the proposed factual update.",
+    })
+    legacy_workspace_json = context["workspace"].model_dump(mode="json")
+    legacy_workspace_json["pending_proposal"] = {
+        "id": "wprop_legacy_complete_preview",
+        "proposed_summary": after.summary,
+        "source_ids": [source.id],
+        "before_content": before.model_dump(mode="json"),
+        "after_content": after.model_dump(mode="json"),
+        "base_content_digest": "legacy-content-digest",
+    }
+    workspace = InsightWorkspace.model_validate(legacy_workspace_json)
+
+    out = render_workspace(env, {**context, "workspace": workspace}, locked=False)
+
+    assert "This proposal predates evidence-support checks. Regenerate it before applying." in out
     assert "data-workspace-apply-url" not in out
     assert "data-workspace-continue" in out
 

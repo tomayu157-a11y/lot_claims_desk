@@ -122,6 +122,8 @@ async def _proposal(context, registry, llm_client):
                 InsightFieldSupport(field=field, evidence_ids=[item.id for item in evidence])
                 for field in ("summary", "detail", "evidence", "interpretation")
             ],
+            applyable=True,
+            unsupported_factual_fields=[],
             unchanged_fields=[],
             base_content_digest=insight_card_digest(context.insight),
         ),

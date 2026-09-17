@@ -943,6 +943,8 @@ async def deterministic_proposal(context, registry, llm_client):
                 InsightFieldSupport(field=field, evidence_ids=[item.id for item in [*context.evidence, supplementary]])
                 for field in ("summary", "detail", "evidence", "interpretation")
             ],
+            applyable=True,
+            unsupported_factual_fields=[],
             change_reasons={
                 change.field: "Scoped evidence supports this full-card update."
                 for change in card_diff.changes
