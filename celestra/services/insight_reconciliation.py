@@ -79,10 +79,7 @@ class InsightCardReconciler:
             if field not in EDITORIAL_CARD_FIELDS
         })
         initial_diff = diff_card_content(before, candidate)
-        if not initial_diff.changes:
-            raise CardProposalInvalid(
-                "The conversation and evidence do not support a material card update."
-            )
+        self._validate_editorial_reasons(initial_diff.changes, change_reasons)
 
         supported_ids = self._active_support_ids(selected_evidence, support)
         factual_changes = [
@@ -107,6 +104,10 @@ class InsightCardReconciler:
             "used_web_fallback": derived.used_web_fallback,
         })
         diff = diff_card_content(before, after)
+        if not diff.changes:
+            raise CardProposalInvalid(
+                "The conversation and evidence do not support a material card update."
+            )
         support_models = [support[field] for field in EDITORIAL_CARD_FIELDS if field in support]
         changes = [
             change.model_copy(update={
@@ -128,6 +129,7 @@ class InsightCardReconciler:
                     "used": True,
                 }
                 for item in active_evidence
+                if item.is_supplementary
             ],
             before_content=before,
             after_content=after,
@@ -177,6 +179,18 @@ class InsightCardReconciler:
             raise CardProposalInvalid("The model did not return a complete card proposal.")
 
     @staticmethod
+    def _validate_editorial_reasons(
+        changes: list[InsightCardFieldChange], change_reasons: dict[str, str],
+    ) -> None:
+        missing = [
+            change.field
+            for change in changes
+            if not change_reasons.get(change.field, "").strip()
+        ]
+        if missing:
+            raise CardProposalInvalid("Every changed editorial field requires a reason.")
+
+    @staticmethod
     def _validated_support(
         selected_evidence: list[Evidence], support_by_field: list[InsightFieldSupport],
     ) -> dict[str, InsightFieldSupport]:
@@ -200,6 +214,13 @@ class InsightCardReconciler:
             for evidence_id in item.evidence_ids
         }
         return [item.id for item in selected_evidence if item.id in selected_ids]
+
+    @staticmethod
+    def active_evidence(
+        after: InsightCardContent, selected_evidence: list[Evidence],
+    ) -> list[Evidence]:
+        active_ids = set(after.evidence_ids)
+        return [item for item in selected_evidence if item.id in active_ids]
 
 
 def _stable_unique(values: Iterable[str]) -> list[str]:

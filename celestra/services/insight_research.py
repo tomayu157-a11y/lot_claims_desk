@@ -1,6 +1,7 @@
 """Insight-scoped research conversation and proposal adapter."""
 from __future__ import annotations
 
+import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -22,6 +23,7 @@ from .insight_reconciliation import (
     CardProposalInvalid,
     DerivedCardState,
     InsightCardReconciler,
+    insight_card_content,
 )
 from .llm import LLMUnavailable, llm
 from .revision import revise
@@ -260,25 +262,18 @@ async def build_proposal(
         raise ProposalUnsupported(str(exc)) from exc
     return ProposalDraft(
         proposal=proposal,
-        evidence=[],
+        evidence=reconciler.active_evidence(proposal.after_content, context.evidence),
         sites=proposal.web_sites,
-        source_audit={site["url"]: {"supported_answer": True} for site in proposal.web_sites},
         derived=reconciler.derive_state(
             proposal.after_content.covered,
             proposal.after_content.input_reason,
-            [
-                item for item in context.evidence
-                if item.id in proposal.after_content.evidence_ids
-            ],
+            reconciler.active_evidence(proposal.after_content, context.evidence),
         ),
     )
 
 
 def _proposal_instruction(context: ResearchContext) -> str:
-    current = {
-        field: getattr(context.insight, field)
-        for field in EDITORIAL_CARD_FIELDS
-    }
+    current = insight_card_content(context.insight).model_dump(mode="json")
     evidence_blocks = "\n\n".join(
         f"[ID: {item.id} | Source: {item.source_name} | URL: {item.url}] {item.quote}"
         for item in context.evidence
@@ -289,7 +284,7 @@ def _proposal_instruction(context: ResearchContext) -> str:
         "Every factual statement in a changed summary, detail, evidence, or interpretation "
         "must list supporting Evidence IDs from the blocks below. Use empty strings or null "
         "evidence deliberately when removing stale editorial content; never omit a field.\n\n"
-        f"Current mutable editorial snapshot:\n{current}\n\n"
+        f"Current mutable card snapshot:\n{json.dumps(current, ensure_ascii=False)}\n\n"
         f"Continuity summary:\n{context.continuity_summary or '(none)'}\n\n"
         f"Selected conversation:\n{_completed_transcript(context.messages) or '(none)'}\n\n"
         f"Selected Evidence:\n{evidence_blocks or '(none)'}\n\n"

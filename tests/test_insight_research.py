@@ -908,6 +908,7 @@ async def test_build_proposal_creates_a_complete_supported_card_from_the_selecte
                 "change_reasons": {
                     "summary": "The held evidence supports the revised finding.",
                     "detail": "The conversation requests consistent application.",
+                    "evidence_type": "The metric view makes the finding reviewable.",
                     "evidence": "The metric makes the finding reviewable.",
                     "interpretation": "The evidence supports a review signal.",
                     "review_note": "The threshold remains an SME decision.",
@@ -938,7 +939,7 @@ async def test_build_proposal_creates_a_complete_supported_card_from_the_selecte
     }
     assert proposal.proposed_summary == proposal.after_content.summary
     assert draft.proposal.basis_message_ids == ["wmsg_user"]
-    assert draft.evidence == []
+    assert [item.id for item in draft.evidence] == ["ev_one"]
     assert "Focus on rules" in model.calls[0][1]
     assert "[ID: ev_one" in model.calls[0][1]
     assert proposal.changed_fields[0].field == "summary"
@@ -946,6 +947,92 @@ async def test_build_proposal_creates_a_complete_supported_card_from_the_selecte
     assert proposal.base_content_digest
     assert draft.derived.confidence is Confidence.READY
     assert draft.derived.tag is VerificationTag.VERIFIED
+    assert proposal.web_sites == []
+    assert draft.sites == []
+    assert draft.source_audit == {}
+
+
+@pytest.mark.asyncio
+async def test_build_proposal_allows_a_supported_link_only_update():
+    """Validated support may add active evidence even when editorial content is unchanged."""
+    class LinkOnlyModel:
+        available = True
+
+        async def complete_json(self, system, prompt, max_tokens):
+            return {
+                "summary": "Not covered by the sources consulted.",
+                "detail": "",
+                "evidence_type": "",
+                "evidence": None,
+                "interpretation": "",
+                "review_note": "",
+                "support_by_field": [{"field": "summary", "evidence_ids": ["ev_one"]}],
+                "change_reasons": {},
+            }
+
+    draft = await research_mod.build_proposal(context(), {}, llm_client=LinkOnlyModel())
+
+    assert draft.proposal.after_content.evidence_ids == ["ev_one"]
+    assert draft.proposal.after_content.source_ids == ["crossref"]
+    assert draft.proposal.changed_fields[-2].field == "evidence_ids"
+    assert [item.id for item in draft.evidence] == ["ev_one"]
+
+
+@pytest.mark.asyncio
+async def test_build_proposal_rejects_a_changed_editorial_field_without_a_reason():
+    class MissingReasonModel:
+        available = True
+
+        async def complete_json(self, system, prompt, max_tokens):
+            return {
+                "summary": "Treatment changes can trigger a review.",
+                "detail": "",
+                "evidence_type": "",
+                "evidence": None,
+                "interpretation": "",
+                "review_note": "",
+                "support_by_field": [{"field": "summary", "evidence_ids": ["ev_one"]}],
+                "change_reasons": {},
+            }
+
+    with pytest.raises(ProposalUnsupported, match="reason"):
+        await research_mod.build_proposal(context(), {}, llm_client=MissingReasonModel())
+
+
+@pytest.mark.asyncio
+async def test_build_proposal_prompt_includes_the_complete_current_mutable_snapshot():
+    class PromptModel:
+        available = True
+
+        def __init__(self):
+            self.prompt = ""
+
+        async def complete_json(self, system, prompt, max_tokens):
+            self.prompt = prompt
+            return {
+                "summary": "Treatment changes can trigger a review.",
+                "detail": "",
+                "evidence_type": "",
+                "evidence": None,
+                "interpretation": "",
+                "review_note": "",
+                "support_by_field": [{"field": "summary", "evidence_ids": ["ev_one"]}],
+                "change_reasons": {"summary": "The selected evidence supports the update."},
+            }
+
+    ctx = context()
+    ctx.insight = ctx.insight.model_copy(update={
+        "evidence_ids": ["ev_existing"],
+        "source_ids": ["source_existing"],
+        "used_web_fallback": True,
+    })
+    model = PromptModel()
+
+    await research_mod.build_proposal(ctx, {}, llm_client=model)
+
+    assert '"evidence_ids": ["ev_existing"]' in model.prompt
+    assert '"source_ids": ["source_existing"]' in model.prompt
+    assert '"used_web_fallback": true' in model.prompt
 
 
 @pytest.mark.asyncio

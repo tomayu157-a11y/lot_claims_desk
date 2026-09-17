@@ -991,7 +991,10 @@ async def test_proposal_is_persisted_without_mutating_insight(tmp_path):
     proposal = await service.propose(run.id, selected.id)
     assert proposal.proposed_summary == "Proposed operational finding."
     assert store.get_insight(run.id, selected.id).summary == selected.summary
-    assert service.load(run.id, selected.id).pending_proposal == proposal
+    workspace = service.load(run.id, selected.id)
+    assert workspace.pending_proposal == proposal
+    assert workspace.pending_proposal.source_ids == ["ev_selected", "ev_proposed"]
+    assert [source.id for source in workspace.sources] == ["ev_selected", "ev_proposed"]
     assert all(item.id != "ev_proposed" for item in store.get_evidence(run.id))
 
 

@@ -44,6 +44,17 @@ def full_editorial(**updates) -> dict[str, object]:
     return content
 
 
+def full_reasons() -> dict[str, str]:
+    return {
+        "summary": "The selected evidence supports the revised finding.",
+        "detail": "The stale detail was removed.",
+        "evidence_type": "The revised card uses the appropriate evidence format.",
+        "evidence": "The revised evidence replaces the stale content.",
+        "interpretation": "The interpretation now follows the selected evidence.",
+        "review_note": "The stale note was removed.",
+    }
+
+
 def test_reconciler_builds_a_complete_snapshot_and_reports_step_removal():
     insight = populated_insight(
         evidence_type="steps",
@@ -61,13 +72,7 @@ def test_reconciler_builds_a_complete_snapshot_and_reports_step_removal():
             InsightFieldSupport(field="evidence", evidence_ids=[evidence.id]),
             InsightFieldSupport(field="interpretation", evidence_ids=[evidence.id]),
         ],
-        {
-            "summary": "The selected evidence supports the revised finding.",
-            "detail": "The stale detail was removed.",
-            "evidence": "The revised rule replaces the stale step.",
-            "interpretation": "The interpretation now follows the selected evidence.",
-            "review_note": "The stale note was removed.",
-        },
+        full_reasons(),
         ["wmsg_one"],
     )
 
@@ -120,7 +125,7 @@ def test_reconciler_orders_active_evidence_and_source_ids_by_selected_context():
     ]
 
     proposal = InsightCardReconciler().propose(
-        populated_insight(), [first, second], full_editorial(), support, {}, [],
+        populated_insight(), [first, second], full_editorial(), support, full_reasons(), [],
     )
 
     assert proposal.after_content.evidence_ids == ["ev_first", "ev_second"]
@@ -129,7 +134,7 @@ def test_reconciler_orders_active_evidence_and_source_ids_by_selected_context():
 
 def test_reconciler_marks_missing_replacement_support_as_requiring_input():
     proposal = InsightCardReconciler().propose(
-        populated_insight(), [selected_evidence()], full_editorial(), [], {}, [],
+        populated_insight(), [selected_evidence()], full_editorial(), [], full_reasons(), [],
     )
 
     assert proposal.after_content.covered is False
@@ -153,7 +158,7 @@ def test_reconciler_derives_general_knowledge_for_supplementary_only_support():
             InsightFieldSupport(field="evidence", evidence_ids=[supplementary.id]),
             InsightFieldSupport(field="interpretation", evidence_ids=[supplementary.id]),
         ],
-        {}, [],
+        full_reasons(), [],
     )
 
     derived = InsightCardReconciler().derive_state(
@@ -164,10 +169,22 @@ def test_reconciler_derives_general_knowledge_for_supplementary_only_support():
     assert derived.confidence is Confidence.READY
     assert derived.tag is VerificationTag.GENERAL_KNOWLEDGE
     assert proposal.after_content.used_web_fallback is True
+    assert proposal.web_sites == [{
+        "url": "https://example.org/selected",
+        "title": "",
+        "scraped": True,
+        "used": True,
+    }]
 
 
 def test_reconciler_rejects_a_byte_for_byte_equivalent_card_snapshot():
-    insight = populated_insight()
+    insight = populated_insight(
+        covered=True,
+        input_reason="",
+        evidence_ids=[],
+        source_ids=[],
+        used_web_fallback=False,
+    )
     current = insight_card_content(insight)
 
     with pytest.raises(
