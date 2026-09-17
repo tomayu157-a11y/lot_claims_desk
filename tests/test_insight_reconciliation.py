@@ -5,17 +5,187 @@ import pytest
 
 from celestra.models import (
     Confidence,
+    Evidence,
+    EvidenceOrigin,
     Insight,
     InsightCardContent,
+    InsightFieldSupport,
     ReviewAction,
     VerificationTag,
 )
 from celestra.services.insight_reconciliation import (
+    CardProposalInvalid,
+    InsightCardReconciler,
     diff_card_content,
     insight_card_content,
     insight_card_digest,
     validate_evidence_payload,
 )
+
+
+def selected_evidence(*, origin=EvidenceOrigin.APPROVED_API) -> Evidence:
+    return Evidence(
+        id="ev_selected", question_id="question_one", source_id="source_selected",
+        source_name="Selected source", tier=2, url="https://example.org/selected",
+        quote="Treatment changes can indicate a new line.", origin=origin,
+    )
+
+
+def full_editorial(**updates) -> dict[str, object]:
+    content: dict[str, object] = {
+        "summary": "Updated summary",
+        "detail": "",
+        "evidence_type": "steps",
+        "evidence": ["Observe treatment", "Apply the revised rule"],
+        "interpretation": "Updated interpretation",
+        "review_note": "",
+    }
+    content.update(updates)
+    return content
+
+
+def test_reconciler_builds_a_complete_snapshot_and_reports_step_removal():
+    insight = populated_insight(
+        evidence_type="steps",
+        evidence=["Observe treatment", "Remove stale step"],
+    )
+    evidence = selected_evidence()
+
+    proposal = InsightCardReconciler().propose(
+        insight,
+        [evidence],
+        full_editorial(),
+        [
+            InsightFieldSupport(field="summary", evidence_ids=[evidence.id]),
+            InsightFieldSupport(field="detail", evidence_ids=[evidence.id]),
+            InsightFieldSupport(field="evidence", evidence_ids=[evidence.id]),
+            InsightFieldSupport(field="interpretation", evidence_ids=[evidence.id]),
+        ],
+        {
+            "summary": "The selected evidence supports the revised finding.",
+            "detail": "The stale detail was removed.",
+            "evidence": "The revised rule replaces the stale step.",
+            "interpretation": "The interpretation now follows the selected evidence.",
+            "review_note": "The stale note was removed.",
+        },
+        ["wmsg_one"],
+    )
+
+    assert proposal.after_content.model_dump() == {
+        "summary": "Updated summary",
+        "detail": "",
+        "evidence_type": "steps",
+        "evidence": ["Observe treatment", "Apply the revised rule"],
+        "interpretation": "Updated interpretation",
+        "review_note": "",
+        "covered": True,
+        "input_reason": "",
+        "evidence_ids": ["ev_selected"],
+        "source_ids": ["source_selected"],
+        "used_web_fallback": False,
+    }
+    evidence_change = next(change for change in proposal.changed_fields if change.field == "evidence")
+    assert evidence_change.item_changes == [
+        {"kind": "removed", "value": "Remove stale step", "occurrence": 0},
+        {"kind": "added", "value": "Apply the revised rule", "occurrence": 0},
+    ]
+
+
+def test_reconciler_rejects_unknown_support_instead_of_verifying_it():
+    with pytest.raises(CardProposalInvalid, match="outside this insight"):
+        InsightCardReconciler().propose(
+            populated_insight(), [selected_evidence()], full_editorial(),
+            [InsightFieldSupport(field="summary", evidence_ids=["ev_other_workspace"])],
+            {"summary": "Unsupported evidence must not be accepted."}, [],
+        )
+
+
+def test_reconciler_rejects_selected_evidence_without_an_exact_quote():
+    unverifiable = selected_evidence().model_copy(update={"id": "ev_unverifiable", "quote": ""})
+
+    with pytest.raises(CardProposalInvalid, match="outside this insight"):
+        InsightCardReconciler().propose(
+            populated_insight(), [unverifiable], full_editorial(),
+            [InsightFieldSupport(field="summary", evidence_ids=[unverifiable.id])],
+            {"summary": "A quote is required before support can be verified."}, [],
+        )
+
+
+def test_reconciler_orders_active_evidence_and_source_ids_by_selected_context():
+    first = selected_evidence().model_copy(update={"id": "ev_first", "source_id": "source_one"})
+    second = selected_evidence().model_copy(update={"id": "ev_second", "source_id": "source_one"})
+    support = [
+        InsightFieldSupport(field=field, evidence_ids=[second.id, first.id])
+        for field in ("summary", "detail", "evidence", "interpretation")
+    ]
+
+    proposal = InsightCardReconciler().propose(
+        populated_insight(), [first, second], full_editorial(), support, {}, [],
+    )
+
+    assert proposal.after_content.evidence_ids == ["ev_first", "ev_second"]
+    assert proposal.after_content.source_ids == ["source_one"]
+
+
+def test_reconciler_marks_missing_replacement_support_as_requiring_input():
+    proposal = InsightCardReconciler().propose(
+        populated_insight(), [selected_evidence()], full_editorial(), [], {}, [],
+    )
+
+    assert proposal.after_content.covered is False
+    assert proposal.after_content.input_reason == "Evidence support is required for the proposed factual update."
+    derived = InsightCardReconciler().derive_state(
+        proposal.after_content.covered,
+        proposal.after_content.input_reason,
+        [],
+    )
+    assert derived.confidence is Confidence.REQUIRES_INPUT
+    assert derived.tag is VerificationTag.NOT_VERIFIED
+
+
+def test_reconciler_derives_general_knowledge_for_supplementary_only_support():
+    supplementary = selected_evidence(origin=EvidenceOrigin.OPEN_WEB)
+    proposal = InsightCardReconciler().propose(
+        populated_insight(), [supplementary], full_editorial(),
+        [
+            InsightFieldSupport(field="summary", evidence_ids=[supplementary.id]),
+            InsightFieldSupport(field="detail", evidence_ids=[supplementary.id]),
+            InsightFieldSupport(field="evidence", evidence_ids=[supplementary.id]),
+            InsightFieldSupport(field="interpretation", evidence_ids=[supplementary.id]),
+        ],
+        {}, [],
+    )
+
+    derived = InsightCardReconciler().derive_state(
+        proposal.after_content.covered,
+        proposal.after_content.input_reason,
+        [supplementary],
+    )
+    assert derived.confidence is Confidence.READY
+    assert derived.tag is VerificationTag.GENERAL_KNOWLEDGE
+    assert proposal.after_content.used_web_fallback is True
+
+
+def test_reconciler_rejects_a_byte_for_byte_equivalent_card_snapshot():
+    insight = populated_insight()
+    current = insight_card_content(insight)
+
+    with pytest.raises(
+        CardProposalInvalid,
+        match="The conversation and evidence do not support a material card update.",
+    ):
+        InsightCardReconciler().propose(
+            insight, [],
+            {
+                "summary": current.summary,
+                "detail": current.detail,
+                "evidence_type": current.evidence_type,
+                "evidence": current.evidence,
+                "interpretation": current.interpretation,
+                "review_note": current.review_note,
+            },
+            [], {}, [],
+        )
 
 
 def populated_insight(**updates) -> Insight:

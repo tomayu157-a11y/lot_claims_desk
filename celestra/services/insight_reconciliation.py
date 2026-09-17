@@ -3,14 +3,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 
 from ..models import (
+    Confidence,
+    Evidence,
     Insight,
     InsightCardContent,
     InsightCardFieldChange,
+    InsightFieldSupport,
     InsightRevisionProposal,
+    VerificationTag,
 )
 
 MUTABLE_CARD_FIELDS = (
@@ -26,6 +31,190 @@ MUTABLE_CARD_FIELDS = (
     "source_ids",
     "used_web_fallback",
 )
+
+EDITORIAL_CARD_FIELDS = (
+    "summary",
+    "detail",
+    "evidence_type",
+    "evidence",
+    "interpretation",
+    "review_note",
+)
+
+
+class CardProposalInvalid(ValueError):
+    """Raised when a generated card cannot be reconciled safely."""
+
+
+@dataclass(frozen=True)
+class DerivedCardState:
+    covered: bool
+    input_reason: str
+    confidence: Confidence
+    tag: VerificationTag
+    used_web_fallback: bool
+
+
+class InsightCardReconciler:
+    """Build one deterministic full-card proposal from selected evidence only."""
+
+    def propose(
+        self,
+        insight: Insight,
+        selected_evidence: list[Evidence],
+        editorial_content: dict[str, object],
+        support_by_field: list[InsightFieldSupport],
+        change_reasons: dict[str, str],
+        basis_message_ids: list[str],
+    ) -> InsightRevisionProposal:
+        self._validate_editorial_content(editorial_content, change_reasons)
+        validate_evidence_payload(
+            str(editorial_content["evidence_type"]), editorial_content["evidence"],
+        )
+        before = insight_card_content(insight)
+        support = self._validated_support(selected_evidence, support_by_field)
+        candidate = InsightCardContent(**editorial_content).model_copy(update={
+            field: getattr(before, field)
+            for field in MUTABLE_CARD_FIELDS
+            if field not in EDITORIAL_CARD_FIELDS
+        })
+        initial_diff = diff_card_content(before, candidate)
+        if not initial_diff.changes:
+            raise CardProposalInvalid(
+                "The conversation and evidence do not support a material card update."
+            )
+
+        supported_ids = self._active_support_ids(selected_evidence, support)
+        factual_changes = [
+            change.field
+            for change in initial_diff.changes
+            if change.field not in {"evidence_type", "review_note"}
+        ]
+        unsupported_fields = [
+            field for field in factual_changes
+            if not support.get(field, InsightFieldSupport(field=field)).evidence_ids
+        ]
+        covered = not unsupported_fields
+        input_reason = "" if covered else "Evidence support is required for the proposed factual update."
+        evidence_by_id = {item.id: item for item in selected_evidence}
+        active_evidence = [evidence_by_id[item_id] for item_id in supported_ids]
+        derived = self.derive_state(covered, input_reason, active_evidence)
+        after = candidate.model_copy(update={
+            "covered": derived.covered,
+            "input_reason": derived.input_reason,
+            "evidence_ids": supported_ids,
+            "source_ids": _stable_unique(item.source_id for item in active_evidence),
+            "used_web_fallback": derived.used_web_fallback,
+        })
+        diff = diff_card_content(before, after)
+        support_models = [support[field] for field in EDITORIAL_CARD_FIELDS if field in support]
+        changes = [
+            change.model_copy(update={
+                "evidence_ids": list(support.get(change.field, InsightFieldSupport(field=change.field)).evidence_ids),
+                "reason": change_reasons.get(change.field, ""),
+            })
+            for change in diff.changes
+        ]
+        return InsightRevisionProposal(
+            proposed_summary=after.summary,
+            change_note=_proposal_note(change_reasons, diff.changes),
+            basis_message_ids=basis_message_ids,
+            source_ids=after.evidence_ids,
+            web_sites=[
+                {
+                    "url": item.url,
+                    "title": item.title,
+                    "scraped": item.is_supplementary,
+                    "used": True,
+                }
+                for item in active_evidence
+            ],
+            before_content=before,
+            after_content=after,
+            changed_fields=changes,
+            unchanged_fields=diff.unchanged_fields,
+            support_by_field=support_models,
+            change_reasons=change_reasons,
+            base_summary_digest=hashlib.sha256(insight.summary.encode()).hexdigest(),
+            base_content_digest=insight_card_digest(insight),
+        )
+
+    @staticmethod
+    def derive_state(
+        covered: bool, input_reason: str, active_evidence: list[Evidence],
+    ) -> DerivedCardState:
+        if not covered:
+            return DerivedCardState(
+                covered=False,
+                input_reason=input_reason,
+                confidence=Confidence.REQUIRES_INPUT,
+                tag=VerificationTag.NOT_VERIFIED,
+                used_web_fallback=any(item.is_supplementary for item in active_evidence),
+            )
+        tag = (
+            VerificationTag.GENERAL_KNOWLEDGE
+            if active_evidence and all(item.is_supplementary for item in active_evidence)
+            else VerificationTag.VERIFIED
+        )
+        return DerivedCardState(
+            covered=True,
+            input_reason="",
+            confidence=Confidence.READY,
+            tag=tag,
+            used_web_fallback=any(item.is_supplementary for item in active_evidence),
+        )
+
+    @staticmethod
+    def _validate_editorial_content(
+        editorial_content: dict[str, object], change_reasons: dict[str, str],
+    ) -> None:
+        expected = set(EDITORIAL_CARD_FIELDS)
+        if set(editorial_content) != expected:
+            raise CardProposalInvalid("The model did not return a complete card proposal.")
+        if set(change_reasons) - expected:
+            raise CardProposalInvalid("The model returned invalid change reasons.")
+        if not all(isinstance(editorial_content[field], str) for field in EDITORIAL_CARD_FIELDS if field != "evidence"):
+            raise CardProposalInvalid("The model did not return a complete card proposal.")
+
+    @staticmethod
+    def _validated_support(
+        selected_evidence: list[Evidence], support_by_field: list[InsightFieldSupport],
+    ) -> dict[str, InsightFieldSupport]:
+        evidence_by_id = {item.id: item for item in selected_evidence if item.quote.strip()}
+        support: dict[str, InsightFieldSupport] = {}
+        for item in support_by_field:
+            if item.field not in EDITORIAL_CARD_FIELDS or item.field in support:
+                raise CardProposalInvalid("The model returned invalid field support.")
+            if any(not evidence_id or evidence_id not in evidence_by_id for evidence_id in item.evidence_ids):
+                raise CardProposalInvalid("The model referenced evidence outside this insight.")
+            support[item.field] = item
+        return support
+
+    @staticmethod
+    def _active_support_ids(
+        selected_evidence: list[Evidence], support: dict[str, InsightFieldSupport],
+    ) -> list[str]:
+        selected_ids = {
+            evidence_id
+            for item in support.values()
+            for evidence_id in item.evidence_ids
+        }
+        return [item.id for item in selected_evidence if item.id in selected_ids]
+
+
+def _stable_unique(values: Iterable[str]) -> list[str]:
+    unique: list[str] = []
+    for value in values:
+        if value not in unique:
+            unique.append(value)
+    return unique
+
+
+def _proposal_note(
+    change_reasons: dict[str, str], changes: list[InsightCardFieldChange],
+) -> str:
+    reasons = [change_reasons.get(change.field, "").strip() for change in changes]
+    return next((reason for reason in reasons if reason), "Full-card update proposed from the scoped conversation.")
 
 
 def insight_card_content(insight: Insight) -> InsightCardContent:

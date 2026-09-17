@@ -7,6 +7,7 @@ import celestra.services.insight_research as research_mod
 import celestra.services.insight_web_research as web_research_mod
 import celestra.services.revision as revision_mod
 from celestra.models import (
+    Confidence,
     Evidence,
     EvidenceOrigin,
     Insight,
@@ -14,10 +15,11 @@ from celestra.models import (
     ResearchQuestion,
     RunConfig,
     SourceRef,
+    VerificationTag,
     WorkspaceMessageRole,
 )
 from celestra.services.azure_web_search import WebSourceAudit
-from celestra.services.insight_research import ResearchContext
+from celestra.services.insight_research import ProposalUnsupported, ResearchContext
 from celestra.services.insight_web_research import WebResearchOutcome
 from celestra.services.llm import LLMUnavailable
 
@@ -878,8 +880,9 @@ async def test_answer_turn_rejects_unverified_model_support():
 
 
 @pytest.mark.asyncio
-async def test_build_proposal_uses_real_revision_and_completed_user_messages():
-    class HeldEvidenceModel:
+async def test_build_proposal_creates_a_complete_supported_card_from_the_selected_context():
+    """A missing editorial field or support must not produce a partial Apply snapshot."""
+    class FullCardModel:
         available = True
 
         def __init__(self):
@@ -887,31 +890,87 @@ async def test_build_proposal_uses_real_revision_and_completed_user_messages():
 
         async def complete_json(self, system, prompt, max_tokens):
             self.calls.append((system, prompt))
-            if len(self.calls) == 1:
-                return {"needs_more_sources": False, "search_query": ""}
             return {
-                "answer": "Use gaps, substitutions, and restart logic; validate thresholds.",
-                "status": "answered",
-                "applied": True,
-                "note": "Added operational concepts and retained the SME caveat.",
-                "support": [{
-                    "evidence_id": "ev_one",
-                    "quote": "Treatment changes can indicate a new line.",
-                }],
+                "summary": "Treatment changes can trigger a line-of-therapy review.",
+                "detail": "Apply the review consistently to the selected claims population.",
+                "evidence_type": "metrics",
+                "evidence": [
+                    {"label": "Observed change", "value": "Treatment change"},
+                ],
+                "interpretation": "Use treatment changes as a review signal, not a final determination.",
+                "review_note": "Confirm the operational threshold with an SME.",
+                "support_by_field": [
+                    {"field": "summary", "evidence_ids": ["ev_one"]},
+                    {"field": "detail", "evidence_ids": ["ev_one"]},
+                    {"field": "evidence", "evidence_ids": ["ev_one"]},
+                    {"field": "interpretation", "evidence_ids": ["ev_one"]},
+                ],
+                "change_reasons": {
+                    "summary": "The held evidence supports the revised finding.",
+                    "detail": "The conversation requests consistent application.",
+                    "evidence": "The metric makes the finding reviewable.",
+                    "interpretation": "The evidence supports a review signal.",
+                    "review_note": "The threshold remains an SME decision.",
+                },
             }
 
-    model = HeldEvidenceModel()
+    model = FullCardModel()
     ctx = context()
     ctx.messages.append(InsightWorkspaceMessage(
         id="wmsg_user", role=WorkspaceMessageRole.USER,
         content="Focus on rules that can be implemented in claims.",
     ))
     draft = await research_mod.build_proposal(ctx, {}, llm_client=model)
-    assert draft.proposal.proposed_summary.startswith("Use gaps")
+    proposal = draft.proposal
+
+    assert proposal.after_content.model_dump() == {
+        "summary": "Treatment changes can trigger a line-of-therapy review.",
+        "detail": "Apply the review consistently to the selected claims population.",
+        "evidence_type": "metrics",
+        "evidence": [{"label": "Observed change", "value": "Treatment change"}],
+        "interpretation": "Use treatment changes as a review signal, not a final determination.",
+        "review_note": "Confirm the operational threshold with an SME.",
+        "covered": True,
+        "input_reason": "",
+        "evidence_ids": ["ev_one"],
+        "source_ids": ["crossref"],
+        "used_web_fallback": False,
+    }
+    assert proposal.proposed_summary == proposal.after_content.summary
     assert draft.proposal.basis_message_ids == ["wmsg_user"]
-    assert [item.id for item in draft.evidence] == ["ev_one"]
+    assert draft.evidence == []
     assert "Focus on rules" in model.calls[0][1]
-    assert len(model.calls) == 2
+    assert "[ID: ev_one" in model.calls[0][1]
+    assert proposal.changed_fields[0].field == "summary"
+    assert proposal.support_by_field[0].evidence_ids == ["ev_one"]
+    assert proposal.base_content_digest
+    assert draft.derived.confidence is Confidence.READY
+    assert draft.derived.tag is VerificationTag.VERIFIED
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_field", ["summary", "detail", "evidence_type", "evidence", "interpretation", "review_note"])
+async def test_build_proposal_rejects_a_partial_editorial_snapshot(missing_field):
+    """Dropping any generated field must fail rather than retaining stale card content."""
+    class PartialCardModel:
+        available = True
+
+        async def complete_json(self, system, prompt, max_tokens):
+            output = {
+                "summary": "Treatment changes can trigger a review.",
+                "detail": "",
+                "evidence_type": "",
+                "evidence": None,
+                "interpretation": "",
+                "review_note": "",
+                "support_by_field": [{"field": "summary", "evidence_ids": ["ev_one"]}],
+                "change_reasons": {"summary": "The evidence supports this change."},
+            }
+            del output[missing_field]
+            return output
+
+    with pytest.raises(ProposalUnsupported):
+        await research_mod.build_proposal(context(), {}, llm_client=PartialCardModel())
 
 
 @pytest.mark.asyncio
