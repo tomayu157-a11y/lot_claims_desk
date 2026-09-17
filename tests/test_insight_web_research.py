@@ -654,3 +654,93 @@ async def test_gateway_strips_bare_identifier_echoes_from_every_untrusted_planni
 
     assert outcome.refs == [web_ref()]
     assert azure.briefs == ["ALL treatment line definition"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identifier_key", [
+    "patient", "MEMBER", "subscriber", "Beneficiary", "claim",
+    "patientIdentifier", "claimNo", "memberNo", "subscriberNumber", "beneficiaryNumber",
+    "claim-ID", "subscriber.num",
+])
+@pytest.mark.parametrize("azure_available", [True, False])
+async def test_gateway_omits_entity_identifier_keys_from_planner_and_provider_briefs(
+    identifier_key: str,
+    azure_available: bool,
+) -> None:
+    identifier = f"SENSITIVE-{identifier_key}-001"
+
+    class Planner:
+        available = True
+
+        def __init__(self) -> None:
+            self.prompt = ""
+
+        async def complete_json(self, system, prompt, max_tokens):
+            self.prompt = prompt
+            return {
+                "needs_web": True,
+                "search_brief": f"ALL treatment line definition {identifier}",
+            }
+
+    class Azure:
+        def __init__(self) -> None:
+            self.briefs: list[str] = []
+
+        async def search(self, search_brief, limit, on_status=None):
+            self.briefs.append(search_brief)
+            if azure_available:
+                return AzureWebSearchOutcome(refs=[web_ref()], ok=True)
+            return AzureWebSearchOutcome.failure("technical failure")
+
+    class Firecrawl:
+        def __init__(self) -> None:
+            self.briefs: list[str] = []
+
+        async def discover(self, context, limit):
+            self.briefs.append(context.extra["search_query"])
+            return ConnectorResult(source_id="open_web", refs=[web_ref()])
+
+    planner, azure, firecrawl = Planner(), Azure(), Firecrawl()
+    outcome = await InsightWebResearchGateway(
+        azure_client=azure, registry={"open_web": firecrawl}, llm_client=planner,
+    ).research(
+        research_context(planning_claims_context=[{identifier_key: identifier}]),
+        "Find stronger support.",
+    )
+
+    assert identifier not in planner.prompt
+    assert azure.briefs == ["ALL treatment line definition"]
+    assert firecrawl.briefs == ([] if azure_available else ["ALL treatment line definition"])
+    assert outcome.refs == [web_ref()]
+
+
+@pytest.mark.asyncio
+async def test_gateway_retains_aggregate_entity_methodology_context() -> None:
+    methodology = {
+        "patient_population": "Adults with ALL",
+        "claim_methodology": "Group sequential claims into treatment episodes.",
+        "member_count": "Aggregate cohort count: 12,000",
+    }
+
+    class Planner:
+        available = True
+
+        def __init__(self) -> None:
+            self.prompt = ""
+
+        async def complete_json(self, system, prompt, max_tokens):
+            self.prompt = prompt
+            return {"needs_web": False}
+
+    planner = Planner()
+    outcome = await InsightWebResearchGateway(
+        azure_client=object(), registry={}, llm_client=planner,
+    ).research(
+        research_context(planning_claims_context=[methodology]),
+        "Use held evidence.",
+    )
+
+    assert outcome.ok is True
+    assert "Adults with ALL" in planner.prompt
+    assert "Group sequential claims into treatment episodes." in planner.prompt
+    assert "Aggregate cohort count: 12 000" in planner.prompt

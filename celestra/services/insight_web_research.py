@@ -65,8 +65,13 @@ _META_INSTRUCTION = re.compile(
     r"\b(?:system\s+prompt|prompt\s+injection|jailbreak)\b",
     re.IGNORECASE,
 )
+_IDENTIFIER_ENTITY_ROOTS = frozenset({"patient", "member", "subscriber", "beneficiary", "claim"})
+_IDENTIFIER_ENTITY_SUFFIXES = frozenset({"id", "identifier", "number", "no", "num"})
+_IDENTIFIER_ENTITY_KEYS = frozenset({
+    *_IDENTIFIER_ENTITY_ROOTS,
+    *(f"{entity}{suffix}" for entity in _IDENTIFIER_ENTITY_ROOTS for suffix in _IDENTIFIER_ENTITY_SUFFIXES),
+})
 _IDENTIFIER_KEY_TOKENS = frozenset({
-    "patientid", "memberid", "claimid", "claimnumber", "subscriberid", "beneficiaryid",
     "mrn", "name", "dateofbirth", "dob", "address", "email", "phone", "ssn",
 })
 _STOPWORDS = frozenset({
@@ -128,7 +133,8 @@ def _normalised_key(value: Any) -> str:
 
 
 def _is_identifier_key(key: Any) -> bool:
-    return _normalised_key(key) in _IDENTIFIER_KEY_TOKENS
+    normalised = _normalised_key(key)
+    return normalised in _IDENTIFIER_KEY_TOKENS | _IDENTIFIER_ENTITY_KEYS
 
 
 def _identifying_values(value: Any) -> list[str]:
