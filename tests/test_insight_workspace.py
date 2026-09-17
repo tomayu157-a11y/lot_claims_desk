@@ -179,6 +179,38 @@ async def test_send_persists_turn_and_never_loads_other_insight(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_send_context_keeps_all_and_only_selected_linked_questions_in_order(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    linked = ResearchQuestion(
+        id="q_linked",
+        run_id=run.id,
+        stage=selected.stage,
+        bucket=selected.bucket,
+        text="How should a documented treatment gap be operationalized?",
+    )
+    store.save_questions(run.id, [linked])
+    store.save_insights(run.id, [selected.model_copy(update={
+        "question_ids": ["q_linked", "q_selected"],
+    })])
+    captured = []
+
+    async def answer(context, user_text, registry, on_status, llm_client):
+        captured.extend(question.id for question in context.questions)
+        return await fake_answer(context, user_text, registry, on_status, llm_client)
+
+    service = InsightWorkspaceService(
+        store=store,
+        registry_factory=dict,
+        answerer=answer,
+        summarizer=fake_summary,
+        llm_client=object(),
+    )
+    _ = [event async for event in service.send(run.id, selected.id, "Use linked questions")]
+
+    assert captured == ["q_linked", "q_selected"]
+
+
+@pytest.mark.asyncio
 async def test_twenty_four_insights_keep_workspace_context_and_transcripts_isolated(tmp_path):
     """A selected workspace must never expose another insight's private context."""
     store, run, selected, other = seeded_store(tmp_path)
@@ -485,6 +517,15 @@ async def test_tuple_duplicate_source_uses_existing_canonical_workspace_source(t
             searched=True,
             note="",
             sites=[],
+            source_audit={
+                duplicate.url: {
+                    "search_provider": "azure_web_search",
+                    "search_queries": ["ALL claims line definition"],
+                    "hydration_status": "hydrated",
+                    "citation_metadata": [{"url": duplicate.url}],
+                    "supported_answer": True,
+                },
+            },
         )
 
     service = InsightWorkspaceService(
@@ -500,10 +541,105 @@ async def test_tuple_duplicate_source_uses_existing_canonical_workspace_source(t
     assert saved.messages[-1].source_ids == ["ev_canonical"]
     assert events[-1].source_ids == ["ev_canonical"]
     assert [source.id for source in saved.sources] == ["ev_canonical"]
+    assert saved.sources[0].search_provider == "azure_web_search"
+    assert saved.sources[0].supported_answer is True
     assert all(
         evidence.id != "ev_duplicate"
         for evidence in store.get_evidence_for(run.id, selected.question_ids[0])
     )
+
+
+@pytest.mark.asyncio
+async def test_send_persists_provider_audit_without_exposing_it_in_sse(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+    discovered = Evidence(
+        id="ev_azure",
+        question_id=selected.question_ids[0],
+        source_id="azure_web_search",
+        source_name="Azure web search",
+        tier=3,
+        url="https://example.org/azure-lot",
+        quote="A regimen change may mark a new treatment line when the documented rule is met.",
+        origin=EvidenceOrigin.OPEN_WEB,
+    )
+
+    async def answer(context, user_text, registry, on_status, llm_client):
+        return ResearchTurnResult(
+            text="A documented regimen change may support treatment-line review.",
+            evidence=[*context.evidence, discovered],
+            citations=["Azure web search"],
+            source_evidence_ids=[discovered.id],
+            searched=True,
+            note="",
+            sites=[{
+                "url": discovered.url,
+                "title": "Treatment line definition",
+                "scraped": True,
+                "used": True,
+            }],
+            source_audit={
+                discovered.url: {
+                    "search_provider": "azure_web_search",
+                    "search_queries": ["ALL claims line definition"],
+                    "hydration_status": "hydrated",
+                    "citation_metadata": [{"url": discovered.url}],
+                    "supported_answer": True,
+                },
+            },
+        )
+
+    service = InsightWorkspaceService(
+        store=store,
+        registry_factory=dict,
+        answerer=answer,
+        summarizer=fake_summary,
+        llm_client=object(),
+    )
+    events = [event async for event in service.send(run.id, selected.id, "Find support")]
+    saved = service.load(run.id, selected.id)
+    source = next(item for item in saved.sources if item.id == discovered.id)
+    payload = events[-1].model_dump(mode="json")
+
+    assert source.search_provider == "azure_web_search"
+    assert source.search_queries == ["ALL claims line definition"]
+    assert source.hydration_status == "hydrated"
+    assert source.citation_metadata == [{"url": discovered.url}]
+    assert source.supported_answer is True
+    assert "source_audit" not in json.dumps(payload)
+    assert "search_provider" not in json.dumps(payload)
+    assert "citation_metadata" not in json.dumps(payload)
+
+
+@pytest.mark.asyncio
+async def test_send_marks_combined_provider_failure_retryable_without_mutating_the_card(tmp_path):
+    store, run, selected, _ = seeded_store(tmp_path)
+
+    async def answer(context, user_text, registry, on_status, llm_client):
+        return ResearchTurnResult(
+            text="Web research is unavailable right now.",
+            evidence=context.evidence,
+            citations=[],
+            source_evidence_ids=[],
+            searched=True,
+            note="Web research is unavailable right now.",
+            sites=[],
+            retryable=True,
+        )
+
+    service = InsightWorkspaceService(
+        store=store,
+        registry_factory=dict,
+        answerer=answer,
+        summarizer=fake_summary,
+        llm_client=object(),
+    )
+    events = [event async for event in service.send(run.id, selected.id, "Find stronger support")]
+    workspace = service.load(run.id, selected.id)
+
+    assert events[-1].type is WorkspaceEventType.ERROR
+    assert workspace.messages[-1].state is WorkspaceMessageState.FAILED
+    assert workspace.sources == []
+    assert store.get_insight(run.id, selected.id).summary == selected.summary
 
 
 @pytest.mark.asyncio

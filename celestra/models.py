@@ -9,7 +9,14 @@ from datetime import datetime, timezone
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 
 def utcnow() -> datetime:
@@ -432,6 +439,11 @@ class InsightWorkspaceSource(BaseModel):
     relevance: float = 0.0
     identifiers: dict[str, str] = Field(default_factory=dict)
     retrieved_at: datetime = Field(default_factory=utcnow)
+    search_provider: str = ""
+    search_queries: list[str] = Field(default_factory=list)
+    hydration_status: str = ""
+    citation_metadata: list[dict[str, Any]] = Field(default_factory=list)
+    supported_answer: bool = False
 
     @field_validator("url")
     @classmethod
@@ -572,6 +584,17 @@ class WorkspaceEvent(BaseModel):
     detail: str = ""
     source_ids: list[str] = Field(default_factory=list)
     sources: list[InsightWorkspaceSource] = Field(default_factory=list)
+
+    @field_serializer("sources")
+    def public_sources(self, sources: list[InsightWorkspaceSource]):
+        private_fields = {
+            "search_provider",
+            "search_queries",
+            "hydration_status",
+            "citation_metadata",
+            "supported_answer",
+        }
+        return [source.model_dump(exclude=private_fields) for source in sources]
 
 
 class Contradiction(BaseModel):

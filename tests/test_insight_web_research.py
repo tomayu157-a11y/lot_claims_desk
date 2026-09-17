@@ -65,6 +65,41 @@ def web_ref() -> SourceRef:
 
 
 @pytest.mark.asyncio
+async def test_gateway_planner_frames_every_linked_question_without_unrelated_markers() -> None:
+    class Planner:
+        available = True
+
+        def __init__(self) -> None:
+            self.prompt = ""
+
+        async def complete_json(self, system, prompt, max_tokens):
+            self.prompt = prompt
+            return {"needs_web": False, "reason": "Held evidence is sufficient."}
+
+    class NoAzure:
+        async def search(self, *args, **kwargs):
+            raise AssertionError("planning with held evidence must not call Azure")
+
+    context = research_context()
+    linked = ResearchQuestion(
+        id="q_two", run_id="run_one", stage="stage_2", bucket="C",
+        text="When does a documented regimen change begin the next treatment line?",
+    )
+    context.insight.question_ids = ["q_one", "q_two"]
+    context.questions = [context.question, linked]
+    planner = Planner()
+
+    outcome = await InsightWebResearchGateway(
+        azure_client=NoAzure(), registry={}, llm_client=planner,
+    ).research(context, "Use the held evidence.")
+
+    assert outcome.ok is True
+    assert context.question.text in planner.prompt
+    assert linked.text in planner.prompt
+    assert "OTHER_QUESTION_MARKER" not in planner.prompt
+
+
+@pytest.mark.asyncio
 async def test_gateway_sends_one_sanitized_brief_to_azure_without_falling_back() -> None:
     identifiers = {
         "patient_id": "PAT-001", "member_id": "M-001", "claim_id": "CLM-001",

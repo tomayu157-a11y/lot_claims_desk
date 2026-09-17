@@ -26,13 +26,22 @@ class ProposalUnsupported(RuntimeError):
 @dataclass
 class ResearchContext:
     insight: Insight
-    question: ResearchQuestion
     evidence: list[Evidence]
     config: RunConfig
     continuity_summary: str
     messages: list[InsightWorkspaceMessage]
+    questions: list[ResearchQuestion] = field(default_factory=list)
+    question: ResearchQuestion | None = None
     synonyms: list[str] = field(default_factory=list)
     planning_claims_context: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.questions:
+            if self.question is None:
+                raise ValueError("an insight research context needs a linked research question")
+            self.questions = [self.question]
+        if self.question is None:
+            self.question = self.questions[0]
 
 
 @dataclass
@@ -44,6 +53,8 @@ class ResearchTurnResult:
     searched: bool
     note: str
     sites: list[dict] = field(default_factory=list)
+    source_audit: dict[str, dict[str, Any]] = field(default_factory=dict)
+    retryable: bool = False
 
 
 @dataclass
@@ -51,6 +62,7 @@ class ProposalDraft:
     proposal: InsightRevisionProposal
     evidence: list[Evidence]
     sites: list[dict] = field(default_factory=list)
+    source_audit: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 def _completed_transcript(messages: list[InsightWorkspaceMessage]) -> str:
@@ -65,7 +77,11 @@ def _instruction(context: ResearchContext, user_text: str) -> str:
     transcript = _completed_transcript(context.messages)
     insight = context.insight
     config = context.config
-    aspects = ", ".join(context.question.aspects) or "(none)"
+    linked_questions = "\n".join(
+        f"- Question: {question.text}\n  Aspects: {', '.join(question.aspects) or '(none)'}\n"
+        f"  Current answer: {question.answer_text or '(none)'}"
+        for question in context.questions
+    )
     return (
         "Continue the selected insight's research conversation and answer the latest request. "
         "The held evidence is a starting point, not a reason to stop: when the user asks for "
@@ -89,10 +105,7 @@ def _instruction(context: ResearchContext, user_text: str) -> str:
         f"Geography: {config.geography}\n"
         f"Research cutoff: {config.research_cutoff or '(not specified)'}\n"
         f"Additional context: {config.additional_context or '(none)'}\n\n"
-        "Linked research question:\n"
-        f"Question: {context.question.text}\n"
-        f"Aspects: {aspects}\n"
-        f"Current answer: {context.question.answer_text or '(none)'}\n\n"
+        f"Linked research questions:\n{linked_questions}\n\n"
         f"Continuity summary:\n{context.continuity_summary or '(none)'}\n\n"
         f"Recent conversation:\n{transcript or '(none)'}\n\n"
         f"Latest user request:\n{user_text}"
@@ -130,10 +143,12 @@ async def answer_turn(
     registry: dict,
     on_status: Callable[[str], Awaitable[None]],
     llm_client=None,
+    research_gateway=None,
 ) -> ResearchTurnResult:
+    question = context.questions[0]
     result = await revise(
         context.insight,
-        context.question,
+        question,
         context.evidence,
         _instruction(context, user_text),
         context.config,
@@ -143,6 +158,9 @@ async def answer_turn(
         llm_client=llm_client or llm,
         latest_user_request=user_text,
         evidence_required=_requires_evidence(user_text),
+        question_framing="\n\n".join(question.text for question in context.questions),
+        research_context=context,
+        research_gateway=research_gateway,
     )
     return ResearchTurnResult(
         text=result.text or result.note,
@@ -152,6 +170,8 @@ async def answer_turn(
         searched=result.searched,
         note=result.note,
         sites=result.sites,
+        source_audit=result.source_audit,
+        retryable=result.retryable,
     )
 
 
@@ -177,7 +197,7 @@ async def build_proposal(
     )
     result = await revise(
         context.insight,
-        context.question,
+        context.questions[0],
         context.evidence,
         instruction,
         context.config,
@@ -185,7 +205,13 @@ async def build_proposal(
         context.synonyms,
         llm_client=model,
         evidence_required=True,
+        question_framing="\n\n".join(question.text for question in context.questions),
+        research_context=context,
     )
+    if result.retryable:
+        raise LLMUnavailable(result.note or "Web research is unavailable right now.")
+    if result.research_blocked:
+        raise ProposalUnsupported(result.note or "Web research was not started because the request was not safe.")
     if not result.text:
         if result.provider_unavailable:
             raise LLMUnavailable(result.note or "The model is unavailable. Try again.")
@@ -206,6 +232,7 @@ async def build_proposal(
         proposal=proposal,
         evidence=result.evidence,
         sites=result.sites,
+        source_audit=result.source_audit,
     )
 
 

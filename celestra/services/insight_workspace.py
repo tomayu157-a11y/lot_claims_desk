@@ -144,7 +144,7 @@ class InsightWorkspaceService:
                 )
         return ResearchContext(
             insight=insight,
-            question=questions[0],
+            questions=questions,
             evidence=list(evidence_by_id.values()),
             config=run.config,
             continuity_summary=workspace.continuity_summary,
@@ -218,8 +218,10 @@ class InsightWorkspaceService:
         self,
         workspace: InsightWorkspace,
         evidence: list[Evidence],
+        source_audit: dict[str, dict] | None = None,
     ) -> dict[str, str]:
-        canonical_ids = {source.id: source.id for source in workspace.sources}
+        source_audit = source_audit or {}
+        canonical_sources = {source.id: source for source in workspace.sources}
         canonical_by_key = {
             (source.source_id, source.url, source.quote): source.id
             for source in workspace.sources
@@ -228,15 +230,13 @@ class InsightWorkspaceService:
         for item in evidence:
             if not is_http_url(item.url):
                 continue
-            if item.id in canonical_ids:
-                source_id_map[item.id] = canonical_ids[item.id]
-                continue
-            canonical_id = canonical_by_key.get(self._source_key(item))
+            canonical_id = item.id if item.id in canonical_sources else canonical_by_key.get(
+                self._source_key(item)
+            )
             if canonical_id:
-                source_id_map[item.id] = canonical_id
-                continue
-            workspace.sources.append(
-                InsightWorkspaceSource(
+                source = canonical_sources[canonical_id]
+            else:
+                source = InsightWorkspaceSource(
                     id=item.id,
                     question_id=item.question_id,
                     source_id=item.source_id,
@@ -254,11 +254,27 @@ class InsightWorkspaceService:
                     identifiers=item.identifiers,
                     retrieved_at=item.retrieved_at,
                 )
-            )
-            canonical_ids[item.id] = item.id
-            canonical_by_key[self._source_key(item)] = item.id
-            source_id_map[item.id] = item.id
+                workspace.sources.append(source)
+                canonical_sources[item.id] = source
+                canonical_by_key[self._source_key(item)] = item.id
+                canonical_id = item.id
+            self._merge_source_audit(source, source_audit.get(item.url))
+            source_id_map[item.id] = canonical_id
         return source_id_map
+
+    @staticmethod
+    def _merge_source_audit(source: InsightWorkspaceSource, audit: dict | None) -> None:
+        if not audit:
+            return
+        if provider := str(audit.get("search_provider") or ""):
+            source.search_provider = provider
+        if "search_queries" in audit:
+            source.search_queries = list(audit["search_queries"] or [])
+        if hydration_status := str(audit.get("hydration_status") or ""):
+            source.hydration_status = hydration_status
+        if "citation_metadata" in audit:
+            source.citation_metadata = list(audit["citation_metadata"] or [])
+        source.supported_answer = source.supported_answer or bool(audit.get("supported_answer"))
 
     async def _persist_failed(
         self,
@@ -334,7 +350,19 @@ class InsightWorkspaceService:
                         break
                     yield event
                 result = await producer
-                source_id_map = self._merge_sources(workspace, result.evidence)
+                if result.retryable:
+                    await self._persist_failed(workspace, assistant)
+                    yield WorkspaceEvent(
+                        type=WorkspaceEventType.ERROR,
+                        message_id=assistant.id,
+                        detail=assistant.error,
+                    )
+                    return
+                source_id_map = self._merge_sources(
+                    workspace,
+                    result.evidence,
+                    result.source_audit,
+                )
                 assistant.content = result.text
                 assistant.state = WorkspaceMessageState.COMPLETED
                 assistant.source_ids = [
@@ -407,7 +435,11 @@ class InsightWorkspaceService:
                 raise HTTPException(503, "The model is unavailable. Try again.") from exc
             except ProposalUnsupported as exc:
                 raise HTTPException(422, str(exc)) from exc
-            source_id_map = self._merge_sources(workspace, draft.evidence)
+            source_id_map = self._merge_sources(
+                workspace,
+                draft.evidence,
+                draft.source_audit,
+            )
             proposal = draft.proposal.model_copy(
                 update={
                     "source_ids": [

@@ -4,8 +4,8 @@ import pytest
 
 import celestra.services.answering as answering_mod
 import celestra.services.insight_research as research_mod
+import celestra.services.insight_web_research as web_research_mod
 import celestra.services.revision as revision_mod
-from celestra.connectors.base import ConnectorResult
 from celestra.models import (
     Evidence,
     EvidenceOrigin,
@@ -16,7 +16,9 @@ from celestra.models import (
     SourceRef,
     WorkspaceMessageRole,
 )
+from celestra.services.azure_web_search import WebSourceAudit
 from celestra.services.insight_research import ResearchContext
+from celestra.services.insight_web_research import WebResearchOutcome
 from celestra.services.llm import LLMUnavailable
 
 
@@ -39,7 +41,7 @@ def context() -> ResearchContext:
         relevance=0.92,
     )
     return ResearchContext(
-        insight=insight, question=question, evidence=[evidence],
+        insight=insight, questions=[question], evidence=[evidence],
         config=RunConfig(
             indication="ALL", indication_key="ALL",
             objective="Build a claims line-of-therapy algorithm",
@@ -182,6 +184,261 @@ async def test_answer_turn_uses_real_revision_with_held_evidence():
     assert result.text == "Treatment gaps can inform operational review."
     assert result.source_evidence_ids == ["ev_one"]
     assert result.citations == ["Clinical Standards Council"]
+
+
+@pytest.mark.asyncio
+async def test_answer_turn_frames_all_linked_questions_and_uses_held_evidence_without_web_research():
+    """One insight frames every linked question, but sufficient evidence stays local."""
+    class HeldEvidenceModel:
+        available = True
+
+        def __init__(self):
+            self.prompts = []
+
+        async def complete_json(self, system, prompt, max_tokens):
+            self.prompts.append(prompt)
+            if len(self.prompts) == 1:
+                return {"needs_more_sources": False, "search_query": ""}
+            return {
+                "answer": "Treatment gaps can inform operational review.",
+                "status": "answered",
+                "applied": True,
+                "note": "Held evidence was retained.",
+                "support": [{
+                    "evidence_id": "ev_one",
+                    "quote": "Treatment changes can indicate a new line.",
+                }],
+            }
+
+    class NoWebResearch:
+        def __init__(self):
+            self.calls = 0
+
+        async def research(self, *args, **kwargs):
+            self.calls += 1
+            return WebResearchOutcome()
+
+    base = context()
+    linked = ResearchQuestion(
+        id="q_two", run_id="run_one", stage="stage_2", bucket="C",
+        text="When does a documented regimen change begin the next treatment line?",
+    )
+    research_context = ResearchContext(
+        insight=base.insight.model_copy(update={"question_ids": ["q_one", "q_two"]}),
+        questions=[base.question, linked],
+        evidence=base.evidence,
+        config=base.config,
+        continuity_summary=base.continuity_summary,
+        messages=[],
+    )
+    model = HeldEvidenceModel()
+    gateway = NoWebResearch()
+
+    async def ignore_status(_):
+        return None
+
+    result = await research_mod.answer_turn(
+        research_context,
+        "What can the held evidence support?",
+        {},
+        on_status=ignore_status,
+        llm_client=model,
+        research_gateway=gateway,
+    )
+
+    assert gateway.calls == 0
+    assert result.source_evidence_ids == ["ev_one"]
+    assert all("OTHER_QUESTION_MARKER" not in prompt for prompt in model.prompts)
+    assert all(base.question.text in prompt for prompt in model.prompts)
+    assert all(linked.text in prompt for prompt in model.prompts)
+
+
+@pytest.mark.asyncio
+async def test_answer_turn_uses_gateway_refs_and_keeps_provider_audit_internal(monkeypatch):
+    quote = "A regimen change may mark a new treatment line when the documented rule is met."
+
+    class RevisionModel:
+        available = True
+
+        def __init__(self):
+            self.calls = 0
+
+        async def complete_json(self, system, prompt, max_tokens):
+            self.calls += 1
+            if self.calls == 1:
+                return {"needs_more_sources": True, "search_query": "treatment line definition"}
+            return {
+                "answer": "A documented regimen change may support treatment-line review.",
+                "status": "answered",
+                "applied": True,
+                "note": "Native web research was added.",
+                "support": [{"evidence_id": "ev_azure", "quote": quote}],
+            }
+
+    class Gateway:
+        def __init__(self):
+            self.calls = []
+
+        async def research(self, research_context, user_text, on_status):
+            self.calls.append((research_context, user_text))
+            return WebResearchOutcome(
+                refs=[SourceRef(
+                    source_id="azure_web_search",
+                    source_name="Azure web search",
+                    tier=3,
+                    url="https://example.org/azure-lot",
+                    title="Treatment line definition",
+                    snippet=quote,
+                    raw={"azure_consulted_sources": [{"url": "https://example.org/azure-lot"}]},
+                    origin=EvidenceOrigin.OPEN_WEB,
+                )],
+                audits=[WebSourceAudit(
+                    "azure_web_search", "https://example.org/azure-lot",
+                    ["ALL claims line definition"], "hydrated",
+                    [{"url": "https://example.org/azure-lot"}],
+                    [{"url": "https://example.org/azure-lot", "title": "Treatment line definition"}],
+                )],
+                searched=True,
+                provider="azure_web_search",
+            )
+
+    answer_batch_calls = []
+
+    async def fake_answer_batch(question, aspects, refs, question_id, terms):
+        answer_batch_calls.append((question, refs, question_id))
+        return None, [Evidence(
+            id="ev_azure",
+            question_id=question_id,
+            source_id=refs[0].source_id,
+            source_name=refs[0].source_name,
+            tier=refs[0].tier,
+            url=refs[0].url,
+            title=refs[0].title,
+            quote=quote,
+            origin=EvidenceOrigin.OPEN_WEB,
+        )]
+
+    monkeypatch.setattr(revision_mod, "answer_batch", fake_answer_batch)
+    gateway = Gateway()
+
+    async def ignore_status(_):
+        return None
+
+    result = await research_mod.answer_turn(
+        context(), "Find stronger operational support.", {},
+        on_status=ignore_status,
+        llm_client=RevisionModel(),
+        research_gateway=gateway,
+    )
+
+    assert gateway.calls[0][1] == "Find stronger operational support."
+    assert answer_batch_calls[0][1][0].url == "https://example.org/azure-lot"
+    assert result.searched is True
+    assert result.source_evidence_ids == ["ev_azure"]
+    assert result.sites == [{
+        "url": "https://example.org/azure-lot",
+        "title": "Treatment line definition",
+        "scraped": True,
+        "used": True,
+    }]
+    assert result.source_audit == {
+        "https://example.org/azure-lot": {
+            "search_provider": "azure_web_search",
+            "search_queries": ["ALL claims line definition"],
+            "hydration_status": "hydrated",
+            "citation_metadata": [{
+                "url": "https://example.org/azure-lot", "title": "Treatment line definition",
+            }],
+            "supported_answer": True,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_answer_turn_returns_a_safe_privacy_explanation_without_persistable_sources():
+    class RevisionModel:
+        available = True
+
+        def __init__(self):
+            self.calls = 0
+
+        async def complete_json(self, system, prompt, max_tokens):
+            self.calls += 1
+            if self.calls == 1:
+                return {"needs_more_sources": True, "search_query": "treatment line definition"}
+            return {
+                "answer": "Treatment changes can inform operational review.",
+                "status": "partial",
+                "applied": False,
+                "note": "",
+                "support": [{
+                    "evidence_id": "ev_one",
+                    "quote": "Treatment changes can indicate a new line.",
+                }],
+            }
+
+    class UnsafeGateway:
+        async def research(self, research_context, user_text, on_status):
+            return WebResearchOutcome(
+                ok=False,
+                reason="Web research was not started because the request was not safe.",
+            )
+
+    async def ignore_status(_):
+        return None
+
+    result = await research_mod.answer_turn(
+        context(), "Search for a patient-specific claim.", {},
+        on_status=ignore_status,
+        llm_client=RevisionModel(),
+        research_gateway=UnsafeGateway(),
+    )
+
+    assert "was not started because the request was not safe" in result.text
+    assert result.source_evidence_ids == ["ev_one"]
+    assert [item.id for item in result.evidence] == ["ev_one"]
+    assert result.searched is False
+    assert result.retryable is False
+    assert result.source_audit == {}
+
+
+@pytest.mark.asyncio
+async def test_build_proposal_rejects_a_privacy_blocked_web_research_outcome(monkeypatch):
+    class RevisionModel:
+        available = True
+
+        def __init__(self):
+            self.calls = 0
+
+        async def complete_json(self, system, prompt, max_tokens):
+            self.calls += 1
+            if self.calls == 1:
+                return {"needs_more_sources": True, "search_query": "treatment line definition"}
+            return {
+                "answer": "Treatment changes can inform operational review.",
+                "status": "partial",
+                "applied": False,
+                "note": "",
+                "support": [{
+                    "evidence_id": "ev_one",
+                    "quote": "Treatment changes can indicate a new line.",
+                }],
+            }
+
+    class UnsafeGateway:
+        def __init__(self, **kwargs):
+            pass
+
+        async def research(self, research_context, user_text, on_status):
+            return WebResearchOutcome(
+                ok=False,
+                reason="Web research was not started because the request was not safe.",
+            )
+
+    monkeypatch.setattr(web_research_mod, "InsightWebResearchGateway", UnsafeGateway)
+
+    with pytest.raises(research_mod.ProposalUnsupported):
+        await research_mod.build_proposal(context(), {}, llm_client=RevisionModel())
 
 
 @pytest.mark.asyncio
@@ -446,9 +703,9 @@ async def test_answer_turn_searches_web_after_triage_with_real_revision(monkeypa
                 "support": [{"document": 0, "quote": quote, "relevance": 0.9}],
             }
 
-    class FakeOpenWeb:
+    class FakeGateway:
         def __init__(self):
-            self.queries = []
+            self.calls = []
             self.ref = SourceRef(
                 source_id="open_web",
                 source_name="Open Web",
@@ -459,12 +716,13 @@ async def test_answer_turn_searches_web_after_triage_with_real_revision(monkeypa
                 origin=EvidenceOrigin.OPEN_WEB,
             )
 
-        async def discover(self, ctx, limit):
-            self.queries.append((ctx.extra["search_query"], limit))
-            return ConnectorResult(source_id="open_web", refs=[self.ref])
+        async def research(self, research_context, user_text, on_status):
+            self.calls.append((research_context, user_text))
+            await on_status("searching_web_azure")
+            return WebResearchOutcome(refs=[self.ref], searched=True, provider="azure_web_search")
 
     revision_model = RevisionModel()
-    web = FakeOpenWeb()
+    web = FakeGateway()
     monkeypatch.setattr(answering_mod, "llm", AnsweringModel())
     statuses = []
 
@@ -473,12 +731,12 @@ async def test_answer_turn_searches_web_after_triage_with_real_revision(monkeypa
 
     result = await research_mod.answer_turn(
         context(), "Find missing operational support.", {"open_web": web},
-        on_status=record_status, llm_client=revision_model,
+        on_status=record_status, llm_client=revision_model, research_gateway=web,
     )
-    assert statuses == ["checking_evidence", "searching_web"]
+    assert statuses == ["checking_evidence", "searching_web_azure"]
     assert "Find missing operational support." in revision_model.calls[0][1]
     assert len(revision_model.calls) == 2
-    assert web.queries[0][0] == "treatment line gaps"
+    assert web.calls[0][1] == "Find missing operational support."
     assert result.searched is True
     assert any(item.source_id == "open_web" for item in result.evidence)
     assert result.sites == [{
@@ -512,13 +770,14 @@ async def test_answer_turn_discloses_connector_failure_for_requested_web_researc
                 }],
             }
 
-    class FailedOpenWeb:
-        async def discover(self, ctx, limit):
-            return ConnectorResult.failure(
-                "open_web",
-                "Firecrawl credits are exhausted (402). Web search is off for the rest "
-                "of this session; questions stay unanswered. Top up the account on the "
-                "provider dashboard and restart to re-enable it.",
+    class FailedGateway:
+        async def research(self, research_context, user_text, on_status):
+            return WebResearchOutcome(
+                searched=True,
+                provider="azure_web_search+firecrawl",
+                ok=False,
+                retryable=True,
+                reason="Web research is unavailable right now.",
             )
 
     async def ignore_status(_):
@@ -526,14 +785,14 @@ async def test_answer_turn_discloses_connector_failure_for_requested_web_researc
 
     result = await research_mod.answer_turn(
         context(), "Search the web for stronger evidence.",
-        {"open_web": FailedOpenWeb()}, on_status=ignore_status,
-        llm_client=RevisionModel(),
+        {}, on_status=ignore_status, llm_client=RevisionModel(),
+        research_gateway=FailedGateway(),
     )
 
     assert result.searched is True
     assert "couldn't complete the requested web research" in result.text.lower()
-    assert "configured web search service has no remaining credits" in result.text.lower()
-    assert "top up" not in result.text.lower()
+    assert "web research is unavailable right now" in result.text.lower()
+    assert result.retryable is True
 
 
 @pytest.mark.asyncio
@@ -556,10 +815,14 @@ async def test_answer_turn_preserves_search_failure_when_no_evidence_supports_an
                 "support": [],
             }
 
-    class FailedOpenWeb:
-        async def discover(self, ctx, limit):
-            return ConnectorResult.failure(
-                "open_web", "Firecrawl credits are exhausted (402).",
+    class FailedGateway:
+        async def research(self, research_context, user_text, on_status):
+            return WebResearchOutcome(
+                searched=True,
+                provider="azure_web_search+firecrawl",
+                ok=False,
+                retryable=True,
+                reason="Web research is unavailable right now.",
             )
 
     async def ignore_status(_):
@@ -567,15 +830,16 @@ async def test_answer_turn_preserves_search_failure_when_no_evidence_supports_an
 
     result = await research_mod.answer_turn(
         context(), "Search the web for missing evidence.",
-        {"open_web": FailedOpenWeb()}, on_status=ignore_status,
-        llm_client=FailureOnlyModel(),
+        {}, on_status=ignore_status, llm_client=FailureOnlyModel(),
+        research_gateway=FailedGateway(),
     )
 
     assert result.searched is True
     assert result.text == (
         "I couldn't complete the requested web research: "
-        "the configured web search service has no remaining credits."
+        "Web research is unavailable right now."
     )
+    assert result.retryable is True
 
 
 @pytest.mark.asyncio
