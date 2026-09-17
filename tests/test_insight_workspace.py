@@ -4,6 +4,7 @@ import json
 import sqlite3
 from dataclasses import replace
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
@@ -12,6 +13,7 @@ import celestra.services.insight_web_research as web_research_mod
 from celestra.models import (
     AppliedInsightRevision,
     Confidence,
+    Contradiction,
     Evidence,
     EvidenceOrigin,
     Insight,
@@ -32,6 +34,7 @@ from celestra.models import (
     WorkspaceMessageState,
     workspace_id,
 )
+from celestra.services.file_store import LocalFileStore
 from celestra.services.insight_reconciliation import (
     MUTABLE_CARD_FIELDS,
     diff_card_content,
@@ -1240,6 +1243,163 @@ async def test_direct_reviewer_action_returns_conflict_for_a_stale_card(tmp_path
         await main_mod._apply_insight_action(run.id, selected.id, "approve", "")
 
     assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_critical_section_releases_an_unused_insight_lock_without_blocking_waiters():
+    """Sequential reviewer mutations do not retain a lock for every historical card."""
+    main_mod._insight_workspace_locks.clear()
+    run_id, insight_id = "run_lock_cleanup", "ins_lock_cleanup"
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    order: list[str] = []
+
+    async def first():
+        async with main_mod._insight_critical_section(run_id, insight_id):
+            order.append("first")
+            first_entered.set()
+            await release_first.wait()
+
+    async def second():
+        async with main_mod._insight_critical_section(run_id, insight_id):
+            order.append("second")
+
+    first_task = asyncio.create_task(first())
+    await asyncio.wait_for(first_entered.wait(), timeout=0.5)
+    second_task = asyncio.create_task(second())
+    await asyncio.sleep(0)
+    release_first.set()
+    await asyncio.wait_for(asyncio.gather(first_task, second_task), timeout=0.5)
+
+    assert order == ["first", "second"]
+    assert (run_id, insight_id) not in main_mod._insight_workspace_locks
+
+
+@pytest.mark.asyncio
+async def test_file_input_stale_against_apply_returns_conflict_without_restoring_old_card(
+    tmp_path, monkeypatch,
+):
+    """A failed attachment save must never compensate over a newer Apply."""
+    apply_store, run, selected, _ = seeded_store(tmp_path)
+    reviewer_store = Store(apply_store.path)
+    service = proposal_service(apply_store)
+    proposal = await service.propose(run.id, selected.id)
+    stale_card = reviewer_store.get_insight(run.id, selected.id)
+    applied = await service.apply(run.id, selected.id, proposal.id)
+
+    monkeypatch.setattr(main_mod, "store", reviewer_store)
+    monkeypatch.setattr(main_mod, "file_store", LocalFileStore(tmp_path / "uploads"))
+    monkeypatch.setattr(
+        reviewer_store,
+        "get_insight",
+        lambda actual_run_id, actual_insight_id: stale_card.model_copy(deep=True),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await main_mod._commit_input_with_files(
+            run.id, selected.id, "Reviewer context", [], set(), [],
+        )
+
+    assert exc.value.status_code == 409
+    persisted = apply_store.get_insight(run.id, selected.id)
+    assert persisted.summary == applied.insight.summary
+    assert service.load(run.id, selected.id).applied_revisions[-1].proposal_id == proposal.id
+
+
+@pytest.mark.asyncio
+async def test_file_removal_stale_against_apply_returns_conflict_without_overwriting_card(
+    tmp_path, monkeypatch,
+):
+    """A stale file-removal worker must restore bytes rather than undo Apply."""
+    apply_store, run, selected, _ = seeded_store(tmp_path)
+    attachment = ReviewerFile(
+        id="rf_reviewer_context",
+        filename="reviewer.txt",
+        kind="txt",
+        size_bytes=16,
+        storage_key="reviewer/rf_reviewer_context.txt",
+        markdown="Reviewer context.",
+    )
+    selected.reviewer_files = [attachment]
+    apply_store.save_insights(run.id, [selected])
+    reviewer_store = Store(apply_store.path)
+    service = proposal_service(apply_store)
+    proposal = await service.propose(run.id, selected.id)
+    stale_card = reviewer_store.get_insight(run.id, selected.id)
+    applied = await service.apply(run.id, selected.id, proposal.id)
+    uploads = LocalFileStore(tmp_path / "uploads")
+    uploads.put(attachment.storage_key, b"Reviewer context.")
+
+    monkeypatch.setattr(main_mod, "store", reviewer_store)
+    monkeypatch.setattr(main_mod, "file_store", uploads)
+    monkeypatch.setattr(
+        reviewer_store,
+        "get_insight",
+        lambda actual_run_id, actual_insight_id: stale_card.model_copy(deep=True),
+    )
+    transport = httpx.ASGITransport(app=main_mod.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/runs/{run.id}/insights/{selected.id}/files/{attachment.id}/remove",
+        )
+
+    assert response.status_code == 409
+    assert uploads.get(attachment.storage_key) == b"Reviewer context."
+    persisted = apply_store.get_insight(run.id, selected.id)
+    assert persisted.summary == applied.insight.summary
+    assert persisted.reviewer_files == [attachment]
+
+
+@pytest.mark.asyncio
+async def test_contradiction_review_stale_against_apply_returns_conflict_without_overwriting_card(
+    tmp_path, monkeypatch,
+):
+    """Settling a contradiction cannot whole-save a finding that Apply changed."""
+    apply_store, run, selected, _ = seeded_store(tmp_path)
+    selected.confidence = Confidence.REQUIRES_INPUT
+    selected.input_reason = "Resolve the contradiction."
+    apply_store.save_insights(run.id, [selected])
+    contradiction = Contradiction(
+        id="con_selected",
+        run_id=run.id,
+        stage=selected.stage,
+        question_id=selected.question_ids[0],
+        topic="Gap definition",
+        source_a_name="Source A",
+        source_a_tier=1,
+        source_a_claim="A 60-day gap ends a line.",
+        source_b_name="Source B",
+        source_b_tier=1,
+        source_b_claim="A 90-day gap ends a line.",
+        reason="Definitions conflict.",
+    )
+    apply_store.save_contradictions(run.id, [contradiction])
+    reviewer_store = Store(apply_store.path)
+    service = proposal_service(apply_store)
+    proposal = await service.propose(run.id, selected.id)
+    stale_card = reviewer_store.get_insight(run.id, selected.id)
+    applied = await service.apply(run.id, selected.id, proposal.id)
+
+    monkeypatch.setattr(main_mod, "store", reviewer_store)
+    monkeypatch.setattr(
+        reviewer_store,
+        "get_insights",
+        lambda actual_run_id: [stale_card.model_copy(deep=True)],
+    )
+    monkeypatch.setattr(main_mod, "assess_confidence", lambda question, own, remaining: (
+        Confidence.READY, "",
+    ))
+    transport = httpx.ASGITransport(app=main_mod.app, raise_app_exceptions=False)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/runs/{run.id}/contradictions/{contradiction.id}/review",
+            json={"action": "acknowledged"},
+        )
+
+    assert response.status_code == 409
+    persisted = apply_store.get_insight(run.id, selected.id)
+    assert persisted.summary == applied.insight.summary
+    assert service.load(run.id, selected.id).applied_revisions[-1].proposal_id == proposal.id
 
 
 @pytest.mark.asyncio

@@ -6,18 +6,23 @@ import html
 import json
 import logging
 import re
+import weakref
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.formparsers import MultiPartException, MultiPartParser
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
-from .ppt import register_route
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.formparsers import MultiPartException, MultiPartParser
 
 from .events import bus
 from .models import (
@@ -37,8 +42,11 @@ from .models import (
     is_http_url,
     utcnow,
 )
+from .ppt import register_route
 from .services import orchestrator as orch
 from .services.file_store import file_store, storage_key
+from .services.insight_workspace import InsightWorkspaceService
+from .services.llm import llm
 from .services.reviewer_files import (
     MAX_FILE_BYTES,
     MAX_FILES_PER_INSIGHT,
@@ -48,17 +56,15 @@ from .services.reviewer_files import (
     kind_for,
 )
 from .services.scoring import assess_confidence
-from .services.insight_workspace import InsightWorkspaceService
-from .services.llm import llm
 from .settings import (
     BASE_DIR,
     configure_tls,
     ensure_dirs,
     get_framework,
     get_questions,
+    get_settings,
     get_source_registry,
     get_thresholds,
-    get_settings,
 )
 from .store import StaleInsightRevision, insight_snapshot_digest, store
 
@@ -70,7 +76,9 @@ log = logging.getLogger("celestra")
 
 _RUNNING: dict[str, asyncio.Task] = {}
 _REGISTRY: dict[str, Any] = {}
-_insight_workspace_locks: dict[tuple[str, str], asyncio.Lock] = {}
+_insight_workspace_locks: weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
 
 
 def _insight_workspace_service() -> InsightWorkspaceService:
@@ -727,7 +735,12 @@ async def import_run(request: Request):
     """Load a project exported from another instance. An id already present
     is overwritten with the imported copy, so re-importing is safe."""
     from .models import (
-        Answer, Contradiction, Evidence, QAMetrics, ResearchQuestion, StageReport,
+        Answer,
+        Contradiction,
+        Evidence,
+        QAMetrics,
+        ResearchQuestion,
+        StageReport,
     )
 
     form = await request.form()
@@ -1411,13 +1424,23 @@ def _restore_input_commit(run_id: str, snapshot: _InputCommitSnapshot) -> bool:
     for restore, label in (
         (lambda: store.save_run(snapshot.run), "run context"),
         (lambda: store.save_stage_reports(run_id, snapshot.reports), "stage reports"),
-        (lambda: store.save_insights(run_id, [snapshot.insight]), "reviewer file metadata"),
     ):
         try:
             restore()
         except Exception:
             restored = False
             log.exception("could not restore %s for %s", label, snapshot.insight.id)
+    try:
+        store.save_insight_if_unchanged(
+            snapshot.insight, insight_snapshot_digest(snapshot.insight),
+        )
+    except StaleInsightRevision:
+        # Apply owns the newer card. Its complete snapshot must win over this
+        # failed attachment's original metadata.
+        log.info("did not restore stale reviewer file metadata for %s", snapshot.insight.id)
+    except Exception:
+        restored = False
+        log.exception("could not restore reviewer file metadata for %s", snapshot.insight.id)
     return restored
 
 
@@ -1566,6 +1589,14 @@ async def _commit_input_with_files(
                 run_id, insight_id, "input", text,
                 reviewer_files=kept + [record for record, _ in new_files],
             )
+        except HTTPException as exc:
+            recovered = _rollback_file_input(run_id, deleted, originals, written, snapshot)
+            if exc.status_code == 409 and recovered:
+                raise
+            detail = "Could not replace the attached files. Previous files remain attached."
+            if not recovered:
+                detail = "Could not replace the attached files. Recovery needs attention."
+            raise _AttachError(500, detail) from exc
         except Exception as exc:
             recovered = _rollback_file_input(run_id, deleted, originals, written, snapshot)
             detail = "Could not replace the attached files. Previous files remain attached."
@@ -1596,6 +1627,7 @@ async def remove_reviewer_file(request: Request, run_id: str, insight_id: str, f
             if target is None:
                 raise HTTPException(404, "File not found")
             original_insight = insight.model_copy(deep=True)
+            expected_insight_digest = insight_snapshot_digest(insight)
             original = _original_file_bytes([target])
             try:
                 file_store.delete(target.storage_key)
@@ -1603,11 +1635,23 @@ async def remove_reviewer_file(request: Request, run_id: str, insight_id: str, f
                 raise _AttachError(500, "Could not remove this file. It remains attached.") from exc
             insight.reviewer_files = [f for f in insight.reviewer_files if f.id != file_id]
             try:
-                store.save_insights(run_id, [insight])
+                store.save_insight_if_unchanged(insight, expected_insight_digest)
+            except StaleInsightRevision as exc:
+                restored = _restore_originals([target], original)
+                if not restored:
+                    raise _AttachError(
+                        500, "Could not remove this file. Recovery needs attention.",
+                    ) from exc
+                raise HTTPException(
+                    409,
+                    "The finding changed while the file was being removed. Reopen it and try again.",
+                ) from exc
             except Exception as exc:
                 restored = _restore_originals([target], original)
                 try:
-                    store.save_insights(run_id, [original_insight])
+                    store.save_insight_if_unchanged(original_insight, expected_insight_digest)
+                except StaleInsightRevision:
+                    log.info("did not restore stale reviewer file metadata for %s", insight_id)
                 except Exception:
                     restored = False
                     log.exception("could not restore reviewer file metadata for %s", insight_id)
@@ -1770,7 +1814,7 @@ async def contradiction_review(request: Request, run_id: str, cid: str):
     item.review_action = mapping[action]
     item.reviewer_note = str(body.get("note", "")).strip()[:500]
     store.save_contradictions(run_id, [item])
-    _settle_conflict_findings(run_id, item)
+    await _settle_conflict_findings(run_id, item)
     return templates.TemplateResponse(
         request, "partials/contradiction_card.html",
         {**base_ctx(request), "contradiction": item, "run_id": run_id,
@@ -1778,13 +1822,13 @@ async def contradiction_review(request: Request, run_id: str, cid: str):
     )
 
 
-def _settle_conflict_findings(run_id: str, decided: Contradiction) -> None:
+async def _settle_conflict_findings(run_id: str, decided: Contradiction) -> None:
     """A finding flagged only because of this conflict is Ready once the
     conflict is decided. Re-assess the undecided findings in its stage."""
     remaining = store.get_contradictions(run_id)
     evidence = store.get_evidence(run_id)
     questions = {q.id: q for q in store.get_questions(run_id)}
-    changed: list[Insight] = []
+    changed: list[tuple[Insight, str]] = []
     for insight in store.get_insights(run_id):
         if insight.stage != decided.stage or insight.review_action.is_decided:
             continue
@@ -1796,10 +1840,18 @@ def _settle_conflict_findings(run_id: str, decided: Contradiction) -> None:
         own = [e for e in evidence if e.id in set(insight.evidence_ids)]
         conf, reason = assess_confidence(question, own, remaining)
         if conf is not insight.confidence or reason != insight.input_reason:
+            expected_insight_digest = insight_snapshot_digest(insight)
             insight.confidence, insight.input_reason = conf, reason
-            changed.append(insight)
-    if changed:
-        store.save_insights(run_id, changed)
+            changed.append((insight, expected_insight_digest))
+    for insight, expected_insight_digest in changed:
+        async with _insight_critical_section(run_id, insight.id):
+            try:
+                store.save_insight_if_unchanged(insight, expected_insight_digest)
+            except StaleInsightRevision as exc:
+                raise HTTPException(
+                    409,
+                    "A finding changed while the contradiction was being settled. Reopen it and try again.",
+                ) from exc
 
 
 @app.get("/runs/{run_id}/report", response_class=HTMLResponse)

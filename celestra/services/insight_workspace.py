@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import weakref
 from collections.abc import AsyncIterator, Callable
 
 from fastapi import HTTPException
@@ -44,7 +45,9 @@ from .insight_research import (
 )
 from .llm import LLMUnavailable, llm
 
-_application_lock_registry: dict[tuple[str, str], asyncio.Lock] = {}
+_application_lock_registry: weakref.WeakValueDictionary[tuple[str, str], asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
 
 
 class InsightWorkspaceService:
