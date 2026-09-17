@@ -1003,6 +1003,25 @@ def test_narrow_mobile_source_chip_can_wrap_within_its_card():
     ), "a long source chip must wrap inside a narrow card rather than paint outside it"
 
 
+def test_narrow_mobile_gate_action_form_and_button_stay_contained():
+    """The review-gate action must wrap inside a narrow panel rather than widen the page."""
+    css = (STATIC / "css" / "app.css").read_text(encoding="utf-8")
+    assert re.search(
+        r"@media \(max-width: 620px\)\s*\{\s*"
+        r"\.gate-actions\s*\{\s*"
+        r"flex:\s*1\s+1\s+100%;\s*min-width:\s*0;\s*align-items:\s*stretch;\s*"
+        r"\}\s*"
+        r"\.gate-actions form\s*\{\s*width:\s*100%;\s*min-width:\s*0;\s*\}\s*"
+        r"\.gate-actions \.btn\s*\{\s*"
+        r"max-width:\s*100%;\s*white-space:\s*normal;\s*"
+        r"\}\s*"
+        r"\.gate-actions \.hint\s*\{\s*"
+        r"max-width:\s*100%;\s*text-align:\s*left;\s*"
+        r"\}\s*\}",
+        css,
+    ), "the narrow review-gate form and action must shrink and wrap within the panel"
+
+
 # ---------------------------------------------------------------------------
 # static asset checks
 # ---------------------------------------------------------------------------

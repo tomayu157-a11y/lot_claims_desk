@@ -1198,6 +1198,12 @@ ul.checks .ic { flex: 0 0 auto; margin-top: 2px; color: var(--ok); }
 .gate-sub { color: var(--text-2); font-size: 13px; margin-top: 4px; }
 .gate-actions { flex: 0 0 auto; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
 .gate-actions .hint { font-size: 12px; color: var(--text-3); max-width: 280px; text-align: right; }
+@media (max-width: 620px) {
+  .gate-actions { flex: 1 1 100%; min-width: 0; align-items: stretch; }
+  .gate-actions form { width: 100%; min-width: 0; }
+  .gate-actions .btn { max-width: 100%; white-space: normal; }
+  .gate-actions .hint { max-width: 100%; text-align: left; }
+}
 .gate-blockers { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .gate-blockers li {
   display: flex; gap: 10px; align-items: flex-start;
