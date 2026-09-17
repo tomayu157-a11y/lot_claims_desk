@@ -60,7 +60,7 @@ from .settings import (
     get_thresholds,
     get_settings,
 )
-from .store import store
+from .store import StaleInsightRevision, insight_snapshot_digest, store
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1189,6 +1189,7 @@ async def _apply_insight_action(
     insight = store.get_insight(run_id, insight_id)
     if insight is None:
         raise HTTPException(404, "Insight not found")
+    expected_insight_digest = insight_snapshot_digest(insight)
     text = user_input.strip()[:500]
 
     if action == "approve":
@@ -1214,7 +1215,13 @@ async def _apply_insight_action(
     # kept on the card so the decision stays explainable.
     insight.confidence = Confidence.READY
     insight.reviewed_at = utcnow()
-    store.save_insights(run_id, [insight])
+    try:
+        store.save_insight_if_unchanged(insight, expected_insight_digest)
+    except StaleInsightRevision as exc:
+        raise HTTPException(
+            409,
+            "The finding changed while your review was being saved. Reopen it and try again.",
+        ) from exc
     return insight
 
 
@@ -1286,28 +1293,13 @@ class _CappedMultipartParser(MultiPartParser):
         super().on_part_data(data, start, end)
 
 
-class _InsightLock:
-    def __init__(self) -> None:
-        self.lock = asyncio.Lock()
-        self.users = 0
-
-
-_INSIGHT_LOCKS: dict[tuple[str, str], _InsightLock] = {}
-
-
 @asynccontextmanager
 async def _insight_critical_section(run_id: str, insight_id: str):
-    """Serialize one card's persisted reviewer-file state in this worker."""
+    """Serialize direct reviewer writes with the insight workspace in this worker."""
     key = (run_id, insight_id)
-    entry = _INSIGHT_LOCKS.setdefault(key, _InsightLock())
-    entry.users += 1
-    try:
-        async with entry.lock:
-            yield
-    finally:
-        entry.users -= 1
-        if entry.users == 0 and _INSIGHT_LOCKS.get(key) is entry:
-            del _INSIGHT_LOCKS[key]
+    lock = _insight_workspace_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        yield
 
 
 async def _bounded_attach_form(request: Request):

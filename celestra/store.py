@@ -220,6 +220,35 @@ class Store:
     def save_insights(self, run_id: str, items: Iterable[Insight]) -> None:
         self._save_many("insights", run_id, items, ("stage",))
 
+    def save_insight_if_unchanged(
+        self,
+        insight: Insight,
+        expected_insight_digest: str,
+    ) -> None:
+        """Save one reviewer-owned card change only when its read snapshot remains current."""
+        connection = self._conn()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT doc FROM insights WHERE run_id=? AND id=?",
+                (insight.run_id, insight.id),
+            ).fetchone()
+            if row is None:
+                raise StaleInsightRevision("Insight no longer exists")
+            current = Insight.model_validate_json(row["doc"])
+            if insight_snapshot_digest(current) != expected_insight_digest:
+                raise StaleInsightRevision("Insight changed")
+            connection.execute(
+                "INSERT INTO insights(id,run_id,stage,doc) VALUES(?,?,?,?) "
+                "ON CONFLICT(id) DO UPDATE SET run_id=excluded.run_id,"
+                "stage=excluded.stage,doc=excluded.doc",
+                (insight.id, insight.run_id, insight.stage, self._dump(insight)),
+            )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
     def get_insights(self, run_id: str) -> list[Insight]:
         return self._load_many("insights", run_id, Insight)
 

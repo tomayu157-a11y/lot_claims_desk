@@ -40,7 +40,12 @@ from celestra.services.insight_reconciliation import (
 )
 from celestra.services.insight_research import ProposalDraft, ResearchTurnResult
 from celestra.services.insight_workspace import InsightWorkspaceService
-from celestra.store import InsightCardRevisionCommit, Store, insight_snapshot_digest
+from celestra.store import (
+    InsightCardRevisionCommit,
+    StaleInsightRevision,
+    Store,
+    insight_snapshot_digest,
+)
 
 
 def seeded_store(tmp_path):
@@ -1196,6 +1201,45 @@ async def test_apply_rejects_a_reviewer_decision_committed_after_its_read(tmp_pa
     assert persisted == reviewer_state
     assert [item.model_dump_json() for item in store.get_evidence(run.id)] == before_evidence
     assert service.load(run.id, selected.id).model_dump_json() == before_workspace
+
+
+@pytest.mark.asyncio
+async def test_stale_reviewer_write_cannot_overwrite_applied_workspace_revision(tmp_path):
+    """A reviewer save read before Apply must not replace the applied card."""
+    apply_store, run, selected, _ = seeded_store(tmp_path)
+    reviewer_store = Store(apply_store.path)
+    service = proposal_service(apply_store)
+    proposal = await service.propose(run.id, selected.id)
+
+    reviewer_copy = reviewer_store.get_insight(run.id, selected.id)
+    applied = await service.apply(run.id, selected.id, proposal.id)
+    reviewer_copy.review_action = ReviewAction.APPROVED
+    reviewer_copy.confidence = Confidence.READY
+
+    with pytest.raises(StaleInsightRevision):
+        reviewer_store.save_insight_if_unchanged(
+            reviewer_copy,
+            insight_snapshot_digest(selected),
+        )
+
+    persisted = apply_store.get_insight(run.id, selected.id)
+    assert persisted.summary == applied.insight.summary
+    assert service.load(run.id, selected.id).applied_revisions[-1].proposal_id == proposal.id
+
+
+@pytest.mark.asyncio
+async def test_direct_reviewer_action_returns_conflict_for_a_stale_card(tmp_path, monkeypatch):
+    store, run, selected, _ = seeded_store(tmp_path)
+    monkeypatch.setattr(main_mod, "store", store)
+
+    def stale_save(insight, expected_insight_digest):
+        raise StaleInsightRevision("Insight changed")
+
+    monkeypatch.setattr(store, "save_insight_if_unchanged", stale_save)
+    with pytest.raises(HTTPException) as exc:
+        await main_mod._apply_insight_action(run.id, selected.id, "approve", "")
+
+    assert exc.value.status_code == 409
 
 
 @pytest.mark.asyncio
