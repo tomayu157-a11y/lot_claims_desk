@@ -195,12 +195,12 @@ def _planning_prompt(context: ResearchContext, user_text: str) -> str:
     )
 
 
-def _firecrawl_audits(refs: list[SourceRef]) -> list[WebSourceAudit]:
+def _firecrawl_audits(refs: list[SourceRef], brief: str) -> list[WebSourceAudit]:
     return [
         WebSourceAudit(
             provider="firecrawl",
             url=ref.url,
-            queries=[],
+            queries=[brief],
             hydration_status="connector_result",
             consulted_sources=[],
             url_citations=[],
@@ -301,7 +301,7 @@ class InsightWebResearchGateway:
             await _notify(on_status, "research_completed")
             return WebResearchOutcome(
                 refs=result.refs,
-                audits=[*azure.audits, *_firecrawl_audits(result.refs)],
+                audits=[*azure.audits, *_firecrawl_audits(result.refs, brief)],
                 searched=True,
                 provider="firecrawl",
             )

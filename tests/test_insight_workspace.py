@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 import celestra.main as main_mod
+import celestra.services.insight_web_research as web_research_mod
 from celestra.models import (
     AnswerStatus,
     Confidence,
@@ -639,6 +640,54 @@ async def test_send_marks_combined_provider_failure_retryable_without_mutating_t
     assert events[-1].type is WorkspaceEventType.ERROR
     assert workspace.messages[-1].state is WorkspaceMessageState.FAILED
     assert workspace.sources == []
+    assert store.get_insight(run.id, selected.id).summary == selected.summary
+
+
+@pytest.mark.asyncio
+async def test_send_marks_a_gateway_exception_retryable_without_exposing_its_text(tmp_path, monkeypatch):
+    class Model:
+        available = True
+
+        def __init__(self):
+            self.calls = 0
+
+        async def complete_json(self, system, prompt, max_tokens):
+            self.calls += 1
+            if self.calls == 1:
+                return {"needs_more_sources": True, "search_query": "treatment line definition"}
+            return {
+                "answer": "The held evidence supports an operational review.",
+                "status": "partial",
+                "applied": False,
+                "note": "",
+                "support": [{
+                    "evidence_id": "ev_selected",
+                    "quote": "Selected evidence describes operational treatment gaps.",
+                }],
+            }
+
+    class RaisingGateway:
+        def __init__(self, **kwargs):
+            pass
+
+        async def research(self, research_context, user_text, on_status):
+            raise RuntimeError("provider token and raw exception text")
+
+    store, run, selected, _ = seeded_store(tmp_path)
+    monkeypatch.setattr(web_research_mod, "InsightWebResearchGateway", RaisingGateway)
+    service = InsightWorkspaceService(
+        store=store,
+        registry_factory=dict,
+        summarizer=fake_summary,
+        llm_client=Model(),
+    )
+
+    events = [event async for event in service.send(run.id, selected.id, "Find stronger support")]
+    workspace = service.load(run.id, selected.id)
+
+    assert events[-1].type is WorkspaceEventType.ERROR
+    assert workspace.messages[-1].state is WorkspaceMessageState.FAILED
+    assert "provider token" not in json.dumps(events[-1].model_dump())
     assert store.get_insight(run.id, selected.id).summary == selected.summary
 
 

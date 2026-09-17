@@ -367,6 +367,7 @@ async def test_gateway_uses_the_same_sanitized_brief_for_fallback_and_records_pr
     assert azure.brief == firecrawl.brief == "ALL treatment line definition"
     assert [audit.provider for audit in outcome.audits] == ["firecrawl"]
     assert [audit.url for audit in outcome.audits] == ["https://example.org/lot"]
+    assert outcome.audits[0].queries == ["ALL treatment line definition"]
 
 
 @pytest.mark.asyncio

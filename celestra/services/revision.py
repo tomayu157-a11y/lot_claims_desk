@@ -266,8 +266,9 @@ async def revise(
                     if answer is not None:
                         out.answer = answer
             except Exception as exc:  # noqa: BLE001 - a failed search is not fatal
-                log.warning("revision search failed: %s", exc)
+                log.warning("revision search gateway failed: %s", type(exc).__name__)
                 search_failure = "web research is unavailable right now"
+                out.retryable = True
 
     # 3. Rewrite the answer against the full evidence set.
     listing = "\n".join(
