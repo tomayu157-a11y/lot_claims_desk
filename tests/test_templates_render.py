@@ -10,7 +10,6 @@ reach rendered output. The execution units are AGENTS in the UI.
 """
 from __future__ import annotations
 
-import copy
 import html
 import re
 import sys
@@ -1036,26 +1035,43 @@ def test_narrow_mobile_source_chip_can_wrap_within_its_card():
 
 def test_rendered_unlocked_review_gate_preserves_approval_form_contract(env, context):
     """A narrow-layout change must not alter the Review Gate's approval action."""
-    rendered_context = copy.deepcopy(context)
-    rendered_context["run"].id = "run_rendered_gate"
-    rendered_context["gate"].update(
-        blockers=[],
-        available=True,
-        done=False,
-        mode="review",
-        action_url="/runs/run_rendered_gate/continue",
-        action_label="Approve discovery and start Mapping & Synthesis",
-    )
+    run = context["run"].model_copy(update={
+        "id": "run_rendered_gate",
+        "status": RunStatus.AWAITING_REVIEW,
+    })
+    insights = [
+        insight.model_copy(update={"review_action": ReviewAction.APPROVED})
+        if insight.needs_decision else insight
+        for insight in context["insights"]
+    ]
+    contradictions = [
+        contradiction.model_copy(update={
+            "review_action": ReviewAction.ACKNOWLEDGED,
+            "reviewer_note": "The discrepancy is recorded for this review.",
+        })
+        if contradiction.severity is ContradictionSeverity.ESCALATED
+        and contradiction.review_action is ReviewAction.PENDING
+        else contradiction
+        for contradiction in context["contradictions"]
+    ]
+    gate = app_mod._gate(run, insights, contradictions, "review")
+
+    assert gate["blockers"] == []
+    assert gate["available"] is True
+    assert gate["can_proceed"] is True
 
     parser = GateFormParser()
     parser.feed(
-        env.get_template("partials/gate_panel.html").render(**rendered_context)
+        env.get_template("partials/gate_panel.html").render(
+            **{**context, "run": run, "insights": insights,
+               "contradictions": contradictions, "gate": gate}
+        )
     )
 
     assert len(parser.forms) == 1
     form = parser.forms[0]
     assert form["attrs"]["method"] == "post"
-    assert form["attrs"]["action"] == "/runs/run_rendered_gate/continue"
+    assert form["attrs"]["action"] == gate["action_url"]
     assert "data-gate-form" in form["attrs"]
     assert len(form["buttons"]) == 1
     button = form["buttons"][0]
