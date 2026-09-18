@@ -409,7 +409,9 @@ class Orchestrator:
             if agent_questions:
                 store.save_questions(self.run.id, agent_questions)
 
-            inbound_context = handoff.for_agent(bucket, self.run.context)
+            inbound_context = handoff.with_lexicon(
+                bucket, self.cfg.indication_key, handoff.for_agent(bucket, self.run.context)
+            )
             if inbound_context:
                 await self._agent(state, message=(
                     "Using upstream context: "

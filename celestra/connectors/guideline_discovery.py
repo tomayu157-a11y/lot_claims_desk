@@ -91,7 +91,14 @@ class GuidelineDiscoveryConnector:
                 for r in records
             ]
             for ref in refs:
-                ref.organization = self.organization or ref.organization
+                # The society's name belongs on a record published in its own
+                # venue. A fallback hit from another journal keeps the journal
+                # it came from; an ASH guideline must never be labelled ESMO.
+                venue = clean(ref.raw.get("journal"))
+                if self.organization and (not self.journals or matches_any(venue, self.journals)):
+                    ref.organization = self.organization
+                elif venue:
+                    ref.organization = venue
                 ref.raw["discovered_by"] = "publication-type search"
                 ref.raw["journal_hint"] = self.journals
 

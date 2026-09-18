@@ -197,9 +197,15 @@ _TAG_CLASS = {
     "GENERAL KNOWLEDGE": "vtag-general-knowledge",
 }
 _TAG_RE = re.compile(
-    r"\[(VERIFIED|ORIGINAL|INFERENCE|NOT VERIFIED|GENERAL KNOWLEDGE|UPDATE[^\]]*)\]"
+    r"\[(?:TAG:\s*)?(VERIFIED|ORIGINAL|INFERENCE|NOT VERIFIED|GENERAL KNOWLEDGE|"
+    r"SOURCE[- ]SUPPORTED|UPDATE[^\]]*)\]",
+    re.I,
 )
-_SOURCE_RE = re.compile(r"\[Source:\s*([^\]]+)\]")
+_SOURCE_RE = re.compile(r"\[Source:\s*([^\]]+)\]", re.I)
+# Any other short bracketed label the model attached ([Evidence gap],
+# [TAG: BIOMARKER GAP], [Partial coverage]) becomes a quiet chip rather than
+# raw brackets in the prose.
+_LABEL_RE = re.compile(r"\[(?:TAG:\s*)?([A-Za-z][A-Za-z0-9 _/-]{2,40})\]")
 
 
 _TAG_TITLE = {
@@ -222,7 +228,9 @@ def tagify(value: Any) -> Markup:
     text = html.escape(str(value or ""))
 
     def tag_sub(m: re.Match) -> str:
-        raw = m.group(1)
+        raw = m.group(1).upper().replace("-", " ")
+        if raw == "SOURCE SUPPORTED":
+            raw = "VERIFIED"
         cls = _TAG_CLASS.get(
             raw, "vtag-update" if raw.startswith("UPDATE") else "vtag-general-knowledge"
         )
@@ -235,6 +243,9 @@ def tagify(value: Any) -> Markup:
     text = _TAG_RE.sub(tag_sub, text)
     text = _SOURCE_RE.sub(
         lambda m: f'<span class="vsrc" title="Source">{m.group(1).strip()}</span>', text
+    )
+    text = _LABEL_RE.sub(
+        lambda m: f'<span class="vsrc">{m.group(1).strip().lower()}</span>', text
     )
     return Markup(text)
 

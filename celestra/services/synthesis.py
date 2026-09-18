@@ -40,6 +40,20 @@ _SYSTEM = (
     "Never state that an agent is 'the only' approved therapy without naming its exact subpopulation scope."
 )
 
+_LEADING_NUMBER = re.compile(r"^\s*(?:\(?\d{1,2}[.)]\s*)+")
+_TAG_PREFIX = re.compile(r"\[\s*TAG:\s*([^\]]+)\]", re.I)
+
+
+def _clean_item(value: object) -> str:
+    """A list item as the page will number it: no leading '1.' from the
+    model (the list is numbered by the template), and '[TAG: X]' written as
+    the '[X]' mark the rest of the document uses."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    text = _LEADING_NUMBER.sub("", text)
+    text = _TAG_PREFIX.sub(lambda m: f"[{m.group(1).strip().upper()}]", text)
+    return text.strip()
+
+
 _COL_SPEC = re.compile(r"\(([^)]*\|[^)]*)\)")
 
 
@@ -331,8 +345,8 @@ async def build_stage_report(
             for n in (data.get("narratives") or [])
             if n.get("body")
         ]
-        report.takeaways = [str(x) for x in (data.get("takeaways") or [])]
-        report.assumptions = [str(x) for x in (data.get("assumptions") or [])]
+        report.takeaways = [_clean_item(x) for x in (data.get("takeaways") or []) if _clean_item(x)]
+        report.assumptions = [_clean_item(x) for x in (data.get("assumptions") or []) if _clean_item(x)]
         report.observability = [
             {k: str(v) for k, v in row.items()} for row in (data.get("observability") or [])
         ]

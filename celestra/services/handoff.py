@@ -16,6 +16,7 @@ import re
 from typing import Any
 
 from ..models import Evidence, RunConfig
+from ..settings import get_questions
 from .llm import LLMUnavailable, llm
 
 log = logging.getLogger("celestra.handoff")
@@ -154,6 +155,37 @@ def merge(existing: dict[str, Any], addition: dict[str, Any]) -> dict[str, Any]:
             out[key] = list(dict.fromkeys(out.get(key, []) + value))[:60]
         else:
             out[key] = value
+    return out
+
+
+# Lexicon lists that each agent's code and label lookups should always
+# carry, whatever the discovery agents happened to extract.
+_LEXICON_WANTS = {
+    "B": ("test_names", "procedures"),
+    "D": ("drugs", "regimens", "procedures"),
+    "E": ("drugs", "regimens", "test_names", "procedures"),
+    "F": ("drugs", "regimens", "test_names"),
+}
+
+
+def with_lexicon(bucket: str, indication_key: str, context: dict[str, Any]) -> dict[str, Any]:
+    """Add the indication's claims lexicon to an agent's inbound context.
+
+    A code table is searched by the test, procedure or drug, never by the
+    disease name. When the discovery agents' evidence did not happen to name
+    "bone marrow biopsy" or "blinatumomab", the code lookups had nothing to
+    search for and came back empty. The lexicon in research_questions.yaml
+    is the floor; extracted entities are added on top of it.
+    """
+    spec = (get_questions().get("indications") or {}).get(indication_key) or {}
+    lexicon = spec.get("claims_lexicon") or {}
+    out = dict(context)
+    for key in _LEXICON_WANTS.get(bucket, ()):
+        base = [str(v) for v in (lexicon.get(key) or [])]
+        if not base:
+            continue
+        existing = [str(v) for v in (out.get(key) or [])]
+        out[key] = list(dict.fromkeys(base + existing))[:60]
     return out
 
 

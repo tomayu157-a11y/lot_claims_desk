@@ -108,6 +108,21 @@ stage_meta:
       - "Readiness assessment"
     default_sources: [pubmed, nccn, fda, clinicaltrials, seer, cibmtr]
 
+# Questions whose answer is a list (an inventory) rather than a fact. They are
+# retrieved wider and read in full; see limits.inventory_* in thresholds.yaml.
+inventory_patterns:
+  - "fda-approved"
+  - "fda approvals"
+  - "label expansions"
+  - "codes? (cover|identify|map|express)"
+  - "hcpcs"
+  - "ndc identifiers"
+  - "loinc"
+  - "regimens for"
+  - "supportive care agents"
+  - "therapies are billed"
+  - "dosing, route and administration"
+
 indications:
 
   ALL:
@@ -119,6 +134,64 @@ indications:
       - "acute lymphoid leukemia"
       - "B-ALL"
       - "T-ALL"
+    # The claims concepts the code and label lookups search for, whatever the
+    # discovery agents happened to extract. A code table cannot be searched
+    # by a disease name; it is searched by the test, procedure or drug.
+    claims_lexicon:
+      test_names:
+        - "bone marrow biopsy"
+        - "bone marrow aspiration"
+        - "flow cytometry"
+        - "immunophenotyping"
+        - "cytogenetics"
+        - "karyotype"
+        - "fluorescence in situ hybridization"
+        - "BCR-ABL1"
+        - "KMT2A"
+        - "next generation sequencing"
+        - "minimal residual disease"
+        - "lumbar puncture"
+        - "complete blood count"
+        - "HLA typing"
+      drugs:
+        - "blinatumomab"
+        - "inotuzumab ozogamicin"
+        - "tisagenlecleucel"
+        - "brexucabtagene autoleucel"
+        - "obecabtagene autoleucel"
+        - "ponatinib"
+        - "dasatinib"
+        - "imatinib"
+        - "nilotinib"
+        - "bosutinib"
+        - "nelarabine"
+        - "pegaspargase"
+        - "calaspargase pegol"
+        - "asparaginase erwinia chrysanthemi"
+        - "clofarabine"
+        - "vincristine"
+        - "daunorubicin"
+        - "doxorubicin"
+        - "cyclophosphamide"
+        - "cytarabine"
+        - "methotrexate"
+        - "mercaptopurine"
+        - "dexamethasone"
+        - "prednisone"
+        - "rituximab"
+      procedures:
+        - "allogeneic hematopoietic stem cell transplant"
+        - "autologous stem cell transplant"
+        - "chimeric antigen receptor T-cell"
+        - "intrathecal chemotherapy"
+        - "cranial irradiation"
+        - "total body irradiation"
+      regimens:
+        - "hyper-CVAD"
+        - "CALGB 10403"
+        - "BFM"
+        - "pediatric-inspired regimen"
+        - "GRAALL"
     stage_1:
       - "What is the disease definition and natural history of acute lymphoblastic leukemia?"
       - "What is the incidence, prevalence, survival and mortality of ALL in the United States?"
@@ -159,6 +232,40 @@ indications:
 
   CLL:
     label: "Chronic Lymphocytic Leukemia"
+    claims_lexicon:
+      test_names:
+        - "flow cytometry"
+        - "immunophenotyping"
+        - "fluorescence in situ hybridization"
+        - "del(17p)"
+        - "TP53 mutation"
+        - "IGHV mutation status"
+        - "complete blood count"
+        - "beta-2 microglobulin"
+        - "bone marrow biopsy"
+        - "computed tomography"
+      drugs:
+        - "ibrutinib"
+        - "acalabrutinib"
+        - "zanubrutinib"
+        - "pirtobrutinib"
+        - "venetoclax"
+        - "obinutuzumab"
+        - "rituximab"
+        - "idelalisib"
+        - "duvelisib"
+        - "bendamustine"
+        - "chlorambucil"
+        - "fludarabine"
+        - "cyclophosphamide"
+      procedures:
+        - "allogeneic hematopoietic stem cell transplant"
+        - "chimeric antigen receptor T-cell"
+      regimens:
+        - "venetoclax-obinutuzumab"
+        - "FCR"
+        - "BR"
+        - "ibrutinib-venetoclax"
     abbreviation: "CLL"
     synonyms:
       - "chronic lymphocytic leukemia"

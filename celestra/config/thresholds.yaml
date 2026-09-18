@@ -30,6 +30,11 @@ confidence:
 
 escalation:
   max_refinement_rounds: 2       # query rewrites against approved sources
+  # A partial answer ("the supplied documents do not describe...") is not an
+  # answer. Retrieval keeps going through the remaining batches, rounds and
+  # tiers until a source answers the question in full, or everything within
+  # the time budget has been tried. The partial answers are kept and merged.
+  stop_on_partial_answer: false
   # Registry sources reached by a domain-scoped web search (cdc.gov, who.int,
   # cancer.org, fda.gov ...) are approved, tier 1-2 evidence, but every call
   # costs a web-search credit. They are consulted only after the API sources
@@ -72,6 +77,14 @@ limits:
   rank_top_k_step: 4            # widened by this much on each further round
   hydrate_top_k: 5              # of those, how many get full-text hydration
   extract_batch_size: 3         # documents per extraction call
+  # Inventory questions ("which therapies are FDA-approved", "what HCPCS
+  # codes", "what NDCs") are lists, not single facts. Two documents per
+  # source cannot answer them, so they discover wider, hydrate more, and read
+  # every batch instead of stopping at the first partial answer.
+  inventory_per_source: 20
+  inventory_rank_top_k: 30
+  inventory_hydrate_top_k: 12
+  inventory_min_relevance: 0.2
   max_concurrent_connectors: 6
   connector_timeout_seconds: 30
   connector_retries: 2

@@ -229,7 +229,7 @@ class LocalFilesConnector:
             tier=self.tier,
             url=self.dataset.citation_url,
             title=f"{self.dataset.label} not installed",
-            organization="local reference file",
+            organization=self.source_name,
             identifiers={"dataset": self.dataset_key},
             snippet=(f"Install the {self.dataset.label} release file in "
                      f"{self.root} — expected one of: {', '.join(expected)}."),
@@ -275,7 +275,7 @@ class LocalFilesConnector:
                     tier=self.tier,
                     url=self.dataset.citation_url or f"file://{path}",
                     title=f"{self.dataset.label}: {len(hits)} matching rows",
-                    organization="local reference file",
+                    organization=self.source_name,
                     published="",
                     identifiers={"dataset": self.dataset_key,
                                  "file": path.name if path else ""},

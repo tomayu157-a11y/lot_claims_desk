@@ -30,6 +30,7 @@ from ..connectors.base import ConnectorResult, RetrievalContext
 from ..connectors.firecrawl import firecrawl_blocked
 from ..models import (
     Answer,
+    AnswerStatus,
     Evidence,
     EvidenceOrigin,
     QuestionStatus,
@@ -37,7 +38,7 @@ from ..models import (
     RunConfig,
     SourceRef,
 )
-from ..settings import get_source_registry, get_thresholds
+from ..settings import get_questions, get_source_registry, get_thresholds
 from .answering import answer_batch, merge as merge_answers
 from .extraction import build_terms
 from .llm import LLMUnavailable, llm
@@ -155,6 +156,18 @@ async def refine_query(
         except LLMUnavailable:
             pass
     return _broaden(question.text, question.aspects, synonyms, round_no)
+
+
+@functools.lru_cache(maxsize=1)
+def _inventory_patterns() -> list[re.Pattern]:
+    raw = get_questions().get("inventory_patterns") or []
+    return [re.compile(p, re.I) for p in raw]
+
+
+def is_inventory_question(text: str) -> bool:
+    """Is the answer a list (approved agents, codes, NDCs, regimens) rather
+    than a fact? Lists need every relevant document, not the best three."""
+    return any(p.search(text or "") for p in _inventory_patterns())
 
 
 async def draft_search_query(question: ResearchQuestion, cfg: RunConfig,
@@ -312,7 +325,11 @@ async def retrieve(
     approved = sources_for(question.stage, cfg.indication_key)[: limits["max_sources_per_question"]]
     source_ids = [s["id"] for s in approved]
     names = {s["id"]: s["name"] for s in approved}
+    inventory = is_inventory_question(question.text) or is_inventory_question(question.seed_text)
     per_source = max(2, limits["max_evidence_items_per_question"] // max(len(source_ids), 1))
+    if inventory:
+        per_source = int(limits.get("inventory_per_source", 20))
+        log.info("q=%s is an inventory question: %d candidates per source", question.id, per_source)
 
     upstream_terms: list[str] = []
     notes: list[str] = [str(n) for n in (context or {}).get("reviewer_notes") or []]
@@ -330,17 +347,35 @@ async def retrieve(
 
     candidates: dict[str, SourceRef] = {}       # by ref.key, across rounds
     hydrated: dict[str, SourceRef] = {}         # cache so a doc is fetched once
+    read_keys: set[str] = set()                 # documents already put to the model
     top_k = int(limits.get("rank_top_k", 8))
     hydrate_k = int(limits.get("hydrate_top_k", 5))
     batch_size = max(1, int(limits.get("extract_batch_size", 3)))
     min_relevance = float(limits.get("min_relevance", 0.35))
+    if inventory:
+        top_k = int(limits.get("inventory_rank_top_k", 30))
+        hydrate_k = int(limits.get("inventory_hydrate_top_k", 12))
+        min_relevance = float(limits.get("inventory_min_relevance", 0.2))
+    stop_on_partial = bool(esc.get("stop_on_partial_answer", False))
 
     def answered() -> bool:
-        """Stop condition. With a model, an answer must exist; without one,
-        the deterministic engine can only collect quotes, so sufficiency
-        alone is the honest bar."""
-        return bool(outcome.sufficiency and outcome.sufficiency.ok
-                    and (outcome.answers or not llm.available))
+        """Stop condition.
+
+        With a model, a source must have answered the question in full: a
+        partial answer ("the supplied documents do not describe...") keeps
+        retrieval going through the remaining batches, rounds and tiers.
+        An inventory question is never stopped early inside a round, because
+        every document may hold another item of the list. Without a model the
+        deterministic engine can only collect quotes, so sufficiency alone is
+        the honest bar.
+        """
+        if not (outcome.sufficiency and outcome.sufficiency.ok):
+            return False
+        if not llm.available:
+            return True
+        if stop_on_partial:
+            return bool(outcome.answers)
+        return any(a.status is AnswerStatus.ANSWERED for a in outcome.answers)
 
     async def run_round(ids: list[str], round_no: int, query_text: str) -> None:
         """One pass: discover from `ids`, rank, hydrate, answer in batches."""
@@ -373,8 +408,13 @@ async def retrieve(
             outcome.sufficiency = assess(question, outcome.evidence)
             return
 
-        # 2. rank, eliminate the irrelevant, keep the top slice
-        ranked = await rank(list(candidates.values()), question.text, terms)
+        # 2. rank, eliminate the irrelevant, keep the top slice. Documents the
+        #    model has already read are not ranked again: a later round or
+        #    tier exists to read what has not been read, and re-reading the
+        #    same top eight was how a domain search's results never reached
+        #    the model.
+        pool = [c for c in candidates.values() if c.key not in read_keys] or list(candidates.values())
+        ranked = await rank(pool, question.text, terms)
         relevant = [(ref, score) for ref, score in ranked if score >= min_relevance]
         outcome.eliminated = len(ranked) - len(relevant)
         if not relevant:
@@ -397,6 +437,7 @@ async def retrieve(
         # 4. answer the question from each batch, stopping as soon as the
         #    accumulated evidence clears the threshold. Later batches are
         #    not read when earlier ones already answered it.
+        read_keys.update(ref.key for ref in keep)
         round_evidence: list[Evidence] = list(outcome.evidence)
         for batch_no, start in enumerate(range(0, len(docs), batch_size)):
             answer, evidence = await answer_batch(
@@ -410,7 +451,7 @@ async def retrieve(
             round_evidence = _merge_evidence(round_evidence, evidence, limits)
             outcome.evidence = round_evidence
             outcome.sufficiency = assess(question, round_evidence)
-            if answered():
+            if answered() and not inventory:
                 break
 
         # 5. assess
