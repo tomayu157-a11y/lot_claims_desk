@@ -299,6 +299,32 @@ sources:
     local_dataset: hcpcs
     enabled: true
 
+  - id: cms_icd10pcs
+    name: CMS ICD-10-PCS Code File
+    domain: cms.gov
+    tier: 1
+    types: [coding]
+    indications: [ALL, CLL]
+    stages: [stage_3, stage_4]
+    access_method: local_file
+    connector: local_files
+    local_dataset: icd10pcs
+    notes: "Inpatient procedure codes (transplant, CAR-T). Downloaded from CMS by the rules stage."
+    enabled: true
+
+  - id: cms_asp_crosswalk
+    name: CMS ASP NDC-HCPCS Crosswalk
+    domain: cms.gov
+    tier: 1
+    types: [coding]
+    indications: [ALL, CLL]
+    stages: [stage_3, stage_4]
+    access_method: local_file
+    connector: local_files
+    local_dataset: asp_crosswalk
+    notes: "The quarterly Medicare Part B file linking NDCs to HCPCS codes. Downloaded by the rules stage."
+    enabled: true
+
   - id: cms_gems
     name: CMS ICD-9-CM to ICD-10-CM GEMs
     domain: cms.gov

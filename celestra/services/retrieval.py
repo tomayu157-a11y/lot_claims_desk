@@ -326,6 +326,7 @@ async def retrieve(
     registry: dict,
     on_source=None,
     context: dict | None = None,
+    allow_open_web: bool = True,
 ) -> RetrievalOutcome:
     """Answer one question. `on_source` is an async callback
     (source_id, source_name, ok, count, reason) that streams live progress.
@@ -516,6 +517,12 @@ async def retrieve(
     # -- approved sources reached by a domain-scoped search ------------------
     # Only now. Every call here is a web-search credit, and the answer may
     # already be in the APIs above. These are still approved, tier 1-2 sources.
+    if not allow_open_web:
+        # The caller knows the APIs are the only sources that can answer this
+        # (code lookups, label schedules): a web search would spend credits
+        # on pages that restate them, or on nothing.
+        outcome.sufficiency = assess(question, outcome.evidence)
+        return outcome
     targeted = targeted_sources_for(question.stage, cfg.indication_key)
     targeted = targeted[: int(esc.get("targeted_search_max_sources", 2))]
     web_off = firecrawl_blocked()

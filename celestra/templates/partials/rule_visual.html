@@ -27,7 +27,7 @@
   </table>
 </div>
 
-{% elif v == 'codes' and data %}
+{% elif data and (v == 'codes' or (v == 'timeline' and data[0] is mapping and data[0].get('code'))) %}
 <div class="code-grid">
   {% for c in data %}
   <div class="code-card">
@@ -68,11 +68,11 @@
 {% elif v == 'grid' and data %}
 <div class="table-wrap">
   <table class="data table-compact rule-table">
-    <thead><tr><th>Scenario</th><th>Condition</th><th>Action</th><th>Expected effect</th></tr></thead>
+    {%- set cols = data[0].keys() | list -%}
+    <thead><tr>{% for c in cols %}<th>{{ c | replace('_', ' ') | capitalize }}</th>{% endfor %}</tr></thead>
     <tbody>
     {% for r in data %}
-      <tr><td><strong>{{ r.get('scenario', '') }}</strong></td><td>{{ r.get('condition', '') }}</td>
-          <td>{{ r.get('action', '') }}</td><td class="text-muted">{{ r.get('expected_effect', '') }}</td></tr>
+      <tr>{% for c in cols %}<td{% if loop.first %} class="is-strong"{% endif %}>{{ r.get(c, '') }}</td>{% endfor %}</tr>
     {% endfor %}
     </tbody>
   </table>
@@ -80,39 +80,40 @@
 {% endif %}
 
 {# -- timelines: every scenario the card carries -------------------------------- #}
+{%- set tpx = track_px if track_px is defined else 360 -%}
 {% for sc in card.scenarios %}
-{% set total = sc.duration_days if sc.duration_days else 300 %}
-{% set lanes = [] %}
-{% for e in sc.events %}{% if e.lane not in lanes %}{% set _ = lanes.append(e.lane) %}{% endif %}{% endfor %}
+{% set lay = timeline_layout(sc, tpx) %}
 <div class="tl">
   <div class="tl-head">
     <span class="tl-title">{{ sc.title }}</span>
     {% if sc.expected %}<span class="tl-expected">{{ icon('arrow-right', 12) }} {{ sc.expected }}</span>{% endif %}
   </div>
   <div class="tl-grid">
-    {% for lane in lanes %}
+    {% for lane in lay.lanes %}
     <div class="tl-lane">
-      <div class="tl-lane-label {{ 'is-line' if lane == 'Line' }}">{{ lane }}</div>
-      <div class="tl-track">
-        {% for e in sc.events if e.lane == lane %}
-        {% set left = (e.start_day / total * 100) %}
-        {% set width = ((e.end_day - e.start_day) / total * 100) %}
-        {% if e.kind == 'dx' or e.end_day <= e.start_day %}
-        <div class="tl-point tl-{{ e.kind }}" style="left: {{ left | round(2) }}%"
-             title="{{ e.label }} · day {{ e.start_day }}"><i></i><span>{{ e.label }}</span></div>
-        {% else %}
-        <div class="tl-bar tl-{{ e.kind }} {{ 'is-narrow' if (width * 0.5) < (e.label | length) }}" style="left: {{ left | round(2) }}%; width: {{ [width, 1.2] | max | round(2) }}%"
-             title="{{ e.label }} · day {{ e.start_day }} to {{ e.end_day }}">
-          <span>{{ e.label }}</span>
+      <div class="tl-lane-label {{ 'is-line' if lane.is_line }}">{{ lane.lane }}</div>
+      <div class="tl-tracks">
+        {% for row in lane.rows %}
+        <div class="tl-track">
+          {% for e in row %}
+          {% if e.point %}
+          <div class="tl-point tl-{{ e.kind }}" style="left: {{ e.left }}%" title="{{ e.label }} · day {{ e.start_day }}"><i></i><span>{{ e.label }}</span></div>
+          {% else %}
+          <div class="tl-bar tl-{{ e.kind }} label-{{ e.label_mode }}" style="left: {{ e.left }}%; width: {{ e.width }}%"
+               title="{{ e.label }} · day {{ e.start_day }} to {{ e.end_day }}"><span>{{ e.label }}</span></div>
+          {% endif %}
+          {% endfor %}
         </div>
-        {% endif %}
         {% endfor %}
       </div>
     </div>
     {% endfor %}
     <div class="tl-axis">
-      {% for t in range(0, 5) %}<span style="left: {{ t * 25 }}%">day {{ (total * t / 4) | round | int }}</span>{% endfor %}
+      {% for t in range(0, 5) %}<span style="left: {{ t * 25 }}%">day {{ (lay.total * t / 4) | round | int }}</span>{% endfor %}
     </div>
+    {% if lay.key %}
+    <div class="tl-key">{% for k in lay.key %}<span><i class="tl-bar tl-{{ k.kind }}"></i>{{ k.label }} · day {{ k.start_day }}–{{ k.end_day }}</span>{% endfor %}</div>
+    {% endif %}
   </div>
 </div>
 {% endfor %}

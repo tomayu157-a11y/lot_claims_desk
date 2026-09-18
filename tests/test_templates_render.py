@@ -135,8 +135,10 @@ def env() -> Environment:
     environment.globals["url_for"] = url_for
     from celestra.main import run_steps
     from celestra.main import section_label
+    from celestra.services.lot_rules import timeline_layout
     environment.globals["run_steps"] = run_steps
     environment.globals["section_label"] = section_label
+    environment.globals["timeline_layout"] = timeline_layout
     return environment
 
 

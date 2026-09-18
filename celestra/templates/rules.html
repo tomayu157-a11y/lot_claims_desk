@@ -10,7 +10,7 @@
     {% if rules_status == 'not_started' %}
     The approved document says what the clinical world looks like. This stage turns it into the rules a claims
     analyst executes: the market basket with its codes, the patient funnel, how claims become episodes and regimens,
-    when a line advances, cleansing, and the sensitivity plan. Each rule shows where it came from.
+    and when a line advances. Each rule shows where it came from.
     {% elif rules_status == 'running' %}
     Celestra is reading the approved document, researching what it does not settle, and writing each rule with its
     parameters, illustrations and sources. Cards appear section by section.
@@ -30,7 +30,7 @@
   <div class="row-between wrap">
     <div>
       <strong>Build the rules from the approved document</strong>
-      <div class="sub">{{ catalogue_count }} rule cards in six sections. Registry sources first, then domain search,
+      <div class="sub">{{ catalogue_count }} rule cards in four sections. Codes from the registries, then registry sources, then domain search,
         then the open web where the document is silent. Takes a few minutes.</div>
     </div>
     <form method="post" action="/runs/{{ rid }}/rules/start">

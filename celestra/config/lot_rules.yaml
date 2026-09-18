@@ -1,12 +1,17 @@
 # The line-of-therapy rules an analytics team writes before any claims data
-# is touched. Six sections, mirroring the business-rules document a client
-# signs, plus a sensitivity plan. Each card is a fixed slot: the model fills
-# it from the approved research document and, where the document is silent,
-# from targeted research. Parameters carry their provenance:
+# is touched. Four sections, mirroring the business-rules document a client
+# signs. Each card is a fixed slot: the model fills it from the approved
+# research document, from the code registries (HCPCS, NDC, RxNorm, FDA
+# labels, CMS procedure codes) and, where those are silent, from targeted
+# research. Parameters carry their provenance:
 #   standard  the firm's usual convention (the default below)
 #   research  derived from a source found for this indication
 #   client    set by the reviewer
 # visual: basket | funnel | timeline | flow | parameters | grid | codes
+# research: questions answered through the registry sources first, then a
+#   domain search, then the open web. `web: false` keeps a question off the
+#   web entirely: the code APIs and the label are the only places its answer
+#   lives, and a search would spend credits on pages that restate them.
 sections:
   - key: market_basket
     number: 1
@@ -24,14 +29,6 @@ sections:
     number: 4
     title: "Line-of-therapy rules"
     objective: "When a regimen change starts a new line, and when it does not"
-  - key: cleansing
-    number: 5
-    title: "Post-LOT regimen cleansing"
-    objective: "Removing or merging short regimens that would fragment lines"
-  - key: sensitivity
-    number: 6
-    title: "Sensitivity plan"
-    objective: "The parameters most likely to move results, and the alternatives to run"
 
 cards:
   - key: market_basket
@@ -41,7 +38,8 @@ cards:
     objective: "Branded, generic and supportive agents for this indication with NDC and HCPCS codes"
     visual: basket
     research:
-      - "Which agents are used to treat {indication} in the United States, and which HCPCS J-codes and NDC identifiers bill them?"
+      - text: "Which agents are used to treat {indication} in the United States, in which setting (frontline, relapsed or refractory, maintenance, supportive), and by which route?"
+        web: false
   - key: index_diagnosis
     section: patient_funnel
     number: 2
@@ -70,7 +68,8 @@ cards:
     parameters:
       - {key: attribution_lookback_months, label: "Pre-diagnosis window", default: 6, unit: "months", provenance: standard}
     research:
-      - "Which agents used in {indication} are also FDA-approved for other indications, and which diagnosis codes identify those other indications?"
+      - text: "Which agents used in {indication} are also FDA-approved for other indications, and which diagnosis codes identify those other indications?"
+        web: false
   - key: days_of_supply
     section: episodes_regimens
     number: 5
@@ -82,7 +81,8 @@ cards:
       - {key: oral_dos_default, label: "Default days of supply, oral", default: 30, unit: "days", provenance: standard}
       - {key: infusion_dos_default, label: "Default days of supply, infusion", default: 21, unit: "days", provenance: standard}
     research:
-      - "What are the dosing schedules and cycle lengths of the principal agents and regimens used in {indication}?"
+      - text: "What are the dosing schedules and cycle lengths of the principal agents and regimens used in {indication}?"
+        web: false
   - key: regimen_construction
     section: episodes_regimens
     number: 6
@@ -100,35 +100,51 @@ cards:
     parameters:
       - {key: first_line_is, label: "First line is", default: "first anti-disease regimen after index", unit: "", provenance: standard}
       - {key: line_zero, label: "Line 0 covers", default: "supportive or pre-treatment therapy before the first regimen", unit: "", provenance: standard}
-  - key: gap_rule
+  - key: protocol_phases
     section: lot_rules
     number: 8
+    title: "Protocol phases are one line"
+    objective: "Induction, consolidation, interim maintenance, delayed intensification and maintenance of one frontline protocol stay in line 1; only relapse, refractory disease or an unplanned switch starts line 2"
+    visual: timeline
+    parameters:
+      - {key: phase_names, label: "Phases of one protocol", default: "induction, consolidation, interim maintenance, delayed intensification, maintenance", unit: "", provenance: standard}
+      - {key: protocol_max_months, label: "Longest span one frontline protocol can cover", default: 36, unit: "months", provenance: standard, alternatives: [24, 30, 36, 42]}
+      - {key: relapse_markers, label: "What starts line 2", default: "relapse diagnosis code, a salvage-only agent, or an unplanned agent after the protocol window", unit: "", provenance: standard}
+    research:
+      - text: "What are the treatment phases of frontline {indication} protocols in adults, how long does each phase last, and which agents belong to each phase?"
+        web: false
+  - key: gap_rule
+    section: lot_rules
+    number: 9
     title: "Gap in therapy"
-    objective: "A treatment-free gap long enough to start a new line"
+    objective: "A treatment-free gap long enough to start a new line, and the scheduled breaks that must not count as one"
     visual: timeline
     parameters:
       - {key: gap_days, label: "Gap that advances the line", default: 60, unit: "days", provenance: standard, alternatives: [45, 90, 120, 180]}
+      - {key: scheduled_breaks, label: "Scheduled breaks longer than the gap", default: "none identified", unit: "", provenance: standard}
     research:
-      - "What treatment-free gap thresholds have published claims-based line-of-therapy algorithms used for {indication} or for haematological malignancies?"
+      - text: "What treatment-free gap thresholds have published claims-based line-of-therapy algorithms used for {indication} or for haematological malignancies?"
+        web: true
   - key: product_addition
     section: lot_rules
-    number: 9
+    number: 10
     title: "Product addition"
     objective: "A new agent added to the regimen advances the line, unless it was planned"
     visual: timeline
   - key: planned_vs_reactive
     section: lot_rules
-    number: 10
+    number: 11
     title: "Planned versus reactive addition"
     objective: "An agent pre-specified by the protocol does not start a new line; one added to deepen response does"
     visual: timeline
     parameters:
       - {key: planned_window_days, label: "Added within this many days of regimen start counts as planned", default: 28, unit: "days", provenance: standard}
     research:
-      - "How do consensus frameworks for lines of therapy in haematological malignancies treat pre-planned consolidation versus reactive additions in {indication}?"
+      - text: "How do consensus frameworks for lines of therapy in haematological malignancies treat pre-planned consolidation versus reactive additions in {indication}?"
+        web: true
   - key: product_drop
     section: lot_rules
-    number: 11
+    number: 12
     title: "Product drop and continuation"
     objective: "Dropping a component for toxicity keeps the line; how the merged line is named"
     visual: timeline
@@ -136,52 +152,39 @@ cards:
       - {key: naming_min_days, label: "Regimen must last this long to name the line", default: 30, unit: "days", provenance: standard}
   - key: substitution
     section: lot_rules
-    number: 12
+    number: 13
     title: "Agent substitution"
     objective: "Replacing an agent within the same class versus a different class"
     visual: timeline
     research:
-      - "In {indication}, when is switching between agents of the same class (for example tyrosine kinase inhibitors or BTK inhibitors) considered a new line of therapy?"
+      - text: "In {indication}, when is switching between agents of the same class (for example tyrosine kinase inhibitors or BTK inhibitors) considered a new line of therapy?"
+        web: true
   - key: bridging_cellular_therapy
     section: lot_rules
-    number: 13
+    number: 14
     title: "Transplant and cellular therapy"
     objective: "Bridging before transplant or CAR-T stays within the line of the definitive therapy"
     visual: timeline
     research:
-      - "What HCPCS or CPT codes identify allogeneic transplant and CAR-T administration in {indication}, and how do line-of-therapy frameworks treat bridging therapy?"
+      - text: "How do line-of-therapy frameworks for {indication} treat bridging therapy before allogeneic transplant or CAR-T, and the line after it?"
+        web: true
   - key: maintenance
     section: lot_rules
-    number: 14
+    number: 15
     title: "Maintenance and non-branded therapy"
     objective: "Maintenance and supportive agents do not advance the line; how they are reported"
     visual: timeline
   - key: decision_flow
     section: lot_rules
-    number: 15
+    number: 16
     title: "Line-advancement decision flow"
     objective: "The order in which the rules above are applied to each regimen transition"
     visual: flow
-  - key: short_regimen_rules
-    section: cleansing
-    number: 16
-    title: "Short-regimen cleansing"
-    objective: "Drop or merge regimens shorter than the threshold according to what follows them"
-    visual: grid
-    parameters:
-      - {key: short_regimen_days, label: "Regimen shorter than", default: 30, unit: "days", provenance: standard, alternatives: [21, 30, 45]}
-      - {key: cleansing_gap_days, label: "Gap that keeps them separate", default: 60, unit: "days", provenance: standard}
-  - key: sensitivity_grid
-    section: sensitivity
-    number: 17
-    title: "Sensitivity grid"
-    objective: "Parameter alternatives to run and what each is expected to change"
-    visual: grid
 
 # Cards that only apply when the indication is treated with curative intent
 # in phases (induction, consolidation, maintenance, transplant), as ALL is.
 templates:
-  curative_intent: [planned_vs_reactive, bridging_cellular_therapy, maintenance]
+  curative_intent: [protocol_phases, planned_vs_reactive, bridging_cellular_therapy, maintenance]
   chronic_targeted: [substitution, maintenance]
 indication_templates:
   ALL: curative_intent

@@ -59,6 +59,15 @@ escalation:
   # Open-web evidence is always tier 5 and always labelled SUPPLEMENTARY WEB EVIDENCE.
   open_web_never_overrides_tier: 4
 
+# The rules stage. Code and schedule facts come from the code APIs (HCPCS,
+# NDC, RxNorm, FDA labels, CMS files) and never from a web search; only the
+# methodology questions (gap thresholds, planned additions, substitution)
+# may reach the web, and only this many of them per build.
+rules:
+  max_web_questions: 3
+  research_timeout_seconds: 300
+  lookup_agents_max: 40
+
 limits:
   max_questions_per_stage: 12
   max_sources_per_question: 8

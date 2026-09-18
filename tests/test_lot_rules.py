@@ -56,15 +56,17 @@ def unit_checks() -> None:
     all_keys = {c["key"] for c in all_cards}
     cll_keys = {c["key"] for c in cll_cards}
     check("ALL follows the curative-intent template",
-          {"planned_vs_reactive", "bridging_cellular_therapy", "maintenance"} <= all_keys
+          {"protocol_phases", "planned_vs_reactive", "bridging_cellular_therapy", "maintenance"} <= all_keys
           and "substitution" not in all_keys, sorted(all_keys - cll_keys).__repr__())
     check("CLL follows the chronic-targeted template",
           {"substitution", "maintenance"} <= cll_keys
-          and "planned_vs_reactive" not in cll_keys and "bridging_cellular_therapy" not in cll_keys,
+          and "planned_vs_reactive" not in cll_keys and "bridging_cellular_therapy" not in cll_keys
+          and "protocol_phases" not in cll_keys,
           sorted(cll_keys - all_keys).__repr__())
+    check("the cleansing and sensitivity cards are gone",
+          not ({"short_regimen_rules", "sensitivity_grid"} & (all_keys | cll_keys)))
     shared = {"market_basket", "index_diagnosis", "funnel", "days_of_supply", "regimen_construction",
-              "line_numbering", "gap_rule", "product_addition", "product_drop", "decision_flow",
-              "short_regimen_rules", "sensitivity_grid"}
+              "line_numbering", "gap_rule", "product_addition", "product_drop", "decision_flow"}
     check("both indications share the core rules", shared <= all_keys & cll_keys)
     numbers = [c["number"] for c in all_cards]
     check("cards are numbered in order", numbers == sorted(numbers) and len(set(numbers)) == len(numbers))
@@ -72,7 +74,12 @@ def unit_checks() -> None:
           all(c.get("visual") in {"basket", "codes", "funnel", "timeline", "flow", "parameters", "grid"}
               for c in all_cards + cll_cards))
     secs = lot_rules.sections()
-    check("six sections", len(secs) == 6, str([s["key"] for s in secs]))
+    check("four sections", len(secs) == 4 and [x["key"] for x in secs] == [
+        "market_basket", "patient_funnel", "episodes_regimens", "lot_rules"], str([x["key"] for x in secs]))
+    items = lot_rules.research_items(next(c for c in all_cards if c["key"] == "market_basket"))
+    check("code questions never reach the web", items and not items[0]["web"])
+    items = lot_rules.research_items(next(c for c in all_cards if c["key"] == "gap_rule"))
+    check("methodology questions may reach the web", items and items[0]["web"])
     check("every card belongs to a section",
           {c["section"] for c in all_cards + cll_cards} <= {s["key"] for s in secs})
 
@@ -103,7 +110,7 @@ def unit_checks() -> None:
     scenarios90 = lot_rules.template_scenarios("gap_rule", {"gap_days": 90}, digest)
     check("the parameter value drives the picture",
           scenarios90[0].title != scenarios[0].title and "90" in scenarios90[0].title)
-    for key in ("product_addition", "product_drop", "line_numbering", "short_regimen_rules"):
+    for key in ("product_addition", "product_drop", "line_numbering"):
         sc = lot_rules.template_scenarios(key, {}, digest)
         check(f"{key} has a worked scenario", bool(sc) and all(s.events for s in sc))
     funnel = lot_rules.template_visual("funnel", {}, digest)
@@ -120,8 +127,18 @@ def unit_checks() -> None:
           all(c.scenarios for c in cards if c.visual == "timeline"),
           str([c.card_key for c in cards if c.visual == "timeline" and not c.scenarios]))
     check("visual cards have visual data",
-          all(c.visual_data for c in cards if c.visual in ("funnel", "flow", "grid")),
-          str([c.card_key for c in cards if c.visual in ("funnel", "flow", "grid") and not c.visual_data]))
+          all(c.visual_data for c in cards if c.visual in ("funnel", "flow")),
+          str([c.card_key for c in cards if c.visual in ("funnel", "flow") and not c.visual_data]))
+    all_run = Run(config=RunConfig(indication="Acute Lymphoblastic Leukemia (ALL)", indication_key="ALL",
+                                   drug_brand="Blincyto", mode=RunMode.FULL,
+                                   research_cutoff=orch_mod.default_cutoff()),
+                  reference="RUN-ALL", status=RunStatus.APPROVED)
+    phases = lot_rules.template_scenarios("protocol_phases", {}, {"agents": [{"agent": "vincristine"}, {"agent": "blinatumomab"}]})
+    check("protocol phases draw one line across every phase",
+          len(phases) == 2 and sum(1 for e in phases[0].events if e.kind == "line") == 1
+          and any(e.label == "2L" for e in phases[1].events))
+    check("ALL blank cards include the protocol-phase card",
+          any(c.card_key == "protocol_phases" for c in lot_rules.blank_cards(all_run)))
     check("unverified fills are marked borrowed", all(c.confidence is RuleConfidence.BORROWED for c in cards))
     run.rules_status = RulesStatus.REVIEW
     g = lot_rules.gate(run, cards)
@@ -131,6 +148,62 @@ def unit_checks() -> None:
     check("spec carries the gap parameter", spec["lines"]["gap_rule"]["gap_days"] == 60)
     check("spec lists every rule", len(spec["rules"]) == len(cards))
     check("spec is JSON-serialisable", bool(json.dumps(spec)))
+    check("spec no longer carries cleansing or sensitivity",
+          "cleansing" not in spec and "sensitivity" not in spec and "procedures" in spec)
+
+    print("\n== registry facts on the basket ==")
+    digest_codes = {"codes": {
+        "blinatumomab": {"agent": "blinatumomab", "brands": ["BLINCYTO"], "atc": ["L01FX Other monoclonal antibodies"],
+                         "route": "INTRAVENOUS", "hcpcs": [{"code": "J9039", "description": "Injection, blinatumomab", "status": ""}],
+                         "ndcs": [{"ndc": "55513-160"}], "ndc_count": 1,
+                         "sources": ["NLM Clinical Tables (HCPCS)", "FDA NDC Directory (openFDA)"]},
+        "ponatinib": {"agent": "ponatinib", "brands": ["Iclusig"], "atc": ["L01EA BCR-ABL tyrosine kinase inhibitors"],
+                      "route": "ORAL", "hcpcs": [], "ndcs": [{"ndc": "63020-533"}], "ndc_count": 9,
+                      "sources": ["FDA NDC Directory (openFDA)"]},
+    }}
+    basket = next(c for c in cards if c.card_key == "market_basket")
+    basket.visual_data = [{"agent": "Blincyto", "role": "branded", "hcpcs": ["J9229"], "ndc": ["0000-0000"]}]
+    lot_rules.apply_basket_facts(basket, digest_codes)
+    rows = {r["agent"]: r for r in basket.visual_data}
+    check("model's wrong code is replaced by the registry's", rows["Blincyto"]["hcpcs"] == ["J9039"])
+    check("brand name matched to its generic", rows["Blincyto"]["ndc"] == ["55513-160"])
+    check("agents the model left out are appended for the reviewer",
+          "ponatinib" in rows and rows["ponatinib"]["role"] == "" and "not placed" in rows["ponatinib"]["source"])
+    visual = lot_rules.template_visual("market_basket", {"grace_multiplier": 2}, digest_codes)
+    check("basket without a model is built from the registries",
+          any(r["agent"] == "ponatinib" and r["days_of_supply"] == 30 and r["grace_days"] == 60 for r in visual))
+    cleaned = lot_rules.clean_sources(["stage_2 FDA-approved therapies answer", "FDA label for Blincyto",
+                                       "market basket research notes", "local reference file", "NLM HCPCS table",
+                                       "fda label for blincyto", "Firm standard convention"])
+    check("internal labels are dropped from sources", cleaned == ["FDA label for Blincyto", "NLM HCPCS table"], str(cleaned))
+
+    print("\n== timeline layout ==")
+    from celestra.models import RuleScenario, TimelineEvent as TE
+    sc = RuleScenario(title="overlap", duration_days=300, expected="", events=[
+        TE(lane="Doxorubicin", kind="claim", start_day=0, end_day=50, label="doxorubicin claim"),
+        TE(lane="Doxorubicin", kind="claim", start_day=0, end_day=50, label="doxorubicin claim"),
+        TE(lane="Doxorubicin", kind="episode", start_day=0, end_day=120, label="doxorubicin episode"),
+        TE(lane="Doxorubicin", kind="claim", start_day=130, end_day=140, label="a very long label that cannot fit"),
+        TE(lane="Doxorubicin", kind="claim", start_day=141, end_day=300, label="next"),
+        TE(lane="Index", kind="dx", start_day=0, end_day=0, label="Index diagnosis"),
+        TE(lane="Line", kind="line", start_day=0, end_day=300, label="1L"),
+    ])
+    lay = lot_rules.timeline_layout(sc, 360)
+    dox = next(l for l in lay["lanes"] if l["lane"] == "Doxorubicin")
+    check("overlapping events go on separate rows", len(dox["rows"]) == 3, str(len(dox["rows"])))
+    check("no two bars on one row overlap",
+          all(row[i]["left"] + row[i]["width"] <= row[i + 1]["left"] + 0.01
+              for row in dox["rows"] for i in range(len(row) - 1)))
+    modes = {e["label"]: e["label_mode"] for row in dox["rows"] for e in row}
+    check("a label that fits stays inside its bar", modes["doxorubicin episode"] == "in", str(modes))
+    check("a label with no room goes to the key",
+          modes["a very long label that cannot fit"] == "tip" and lay["key"], str(modes))
+    idx = next(l for l in lay["lanes"] if l["lane"] == "Index")
+    check("diagnosis is a point marker", idx["rows"][0][0]["point"])
+    check("the line lane is flagged", next(l for l in lay["lanes"] if l["lane"] == "Line")["is_line"])
+    wide = lot_rules.timeline_layout(sc, 900)
+    wmodes = {e["label"]: e["label_mode"] for l in wide["lanes"] for row in l["rows"] for e in row}
+    check("a wider track fits more labels inside", wmodes["doxorubicin claim"] == "in")
 
     print("\n== reviewer decisions ==")
     edited = lot_rules.apply_review(gap, "edit", "Client uses 90 days for oral agents.", {"gap_days": "90"})
@@ -171,6 +244,17 @@ async def http_flow() -> None:
     demo_mod.store = store
     app_mod._REGISTRY = build_registry()
 
+    async def fake_lookup(names, limit=40, concurrency=4):
+        return {n: {"agent": n, "brands": [n.title()], "atc": ["L01XX"], "route": "ORAL", "hcpcs": [],
+                    "ndcs": [{"ndc": "00000-000"}], "ndc_count": 1, "sources": ["FDA NDC Directory (openFDA)"],
+                    "schedule": "", "indications": "", "errors": {}} for n in names[:limit]}
+
+    async def fake_procs(terms, limit=40):
+        return {"codes": [{"system": "ICD-10-PCS", "code": "XW033C7", "description": "CAR-T, peripheral vein"}]}
+
+    rules_mod.code_lookup.lookup_agents = fake_lookup
+    rules_mod.code_lookup.procedure_codes = fake_procs
+
     print("\n== a demo run, approved ==")
     run = await seed("CLL")
     check("demo run completed", run.status is RunStatus.COMPLETED, run.status.value)
@@ -201,9 +285,12 @@ async def http_flow() -> None:
         check("cards are saved in order", [c.number for c in cards] == sorted(c.number for c in cards))
         check("every card has a statement", all(c.statement for c in cards))
         check("timeline cards carry scenarios", all(c.scenarios for c in cards if c.visual == "timeline"))
-        research_cards = [c for c in cards if c.card_key in ("market_basket", "index_diagnosis", "days_of_supply")]
-        check("researched cards record their sources or a gap",
-              all(c.sources or c.gaps or c.evidence_ids or c.statement for c in research_cards))
+        basket = next(c for c in cards if c.card_key == "market_basket")
+        check("basket rows carry registry codes",
+              isinstance(basket.visual_data, list) and basket.visual_data
+              and all(r.get("ndc") == ["00000-000"] for r in basket.visual_data), str(basket.visual_data[:1]))
+        check("no internal source labels on any card",
+              not any(lot_rules._INTERNAL_SOURCE.match(s) for c in cards for s in c.sources))
         r = await c.get(f"/runs/{run_id}/rules/status")
         check("status endpoint reports review", r.json()["status"] == "review" and r.json()["cards"] == expected)
 

@@ -371,6 +371,7 @@ def section_label(key: str) -> str:
 
 
 templates.env.globals["section_label"] = section_label
+templates.env.globals["timeline_layout"] = lot_rules.timeline_layout
 
 
 def base_ctx(request: Request, active: str = "") -> dict[str, Any]:
@@ -2098,7 +2099,7 @@ async def rules_document(request: Request, run_id: str, download: int = Query(0)
     """The business-rules document: the six sections with every rule, its
     parameters, illustrations and sources. Standalone, printable, downloadable."""
     run = get_run_or_404(run_id)
-    ctx = {**_rules_ctx(request, run), "download": bool(download),
+    ctx = {**_rules_ctx(request, run), "download": bool(download), "track_px": 700,
            "generated": utcnow().strftime("%d %b %Y, %H:%M UTC")}
     response = templates.TemplateResponse(request, "rules_document.html", ctx)
     if download:

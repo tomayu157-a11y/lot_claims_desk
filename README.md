@@ -143,35 +143,48 @@ the sign-off, and the document is marked Approved.
 After the document is approved, **Continue to LOT rules** fills a fixed
 catalogue of rule cards for the indication (`celestra/config/lot_rules.yaml`,
 ALL and CLL; each indication picks the cards that apply to it, so ALL carries
-planned-versus-reactive addition and bridging to cellular therapy, CLL carries
-substitution and continuous-therapy maintenance). Six sections: market basket,
-patient funnel, episodes and regimens, line-of-therapy rules, post-LOT
-cleansing, sensitivity plan.
+the protocol-phase rule, planned-versus-reactive addition and bridging to
+cellular therapy, CLL carries substitution and continuous-therapy
+maintenance). Four sections: market basket, patient funnel, episodes and
+regimens, line-of-therapy rules.
 
-Each card is written by the model, section by section, from a digest of the
-approved document (the agents it names with the HCPCS and NDC codes found
-beside them, the diagnosis codes, every answer and table, what claims can
-observe, and what the reviewer added). Where the document is silent the card's
-own research questions run through the same tiers as the research phase:
-registry sources, then domain-scoped search, then the open web (Firecrawl,
-then Azure native web search when Firecrawl fails or is blocked). The model
-decides the rule's statement, its parameters and their provenance, its
-confidence class, the worked scenarios that illustrate it, and the gaps an
-expert must settle. Without a model the cards fall back to the firm's standard
-conventions and template scenarios so the workspace still renders.
+Codes are facts, so they come from the registries, never from prose or a web
+search: for every agent the document or the claims lexicon names, the stage
+asks the NLM HCPCS table, the FDA NDC Directory (openFDA), RxNorm and RxClass
+(brands, ATC class), the FDA label (route, cycle length, indications) and the
+CMS ASP NDC-HCPCS crosswalk; transplant and CAR-T procedure codes come from
+the CMS ICD-10-PCS code file. The two CMS files are downloaded once into
+`data/reference` and cached for a month. The model decides which agents
+belong to the basket and their role; the codes on each row are overwritten
+with what the registries returned, and agents the model left out are
+appended with an empty role for the reviewer.
 
-Every card is shown visually, not as prose: the basket as a table of agents and
-codes, diagnosis codes as code cards, the cohort as a funnel, each line rule as
-Gantt-style timelines of regimens and the lines they produce, the decision
-flow as a ladder of checks, the cleansing rules and the sensitivity plan as
-grids. Confidence is one of four classes: **verified for this indication**,
-**verified for the class**, **borrowed** (general oncology or firm convention),
-**original** (an analytical construct). Verified rules carry forward; borrowed
-and original rules need your decision: approve as written, edit a parameter (it
-becomes a client-set value, the timelines are redrawn with it, and the change
-is your decision), or attach a note. Approving locks the rules and produces
-the business-rules document (`/runs/{id}/rules/document`) and the
-specification (`/runs/{id}/rules/spec.json`) that a data run executes.
+Everything else on each card is written by the model, section by section,
+from a digest of the approved document (agents with their registry codes,
+diagnosis codes, every answer with its sources, tables, what claims can
+observe, and what the reviewer added). Where the document is silent the
+card's own research questions run through the same tiers as the research
+phase: registry sources, then domain-scoped search, then the open web
+(Firecrawl, then Azure native web search when Firecrawl fails or is
+blocked). Questions marked `web: false` in the catalogue (codes, schedules,
+phases) stop at the registry sources, and `rules.max_web_questions` in
+thresholds.yaml caps how many methodology questions may reach the web per
+build, so a rebuild cannot burn through search credits. Without a model the
+cards fall back to the firm's standard conventions and template scenarios.
+
+Every card is shown visually, not as prose: the basket as a table of agents
+and codes, diagnosis codes as code cards, the cohort as a funnel, each line
+rule as Gantt-style timelines of regimens and the lines they produce (events
+that overlap in time stack on separate rows, labels never collide), and the
+decision flow as a ladder of checks. Confidence is one of four classes:
+**verified for this indication**, **verified for the class**, **borrowed**
+(general oncology or firm convention), **original** (an analytical
+construct). Verified rules carry forward; borrowed and original rules need
+your decision: approve as written, edit a parameter (it becomes a client-set
+value, the timelines are redrawn with it, and the change is your decision),
+or attach a note. Approving locks the rules and produces the business-rules
+document (`/runs/{id}/rules/document`) and the specification
+(`/runs/{id}/rules/spec.json`) that a data run executes.
 
 **Run a single agent.** One agent on its own, for when you only need that
 output. Dependencies outside the selection are ignored rather than forcing a
