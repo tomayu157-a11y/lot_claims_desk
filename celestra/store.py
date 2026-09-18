@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 from .models import (
+    RuleCard,
     Answer,
     Contradiction,
     Evidence,
@@ -102,6 +103,10 @@ CREATE TABLE IF NOT EXISTS insight_workspaces (
     doc TEXT NOT NULL,
     UNIQUE(run_id, insight_id)
 );
+CREATE TABLE IF NOT EXISTS rule_cards (
+    id TEXT PRIMARY KEY, run_id TEXT NOT NULL, card_key TEXT NOT NULL, doc TEXT NOT NULL,
+    UNIQUE(run_id, card_key));
+CREATE INDEX IF NOT EXISTS ix_rule_cards_run ON rule_cards(run_id);
 CREATE INDEX IF NOT EXISTS ix_questions_run ON questions(run_id);
 CREATE INDEX IF NOT EXISTS ix_evidence_run ON evidence(run_id);
 CREATE INDEX IF NOT EXISTS ix_evidence_q ON evidence(question_id);
@@ -421,6 +426,35 @@ class Store:
             "SELECT doc FROM insights WHERE run_id=? AND id=?", (run_id, insight_id)
         ).fetchone()
         return Insight.model_validate_json(row["doc"]) if row else None
+
+    # -- rule cards -------------------------------------------------------
+    def save_rule_cards(self, run_id: str, items: Iterable[RuleCard]) -> None:
+        with self._conn() as c:
+            for card in items:
+                card.run_id = card.run_id or run_id
+                c.execute(
+                    "INSERT INTO rule_cards(id,run_id,card_key,doc) VALUES(?,?,?,?) "
+                    "ON CONFLICT(run_id,card_key) DO UPDATE SET id=excluded.id, doc=excluded.doc",
+                    (card.id, run_id, card.card_key, self._dump(card)),
+                )
+
+    def get_rule_cards(self, run_id: str) -> list[RuleCard]:
+        rows = self._conn().execute(
+            "SELECT doc FROM rule_cards WHERE run_id=?", (run_id,)
+        ).fetchall()
+        cards = [RuleCard.model_validate_json(r["doc"]) for r in rows]
+        return sorted(cards, key=lambda c: c.number)
+
+    def get_rule_card(self, run_id: str, card_id: str) -> RuleCard | None:
+        row = self._conn().execute(
+            "SELECT doc FROM rule_cards WHERE run_id=? AND (id=? OR card_key=?)",
+            (run_id, card_id, card_id),
+        ).fetchone()
+        return RuleCard.model_validate_json(row["doc"]) if row else None
+
+    def delete_rule_cards(self, run_id: str) -> None:
+        with self._conn() as c:
+            c.execute("DELETE FROM rule_cards WHERE run_id=?", (run_id,))
 
     def save_insight_workspace(self, workspace: InsightWorkspace) -> None:
         with self._conn() as connection:

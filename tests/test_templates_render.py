@@ -44,11 +44,17 @@ from celestra.models import (
     QAMetrics,
     ReviewAction,
     ReviewerFile,
+    RuleCard,
+    RuleConfidence,
+    RuleParameter,
+    RuleProvenance,
+    RuleScenario,
     Run,
     RunConfig,
     RunMode,
     RunStatus,
     StageReport,
+    TimelineEvent,
     VerificationTag,
     WorkspaceMessageRole,
     WorkspaceMessageState,
@@ -128,7 +134,9 @@ def env() -> Environment:
     environment.filters["chat_markdown"] = app_mod.chat_markdown
     environment.globals["url_for"] = url_for
     from celestra.main import run_steps
+    from celestra.main import section_label
     environment.globals["run_steps"] = run_steps
+    environment.globals["section_label"] = section_label
     return environment
 
 
@@ -453,6 +461,68 @@ def make_qa() -> QAMetrics:
     )
 
 
+def make_rule_cards(run: Run) -> list[RuleCard]:
+    E = TimelineEvent
+    gap = RuleCard(
+        run_id=run.id, section="lot_rules", card_key="gap_rule", number=7, title="Gap rule",
+        objective="Advance the line when treatment stops for longer than the gap.", visual="timeline",
+        statement="A gap of more than 60 days between regimens advances the line.",
+        rationale="Firm convention for chronic targeted therapy.", confidence=RuleConfidence.BORROWED,
+        parameters=[RuleParameter(key="gap_days", label="Gap threshold", value=60, unit="days",
+                                  provenance=RuleProvenance.STANDARD, alternatives=[45, 90],
+                                  justification="Firm standard convention.")],
+        scenarios=[RuleScenario(
+            title="Gap over 60 days", duration_days=300, expected="Second regimen is 2L",
+            events=[E(lane="Venclexta", kind="regimen", start_day=0, end_day=90, label="Venclexta"),
+                    E(lane="Gap", kind="gap", start_day=90, end_day=180, label="90 days"),
+                    E(lane="Venclexta", kind="regimen", start_day=180, end_day=300, label="Venclexta"),
+                    E(lane="Line", kind="line", start_day=0, end_day=90, label="1L"),
+                    E(lane="Line", kind="line", start_day=180, end_day=300, label="2L")])],
+        sources=["NCI PDQ", "[Source: SEER]"], gaps=["Confirm the gap for oral agents."],
+    )
+    basket = RuleCard(
+        run_id=run.id, section="market_basket", card_key="market_basket", number=1,
+        title="Market basket", objective="Every agent the analysis will see.", visual="basket",
+        statement="The basket lists venetoclax, ibrutinib and obinutuzumab.", rationale="From the document.",
+        confidence=RuleConfidence.VERIFIED_INDICATION,
+        visual_data=[{"agent": "venetoclax", "brand": "Venclexta", "class": "BCL-2 inhibitor",
+                      "role": "branded", "route": "oral", "hcpcs": [], "ndc": ["0074-0561-11"],
+                      "days_of_supply": 30, "grace_days": 30, "source": "DailyMed"}],
+        review_action=ReviewAction.APPROVED,
+    )
+    funnel = RuleCard(
+        run_id=run.id, section="patient_funnel", card_key="funnel", number=3, title="Patient funnel",
+        objective="Who is in the cohort.", visual="funnel", statement="Five steps.", rationale="",
+        confidence=RuleConfidence.VERIFIED_CLASS,
+        visual_data=[{"step": "Diagnosis claim", "criteria": "1 inpatient or 2 outpatient C91.1",
+                      "rationale": "Standard"},
+                     {"step": "Continuous enrolment", "criteria": "6 months before index",
+                      "rationale": "Baseline"}],
+    )
+    flow = RuleCard(
+        run_id=run.id, section="lot_rules", card_key="decision_flow", number=12, title="Decision flow",
+        objective="The ordered checks.", visual="flow", statement="Checks in order.", rationale="",
+        confidence=RuleConfidence.ORIGINAL,
+        visual_data=[{"question": "Is a new agent added?", "yes": "Advance the line", "no": "next check"},
+                     {"question": "Gap over 60 days?", "yes": "Advance the line", "no": "Same line"}],
+    )
+    codes = RuleCard(
+        run_id=run.id, section="patient_funnel", card_key="index_diagnosis", number=2,
+        title="Index diagnosis", objective="Codes.", visual="codes", statement="C91.1x.", rationale="",
+        confidence=RuleConfidence.VERIFIED_INDICATION,
+        visual_data=[{"system": "ICD-10-CM", "code": "C91.10", "description": "CLL not in remission",
+                      "use": "index"}],
+    )
+    grid = RuleCard(
+        run_id=run.id, section="sensitivity", card_key="sensitivity_grid", number=17,
+        title="Sensitivity grid", objective="What to vary.", visual="grid", statement="Vary the gap.",
+        rationale="", confidence=RuleConfidence.ORIGINAL,
+        visual_data=[{"scenario": "Gap", "condition": "45 / 60 / 90", "action": "Rebuild lines",
+                      "expected_effect": "Changes 2L share"}],
+    )
+    return [basket, codes, funnel, gap, flow, grid]
+
+
 @pytest.fixture(scope="module")
 def context() -> dict:
     agents = make_agents()
@@ -462,6 +532,17 @@ def context() -> dict:
     evidence = make_evidence()
     contradictions = make_contradictions()
     workspace = make_workspace(run, insights[2], evidence)
+    rule_cards = make_rule_cards(run)
+    rule_sections = [
+        {"key": "market_basket", "number": 1, "title": "Market basket", "objective": "Agents",
+         "cards": [c for c in rule_cards if c.section == "market_basket"]},
+        {"key": "patient_funnel", "number": 2, "title": "Patient funnel", "objective": "Cohort",
+         "cards": [c for c in rule_cards if c.section == "patient_funnel"]},
+        {"key": "lot_rules", "number": 4, "title": "Line-of-therapy rules", "objective": "Lines",
+         "cards": [c for c in rule_cards if c.section == "lot_rules"]},
+        {"key": "sensitivity", "number": 6, "title": "Sensitivity", "objective": "Vary",
+         "cards": [c for c in rule_cards if c.section == "sensitivity"]},
+    ]
 
     source_names = {
         "nci_pdq": "NCI PDQ", "seer": "NCI SEER", "acs": "American Cancer Society",
@@ -627,6 +708,15 @@ def context() -> dict:
         "message": "That run could not be found",
         "detail": "No run exists with reference RUN-000000.",
         "last_seq": 42,
+        # LOT rules stage
+        "card": rule_cards[3], "cards": rule_cards, "rule_sections": rule_sections,
+        "rules_status": "review", "catalogue_count": 17, "flow": rule_cards[4],
+        "rules_gate": {"blockers": [{"id": rule_cards[3].id, "title": "Gap rule",
+                               "reason": "Borrowed: a person must confirm it.",
+                               "anchor": f"#rule-{rule_cards[3].id}"}],
+                 "available": True, "can_proceed": False, "done": False,
+                 "counts": {"cards": 6, "decided": 1, "needs": 1, "verified": 3, "borrowed": 1,
+                            "original": 2}},
     }
 
 
@@ -649,6 +739,8 @@ def test_expected_templates_exist():
         "partials/insight_workspace.html", "partials/insight_workspace_message.html",
         "partials/insight_workspace_proposal.html",
         "partials/evidence_panel.html",
+        "rules.html", "rules_document.html", "partials/rule_card.html",
+        "partials/rule_visual.html", "partials/rule_edit_modal.html", "partials/rules_gate.html",
     }
     missing = expected - set(all_templates())
     assert not missing, f"missing templates: {sorted(missing)}"

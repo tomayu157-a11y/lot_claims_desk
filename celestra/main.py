@@ -36,12 +36,14 @@ from .models import (
     Run,
     RunConfig,
     RunMode,
+    RulesStatus,
     RunStatus,
     StageReport,
     is_http_url,
     utcnow,
 )
 from .ppt import register_route
+from .services import lot_rules
 from .services import orchestrator as orch
 from .services.file_store import file_store, storage_key
 from .services.insight_workspace import InsightWorkspaceService
@@ -316,6 +318,8 @@ def run_steps(run: Run | None) -> list[dict[str, Any]]:
         "mapping": f"/runs/{rid}/progress#mapping",
         "approval": f"/runs/{rid}/approval",
         "approved": f"/runs/{rid}/report",
+        "rules": f"/runs/{rid}/rules",
+        "rules_approved": f"/runs/{rid}/rules",
     }
     phase = run.phase
     failed = phase == "failed"
@@ -342,16 +346,31 @@ def run_steps(run: Run | None) -> list[dict[str, Any]]:
             state = "failed" if failed else "current"
         else:
             state = "upcoming"
+        # The rules stage may be started from an approved document, so its
+        # step is reachable as soon as the document is approved.
+        reachable = state != "upcoming" or (
+            spec["key"] == "rules" and run.status is RunStatus.APPROVED)
         out.append({
             **spec,
             "state": state,
-            "url": urls[spec["key"]] if state != "upcoming" else "",
+            "url": urls[spec["key"]] if reachable else "",
             "number": len(out) + 1,
         })
     return out
 
 
 templates.env.globals["run_steps"] = run_steps
+
+
+def section_label(key: str) -> str:
+    """'Section 4 · Line-of-therapy rules' for a rules section key."""
+    for sec in lot_rules.sections():
+        if sec.get("key") == key:
+            return f"Section {sec.get('number', '')} · {sec.get('title', key)}"
+    return f"Section {key.replace('_', ' ')}"
+
+
+templates.env.globals["section_label"] = section_label
 
 
 def base_ctx(request: Request, active: str = "") -> dict[str, Any]:
@@ -628,6 +647,8 @@ async def _execute(run_id: str) -> None:
 
 def _step_url(run: Run) -> str:
     """Where a run's one flow currently is. Every entry point lands here."""
+    if run.status is RunStatus.APPROVED and run.rules_status is not RulesStatus.NOT_STARTED:
+        return f"/runs/{run.id}/rules"
     return {
         RunStatus.AWAITING_REVIEW: f"/runs/{run.id}/review",
         RunStatus.COMPLETED: f"/runs/{run.id}/approval",
@@ -1945,6 +1966,144 @@ async def findings_report(request: Request, run_id: str, phase: str = Query("all
         response.headers["Content-Disposition"] = (
             f'attachment; filename="{safe}-findings{suffix}.html"'
         )
+    return response
+
+
+# --------------------------------------------------------------------------
+# LOT rules stage
+# --------------------------------------------------------------------------
+_RULES_RUNNING: dict[str, asyncio.Task] = {}
+
+
+def _rules_ctx(request: Request, run: Run) -> dict[str, Any]:
+    cards = store.get_rule_cards(run.id)
+    secs = lot_rules.sections()
+    by_section = {sec["key"]: [c for c in cards if c.section == sec["key"]] for sec in secs}
+    return {
+        **base_ctx(request, "rules"), "run": run, "cards": cards,
+        "rule_sections": [{**sec, "cards": by_section.get(sec["key"], [])} for sec in secs],
+        "rules_gate": lot_rules.gate(run, cards),
+        "catalogue_count": len(lot_rules.catalogue_for(run.config.indication_key)),
+        "rules_status": run.rules_status.value,
+        "flow": next((c for c in cards if c.card_key == "decision_flow"), None),
+    }
+
+
+@app.get("/runs/{run_id}/rules", response_class=HTMLResponse)
+async def rules_page(request: Request, run_id: str):
+    """The rules workspace: not started, building, in review, or approved."""
+    run = get_run_or_404(run_id)
+    if run.status is not RunStatus.APPROVED:
+        return RedirectResponse(_step_url(run), status_code=303)
+    return templates.TemplateResponse(request, "rules.html", _rules_ctx(request, run))
+
+
+@app.post("/runs/{run_id}/rules/start")
+async def rules_start(run_id: str):
+    run = get_run_or_404(run_id)
+    if run.status is not RunStatus.APPROVED:
+        return RedirectResponse(_step_url(run), status_code=303)
+    if run.rules_status is RulesStatus.APPROVED or run_id in _RULES_RUNNING:
+        return RedirectResponse(f"/runs/{run_id}/rules", status_code=303)
+    store.delete_rule_cards(run_id)
+    run.rules_status = RulesStatus.RUNNING
+    run.rules_message = "Starting"
+    run.rules_error = ""
+    store.save_run(run)
+    task = asyncio.create_task(lot_rules.build_rules(run_id, registry()))
+    _RULES_RUNNING[run_id] = task
+    task.add_done_callback(lambda t, rid=run_id: _RULES_RUNNING.pop(rid, None))
+    return RedirectResponse(f"/runs/{run_id}/rules", status_code=303)
+
+
+@app.get("/runs/{run_id}/rules/status")
+async def rules_status(run_id: str):
+    run = get_run_or_404(run_id)
+    return JSONResponse({
+        "status": run.rules_status.value, "message": run.rules_message,
+        "error": run.rules_error, "cards": len(store.get_rule_cards(run_id)),
+    })
+
+
+@app.get("/runs/{run_id}/rules/cards/{card_id}/edit", response_class=HTMLResponse)
+async def rule_edit_form(request: Request, run_id: str, card_id: str):
+    run = get_run_or_404(run_id)
+    card = store.get_rule_card(run_id, card_id)
+    if card is None:
+        raise HTTPException(404, "Rule not found")
+    return templates.TemplateResponse(
+        request, "partials/rule_edit_modal.html", {**base_ctx(request), "run": run, "card": card},
+    )
+
+
+@app.post("/runs/{run_id}/rules/cards/{card_id}/{action}", response_class=HTMLResponse)
+async def rule_action(request: Request, run_id: str, card_id: str, action: str):
+    run = get_run_or_404(run_id)
+    if run.rules_status is RulesStatus.APPROVED:
+        raise HTTPException(409, "The rules are approved and locked.")
+    if action not in ("approve", "edit", "input"):
+        raise HTTPException(404, "Unknown rule action")
+    card = store.get_rule_card(run_id, card_id)
+    if card is None:
+        raise HTTPException(404, "Rule not found")
+    body = await _body(request)
+    note = str(body.get("note", "") or body.get("user_input", "")).strip()
+    if action == "input" and not note:
+        raise HTTPException(400, "Write the input you want attached to this rule.")
+    edits = {k[len("param_"):]: v for k, v in body.items() if str(k).startswith("param_")}
+    card = lot_rules.apply_review(card, action, note, edits)
+    store.save_rule_cards(run_id, [card])
+    return templates.TemplateResponse(
+        request, "partials/rule_card.html", {**base_ctx(request), "run": run, "card": card},
+    )
+
+
+@app.get("/runs/{run_id}/rules/gate", response_class=HTMLResponse)
+async def rules_gate(request: Request, run_id: str):
+    run = get_run_or_404(run_id)
+    return templates.TemplateResponse(
+        request, "partials/rules_gate.html",
+        {**base_ctx(request), "run": run, "rules_gate": lot_rules.gate(run, store.get_rule_cards(run_id))},
+    )
+
+
+@app.post("/runs/{run_id}/rules/approve")
+async def rules_approve(request: Request, run_id: str):
+    run = get_run_or_404(run_id)
+    cards = store.get_rule_cards(run_id)
+    g = lot_rules.gate(run, cards)
+    if run.rules_status is RulesStatus.APPROVED:
+        return RedirectResponse(f"/runs/{run_id}/rules", status_code=303)
+    if not g["can_proceed"]:
+        ctx = _rules_ctx(request, run)
+        ctx["messages"] = [{"level": "danger",
+                            "text": f"Not approved: {len(g['blockers'])} rule(s) still need a decision."}]
+        return templates.TemplateResponse(request, "rules.html", ctx, status_code=409)
+    run.rules_status = RulesStatus.APPROVED
+    run.rules_approved_at = utcnow()
+    store.save_run(run)
+    return RedirectResponse(f"/runs/{run_id}/rules", status_code=303)
+
+
+@app.get("/runs/{run_id}/rules/spec.json")
+async def rules_spec(run_id: str):
+    run = get_run_or_404(run_id)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", run.display_name).strip("-")[:60] or "project"
+    return JSONResponse(lot_rules.spec(run, store.get_rule_cards(run_id)),
+                        headers={"Content-Disposition": f'attachment; filename="{safe}-lot-rules.json"'})
+
+
+@app.get("/runs/{run_id}/rules/document", response_class=HTMLResponse)
+async def rules_document(request: Request, run_id: str, download: int = Query(0)):
+    """The business-rules document: the six sections with every rule, its
+    parameters, illustrations and sources. Standalone, printable, downloadable."""
+    run = get_run_or_404(run_id)
+    ctx = {**_rules_ctx(request, run), "download": bool(download),
+           "generated": utcnow().strftime("%d %b %Y, %H:%M UTC")}
+    response = templates.TemplateResponse(request, "rules_document.html", ctx)
+    if download:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "-", run.display_name).strip("-")[:60] or "project"
+        response.headers["Content-Disposition"] = f'attachment; filename="{safe}-lot-rules.html"'
     return response
 
 

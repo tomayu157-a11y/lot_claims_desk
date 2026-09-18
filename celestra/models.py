@@ -73,7 +73,42 @@ PHASES: list[dict[str, str]] = [
      "description": "Resolve what still needs input, then sign off"},
     {"key": "approved", "name": "Approved document",
      "description": "The signed-off research document"},
+    {"key": "rules", "name": "LOT rules",
+     "description": "Executable line-of-therapy rules built from the document"},
+    {"key": "rules_approved", "name": "Rules approved",
+     "description": "The signed-off rules specification"},
 ]
+
+
+class RulesStatus(str, enum.Enum):
+    NOT_STARTED = "not_started"
+    RUNNING = "running"
+    REVIEW = "review"          # cards written; a person decides each
+    APPROVED = "approved"
+    FAILED = "failed"
+
+
+class RuleProvenance(str, enum.Enum):
+    STANDARD = "standard"      # the firm's usual convention
+    RESEARCH = "research"      # derived from a source for this indication
+    CLIENT = "client"          # set by the reviewer
+
+
+class RuleConfidence(str, enum.Enum):
+    """How far a rule can be trusted for this indication."""
+    VERIFIED_INDICATION = "verified_indication"   # a source states it for this disease
+    VERIFIED_CLASS = "verified_class"             # stated for haematological malignancies
+    BORROWED = "borrowed"                         # general oncology precedent
+    ORIGINAL = "original"                         # an analytical construct
+
+    @property
+    def label(self) -> str:
+        return {
+            "verified_indication": "Verified for this indication",
+            "verified_class": "Verified at malignancy level",
+            "borrowed": "Borrowed, needs validation",
+            "original": "Original construct",
+        }[self.value]
 
 
 class AgentStatus(str, enum.Enum):
@@ -671,6 +706,71 @@ class StageReport(BaseModel):
     created_at: datetime = Field(default_factory=utcnow)
 
 
+# --------------------------------------------------------------------------
+# LOT rules layer
+# --------------------------------------------------------------------------
+class RuleParameter(BaseModel):
+    key: str
+    label: str
+    value: Any = None
+    unit: str = ""
+    provenance: RuleProvenance = RuleProvenance.STANDARD
+    justification: str = ""          # why this value, in one sentence
+    alternatives: list[Any] = Field(default_factory=list)
+    source: str = ""                 # citation when provenance is research
+
+
+class TimelineEvent(BaseModel):
+    """One bar on a rule illustration: a claim, episode, regimen or line."""
+    lane: str                        # row label, e.g. "Blinatumomab"
+    kind: str = "regimen"            # dx | claim | episode | regimen | line | gap
+    start_day: int = 0
+    end_day: int = 0
+    label: str = ""
+
+
+class RuleScenario(BaseModel):
+    """A worked case for one rule, drawn as a timeline and testable later."""
+    title: str
+    events: list[TimelineEvent] = Field(default_factory=list)
+    duration_days: int = 300
+    expected: str = ""               # what the rule concludes for this case
+
+
+class RuleCard(BaseModel):
+    """One slot of the rules document, filled from the research and decided
+    by a reviewer. Parameters, scenarios and the decision flow are what the
+    later data run executes; the statement and rationale are what the client
+    reads."""
+    id: str = Field(default_factory=lambda: new_id("rule"))
+    run_id: str = ""
+    section: str
+    card_key: str
+    number: int = 0
+    title: str
+    objective: str = ""
+    visual: str = "parameters"       # basket | funnel | timeline | flow | parameters | grid | codes
+    statement: str = ""              # the rule, as the document states it
+    rationale: str = ""              # why, for the client
+    parameters: list[RuleParameter] = Field(default_factory=list)
+    scenarios: list[RuleScenario] = Field(default_factory=list)
+    visual_data: Any = None          # basket rows, funnel steps, codes, flow, grid
+    confidence: RuleConfidence = RuleConfidence.BORROWED
+    sources: list[str] = Field(default_factory=list)      # citations
+    evidence_ids: list[str] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)          # what an expert must settle
+    review_action: ReviewAction = ReviewAction.PENDING
+    reviewer_note: str = ""
+    reviewed_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+
+    @property
+    def needs_decision(self) -> bool:
+        """Borrowed and original rules must be looked at by a person."""
+        return (self.confidence in (RuleConfidence.BORROWED, RuleConfidence.ORIGINAL)
+                and not self.review_action.is_decided)
+
+
 class AgentState(BaseModel):
     """Live state of one agent, streamed to the UI."""
     bucket: str
@@ -747,6 +847,13 @@ class Run(BaseModel):
     review_after_wave: int = 1
     resume_from_wave: int = 0
     reviewed_at: datetime | None = None
+    # The rules stage that follows document approval.
+    rules_status: RulesStatus = RulesStatus.NOT_STARTED
+    rules_started_at: datetime | None = None
+    rules_finished_at: datetime | None = None
+    rules_approved_at: datetime | None = None
+    rules_error: str = ""
+    rules_message: str = ""
 
     @property
     def display_name(self) -> str:
@@ -761,6 +868,10 @@ class Run(BaseModel):
         if s is RunStatus.COMPLETED:
             return "approval"
         if s is RunStatus.APPROVED:
+            if self.rules_status is RulesStatus.APPROVED:
+                return "rules_approved"
+            if self.rules_status in (RulesStatus.RUNNING, RulesStatus.REVIEW):
+                return "rules"
             return "approved"
         if s in (RunStatus.FAILED, RunStatus.CANCELLED):
             return "failed"

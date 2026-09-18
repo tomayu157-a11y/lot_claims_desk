@@ -1,0 +1,75 @@
+{# One rule card. Context: card, run #}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import review_chip, enum_value %}
+{%- set rid = run.id -%}
+{%- set decided = enum_value(card.review_action) not in ['pending', ''] -%}
+{%- set locked = run.rules_status.value == 'approved' -%}
+{%- set conf = enum_value(card.confidence) -%}
+<article class="rcard {{ 'is-wide' if card.visual in ['basket', 'grid', 'flow'] }} {{ 'is-reviewed' if decided }}{{ ' needs-review' if card.needs_decision }}{{ ' is-locked' if locked }}"
+         id="rule-{{ card.id }}" data-rule-id="{{ card.id }}" data-action-scope>
+  <header class="rcard-head">
+    <span class="icard-num">{{ '%02d' % card.number }}</span>
+    <h3 class="rcard-title">{{ card.title }}</h3>
+    <span class="conf-pill conf-{{ conf }}" title="{{ card.confidence.label }}">{{ card.confidence.label }}</span>
+  </header>
+  <p class="rcard-objective">{{ card.objective }}</p>
+
+  <div class="rcard-rule">
+    <div class="icard-label">Rule</div>
+    <p class="rcard-statement">{{ card.statement }}</p>
+    {% if card.rationale %}<p class="rcard-rationale">{{ card.rationale }}</p>{% endif %}
+  </div>
+
+  <div class="icard-status">
+    {% if decided %}{{ review_chip(card.review_action) }}
+    {% elif card.needs_decision %}<span class="status-dot is-review"></span><span class="status-text">Needs your decision</span>
+    {% else %}<span class="status-dot is-ready"></span><span class="status-text">Ready</span>{% endif %}
+    {% if card.sources %}<span class="status-sep">|</span><span class="status-text">{{ card.sources | length }} source{{ '' if card.sources | length == 1 else 's' }}</span>{% endif %}
+  </div>
+
+  {% if card.parameters %}
+  <div class="rcard-params">
+    {% for p in card.parameters %}
+    <div class="param">
+      <div class="param-value {{ 'is-text' if (p.value | string | length) > 12 }}">{{ p.value }}{% if p.unit and p.unit != 'x' %} <span class="param-unit">{{ p.unit }}</span>{% elif p.unit == 'x' %}×{% endif %}</div>
+      <div class="param-label">{{ p.label }}</div>
+      <div class="param-prov prov-{{ enum_value(p.provenance) }}" title="{{ p.justification }}">{{ enum_value(p.provenance) }}{% if p.source %} · {{ p.source }}{% endif %}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% include "partials/rule_visual.html" %}
+
+  {% if card.gaps %}
+  <div class="rcard-gaps">
+    <div class="icard-label">For an expert to settle</div>
+    <ul>{% for g in card.gaps %}<li>{{ g }}</li>{% endfor %}</ul>
+  </div>
+  {% endif %}
+  {% if card.reviewer_note %}
+  <div class="review-note is-input"><strong>Your note:</strong> {{ card.reviewer_note }}</div>
+  {% endif %}
+  {% if card.sources %}
+  <div class="icard-section"><div class="icard-label">Sources</div>
+    <span class="chip-row">{% for s in card.sources %}<span class="chip chip-sm chip-source is-used">{{ s }}</span>{% endfor %}</span>
+  </div>
+  {% endif %}
+
+  <footer class="icard-foot">
+    <div class="icard-links">
+      <span class="meta">{{ section_label(card.section) }}</span>
+    </div>
+    <div class="icard-actions">
+      {% if locked %}<span class="meta">{{ icon('lock', 12) }} Final</span>
+      {% else %}
+      {% if enum_value(card.review_action) != 'approved' %}
+      <button type="button" class="btn btn-sm btn-soft" data-action-url="/runs/{{ rid }}/rules/cards/{{ card.id }}/approve"
+              data-swap="[data-rule-id='{{ card.id }}']">{{ icon('check', 13) }} Approve</button>
+      {% endif %}
+      <button type="button" class="btn btn-sm btn-secondary" data-modal-url="/runs/{{ rid }}/rules/cards/{{ card.id }}/edit">
+        {{ icon('edit', 13) }} Edit parameters</button>
+      {% endif %}
+    </div>
+  </footer>
+</article>

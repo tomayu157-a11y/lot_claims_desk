@@ -1,0 +1,40 @@
+{# Edit a rule's parameters or attach a note. Context: card, run #}
+{% from "partials/icons.html" import icon %}
+{% from "partials/macros.html" import enum_value %}
+<div class="modal-backdrop" data-modal-backdrop>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="rule-edit-title" data-action-scope>
+    <div class="modal-head">
+      <h2 id="rule-edit-title">{{ '%02d' % card.number }} · {{ card.title }}</h2>
+      <button type="button" class="icon-btn" data-modal-close aria-label="Close dialog">{{ icon('x', 16) }}</button>
+    </div>
+    <div class="modal-body">
+      <div class="modal-explain is-modify">
+        <strong>What editing does.</strong> A value you change becomes a client-set parameter, the rule's
+        illustrations are redrawn with it, and the change counts as your decision on this rule. Leave a
+        value unchanged to keep the {{ 'research-derived or ' if card.parameters | selectattr('provenance.value', 'equalto', 'research') | list else '' }}standard value.
+      </div>
+      <div class="readonly-block mb-2">{{ card.statement }}</div>
+      {% for p in card.parameters %}
+      <div class="field">
+        <label for="param-{{ card.id }}-{{ p.key }}">{{ p.label }}{% if p.unit %} <span class="optional">({{ p.unit }})</span>{% endif %}</label>
+        <input type="text" id="param-{{ card.id }}-{{ p.key }}" data-field="param_{{ p.key }}" value="{{ p.value }}">
+        <p class="hint">Currently {{ enum_value(p.provenance) }}{% if p.justification %}: {{ p.justification }}{% endif %}
+          {% if p.alternatives %}· alternatives to consider: {{ p.alternatives | join(', ') }}{% endif %}</p>
+      </div>
+      {% else %}
+      <p class="sub">This rule has no numeric parameters; add a note to record your decision.</p>
+      {% endfor %}
+      <div class="field">
+        <label for="rule-note-{{ card.id }}">Note <span class="optional">(why, or what an expert confirmed)</span></label>
+        <textarea id="rule-note-{{ card.id }}" rows="3" maxlength="500" data-field="note" data-autofocus>{{ card.reviewer_note }}</textarea>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn btn-secondary" data-modal-close>Cancel</button>
+      <button type="button" class="btn btn-secondary" data-action-url="/runs/{{ run.id }}/rules/cards/{{ card.id }}/input"
+              data-swap="[data-rule-id='{{ card.id }}']" data-requires-field="note" data-closes-modal>Attach note only</button>
+      <button type="button" class="btn btn-primary" data-action-url="/runs/{{ run.id }}/rules/cards/{{ card.id }}/edit"
+              data-swap="[data-rule-id='{{ card.id }}']" data-closes-modal>{{ icon('check', 14) }} Save decision</button>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,118 @@
+{# ---------------------------------------------------------------------------
+   The visual for one rule card, by card.visual:
+     basket | codes | funnel | timeline | flow | parameters | grid
+   Context: card
+   --------------------------------------------------------------------------- #}
+{% from "partials/icons.html" import icon %}
+{%- set v = card.visual -%}
+{%- set data = card.visual_data -%}
+
+{% if v == 'basket' and data %}
+<div class="table-wrap">
+  <table class="data table-compact rule-table">
+    <thead><tr><th>Agent</th><th>Role</th><th>Class</th><th>HCPCS</th><th>NDC</th><th>Days of supply</th><th>Grace</th></tr></thead>
+    <tbody>
+    {% for r in data %}
+      <tr>
+        <td><strong>{{ r.get('agent', '') }}</strong>{% if r.get('brand') %} <span class="meta">({{ r.get('brand') }})</span>{% endif %}</td>
+        <td><span class="role-pill role-{{ r.get('role', 'generic') }}">{{ r.get('role', '') }}</span></td>
+        <td>{{ r.get('class', '') }}</td>
+        <td>{% for c in r.get('hcpcs') or [] %}<span class="code-chip">{{ c }}</span>{% else %}<span class="text-faint">—</span>{% endfor %}</td>
+        <td>{% for c in (r.get('ndc') or [])[:3] %}<span class="code-chip">{{ c }}</span>{% else %}<span class="text-faint">—</span>{% endfor %}</td>
+        <td class="num">{{ r.get('days_of_supply', '') }}</td>
+        <td class="num">{{ r.get('grace_days', '') }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% elif v == 'codes' and data %}
+<div class="code-grid">
+  {% for c in data %}
+  <div class="code-card">
+    <div class="code-card-code">{{ c.get('code', '') }}</div>
+    <div class="code-card-sys">{{ c.get('system', '') }} · {{ c.get('use', '') }}</div>
+    <div class="code-card-desc">{{ c.get('description', '') }}</div>
+  </div>
+  {% endfor %}
+</div>
+
+{% elif v == 'funnel' and data %}
+<ol class="funnel">
+  {% for st in data %}
+  {% set w = 100 - (loop.index0 * (45 / (data | length))) %}
+  <li class="funnel-step" style="--w: {{ w | round(1) }}%">
+    <div class="funnel-box">
+      <div class="funnel-title"><span class="funnel-num">{{ loop.index }}</span>{{ st.get('step', '') }}</div>
+      <div class="funnel-criteria">{{ st.get('criteria', '') }}</div>
+      {% if st.get('rationale') %}<div class="funnel-why">{{ st.get('rationale') }}</div>{% endif %}
+    </div>
+  </li>
+  {% endfor %}
+</ol>
+
+{% elif v == 'flow' and data %}
+<ol class="flow-ladder">
+  {% for step in data %}
+  <li class="ladder-step">
+    <div class="ladder-q"><span class="ladder-num">{{ loop.index }}</span>{{ step.get('question', '') }}</div>
+    <div class="ladder-branches">
+      <div class="ladder-branch is-yes"><span class="ladder-tag">Yes</span>{{ step.get('yes', '') }}</div>
+      <div class="ladder-branch is-no"><span class="ladder-tag">No</span>{{ step.get('no', '') }}</div>
+    </div>
+  </li>
+  {% endfor %}
+</ol>
+
+{% elif v == 'grid' and data %}
+<div class="table-wrap">
+  <table class="data table-compact rule-table">
+    <thead><tr><th>Scenario</th><th>Condition</th><th>Action</th><th>Expected effect</th></tr></thead>
+    <tbody>
+    {% for r in data %}
+      <tr><td><strong>{{ r.get('scenario', '') }}</strong></td><td>{{ r.get('condition', '') }}</td>
+          <td>{{ r.get('action', '') }}</td><td class="text-muted">{{ r.get('expected_effect', '') }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{# -- timelines: every scenario the card carries -------------------------------- #}
+{% for sc in card.scenarios %}
+{% set total = sc.duration_days if sc.duration_days else 300 %}
+{% set lanes = [] %}
+{% for e in sc.events %}{% if e.lane not in lanes %}{% set _ = lanes.append(e.lane) %}{% endif %}{% endfor %}
+<div class="tl">
+  <div class="tl-head">
+    <span class="tl-title">{{ sc.title }}</span>
+    {% if sc.expected %}<span class="tl-expected">{{ icon('arrow-right', 12) }} {{ sc.expected }}</span>{% endif %}
+  </div>
+  <div class="tl-grid">
+    {% for lane in lanes %}
+    <div class="tl-lane">
+      <div class="tl-lane-label {{ 'is-line' if lane == 'Line' }}">{{ lane }}</div>
+      <div class="tl-track">
+        {% for e in sc.events if e.lane == lane %}
+        {% set left = (e.start_day / total * 100) %}
+        {% set width = ((e.end_day - e.start_day) / total * 100) %}
+        {% if e.kind == 'dx' or e.end_day <= e.start_day %}
+        <div class="tl-point tl-{{ e.kind }}" style="left: {{ left | round(2) }}%"
+             title="{{ e.label }} · day {{ e.start_day }}"><i></i><span>{{ e.label }}</span></div>
+        {% else %}
+        <div class="tl-bar tl-{{ e.kind }} {{ 'is-narrow' if (width * 0.5) < (e.label | length) }}" style="left: {{ left | round(2) }}%; width: {{ [width, 1.2] | max | round(2) }}%"
+             title="{{ e.label }} · day {{ e.start_day }} to {{ e.end_day }}">
+          <span>{{ e.label }}</span>
+        </div>
+        {% endif %}
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+    <div class="tl-axis">
+      {% for t in range(0, 5) %}<span style="left: {{ t * 25 }}%">day {{ (total * t / 4) | round | int }}</span>{% endfor %}
+    </div>
+  </div>
+</div>
+{% endfor %}

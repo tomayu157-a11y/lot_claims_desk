@@ -203,6 +203,42 @@ async def draft_search_query(question: ResearchQuestion, cfg: RunConfig,
     return fallback
 
 
+def _azure_web_available() -> bool:
+    try:
+        from .azure_web_search import AzureWebSearchClient
+
+        return not AzureWebSearchClient()._unavailable_reason()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _azure_web_refs(query: str, limit: int) -> list[SourceRef]:
+    """Open-web pages from Azure's native web search, already read, as the
+    same supplementary SourceRefs the Firecrawl path produces."""
+    if not _azure_web_available():
+        return []
+    try:
+        from .azure_web_search import AzureWebSearchClient
+
+        outcome = await AzureWebSearchClient().search(query, limit)
+    except Exception:  # noqa: BLE001 - the last engine failing is not an error
+        log.warning("azure web search failed", exc_info=True)
+        return []
+    if not outcome.ok:
+        log.info("azure web search: %s", outcome.reason)
+        return []
+    refs: list[SourceRef] = []
+    for r in outcome.refs[:limit]:
+        r.source_id = r.source_id or "open_web"
+        r.origin = EvidenceOrigin.OPEN_WEB
+        r.raw = dict(r.raw or {})
+        text = str(r.raw.get("page_text") or r.raw.get("text") or r.raw.get("markdown") or r.snippet or "")
+        r.raw.setdefault("markdown", text)
+        r.raw["search_backend"] = "azure_web_search"
+        refs.append(r)
+    return refs
+
+
 def _as_ref(item, source_id: str = "open_web", tier: int = 3) -> SourceRef | None:
     """Web search results as SourceRefs, whichever shape a backend returned."""
     if isinstance(item, SourceRef):
@@ -509,7 +545,7 @@ async def retrieve(
     fire = registry.get("open_web")
     if fire is None:
         return outcome
-    if firecrawl_blocked():
+    if firecrawl_blocked() and not _azure_web_available():
         outcome.failures["open_web"] = firecrawl_blocked()[:160]
         outcome.skipped = outcome.skipped or firecrawl_blocked()
         if on_source:
@@ -528,6 +564,15 @@ async def retrieve(
         outcome.search_query = web_query
         raw_results = await fire.search(web_query, esc["open_web_max_results"])
         web_refs = [r for r in (_as_ref(x) for x in raw_results) if r is not None]
+        if not web_refs:
+            # Firecrawl gave nothing (blocked, failed, or empty): Azure's native
+            # web search is the last engine, when the Azure provider is configured.
+            web_refs = await _azure_web_refs(web_query, esc["open_web_max_results"])
+            if web_refs:
+                outcome.failures.pop("open_web", None)
+                if on_source:
+                    await on_source("open_web", "Open Web (Supplementary)", True, len(web_refs),
+                                    "via Azure native web search")
         # Record every page the search returned, whether or not it was read,
         # so the evidence trail shows where the fallback actually looked.
         outcome.web_sites = [

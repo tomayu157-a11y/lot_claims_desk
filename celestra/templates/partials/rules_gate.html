@@ -1,0 +1,47 @@
+{# The rules sign-off panel. Context: run, rules_gate #}
+{% from "partials/icons.html" import icon %}
+{%- set g = rules_gate -%}{%- set c = g.counts -%}
+<section class="gate-panel {{ 'is-done' if g.done else ('is-blocked' if g.blockers else ('is-ready' if g.available else '')) }}"
+         id="gate" data-gate-panel data-gate-url="/runs/{{ run.id }}/rules/gate" aria-live="polite">
+  <div class="gate-body">
+    <div class="gate-main">
+      {% if g.done %}
+      <div class="gate-title">{{ icon('check-circle', 17) }} Rules approved</div>
+      <p class="gate-sub">Signed off{% if run.rules_approved_at %} on {{ run.rules_approved_at.strftime('%d %b %Y, %H:%M UTC') }}{% endif %}.
+        The specification below is what the data run executes; nothing on it changes now.</p>
+      {% elif g.blockers %}
+      <div class="gate-title">{{ icon('info', 17) }} {{ g.blockers | length }} rule{{ '' if g.blockers | length == 1 else 's' }} need{{ 's' if g.blockers | length == 1 else '' }} a decision</div>
+      <p class="gate-sub">Borrowed and original rules are conventions, not findings for this indication. Approve each as written,
+        or edit its parameters, with a note on what an expert confirmed.</p>
+      <details class="gate-fold">
+        <summary>Which rules</summary>
+        <ul class="gate-quiet">{% for b in g.blockers %}<li><a href="{{ b.anchor }}">{{ b.title }}</a><span class="meta">{{ b.reason | replace(': a person must confirm it.', '') }}</span></li>{% endfor %}</ul>
+      </details>
+      {% elif g.available %}
+      <div class="gate-title">{{ icon('check-circle', 17) }} Every rule is verified or decided</div>
+      <p class="gate-sub">Approving locks the rules and produces the specification and the business-rules document.</p>
+      {% else %}
+      <div class="gate-title">{{ icon('activity', 17) }} Rules are being built</div>
+      <p class="gate-sub">Cards appear section by section as they are written.</p>
+      {% endif %}
+      <div class="gate-counts">
+        <span class="chip chip-sm">{{ c.cards }} rules</span>
+        <span class="chip chip-sm chip-ready">{{ c.verified }} verified</span>
+        <span class="chip chip-sm {{ 'chip-amber' if c.borrowed else '' }}">{{ c.borrowed }} borrowed</span>
+        <span class="chip chip-sm {{ 'chip-amber' if c.original else '' }}">{{ c.original }} original</span>
+        <span class="chip chip-sm chip-blue">{{ c.decided }} decided by you</span>
+      </div>
+    </div>
+    <div class="gate-actions">
+      {% if g.done %}
+      <a class="btn btn-primary" href="/runs/{{ run.id }}/rules/document">Open the rules document {{ icon('arrow-right', 15) }}</a>
+      <a class="btn btn-secondary btn-sm" href="/runs/{{ run.id }}/rules/spec.json">{{ icon('download', 13) }} Download spec (JSON)</a>
+      {% elif g.available %}
+      <form method="post" action="/runs/{{ run.id }}/rules/approve" data-gate-form>
+        <button type="submit" class="btn btn-primary btn-lg" {% if g.blockers %}disabled aria-disabled="true"{% endif %}>Approve the rules {{ icon('arrow-right', 16) }}</button>
+      </form>
+      {% if g.blockers %}<span class="hint">Enabled once every rule above has a decision.</span>{% else %}<span class="hint">Final. The rules are locked after this.</span>{% endif %}
+      {% endif %}
+    </div>
+  </div>
+</section>

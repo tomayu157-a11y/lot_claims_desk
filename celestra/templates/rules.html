@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% from "partials/icons.html" import icon %}
+{% block title %}LOT rules — {{ run.display_name }}{% endblock %}
+{% block content %}
+{%- set rid = run.id -%}
+<div class="page-head">
+  <p class="eyebrow">Step 6 of 7 · LOT rules</p>
+  <h1>Line-of-therapy rules for {{ run.config.indication }}</h1>
+  <p class="sub">
+    {% if rules_status == 'not_started' %}
+    The approved document says what the clinical world looks like. This stage turns it into the rules a claims
+    analyst executes: the market basket with its codes, the patient funnel, how claims become episodes and regimens,
+    when a line advances, cleansing, and the sensitivity plan. Each rule shows where it came from.
+    {% elif rules_status == 'running' %}
+    Celestra is reading the approved document, researching what it does not settle, and writing each rule with its
+    parameters, illustrations and sources. Cards appear section by section.
+    {% elif rules_status == 'review' %}
+    Every rule is written. Verified rules carry forward; borrowed and original ones need your decision. Edit a
+    parameter and its illustration is redrawn with the new value.
+    {% elif rules_status == 'approved' %}
+    The rules are approved and locked. Download the specification for the data run or open the document.
+    {% else %}
+    The rules build stopped. {{ run.rules_error }}
+    {% endif %}
+  </p>
+</div>
+
+{% if rules_status == 'not_started' %}
+<div class="card card-pad mb-3">
+  <div class="row-between wrap">
+    <div>
+      <strong>Build the rules from the approved document</strong>
+      <div class="sub">{{ catalogue_count }} rule cards in six sections. Registry sources first, then domain search,
+        then the open web where the document is silent. Takes a few minutes.</div>
+    </div>
+    <form method="post" action="/runs/{{ rid }}/rules/start">
+      <button type="submit" class="btn btn-primary btn-lg">Build LOT rules {{ icon('arrow-right', 16) }}</button>
+    </form>
+  </div>
+</div>
+<div class="rules-preview">
+  {% for sec in rule_sections %}
+  <div class="rules-preview-sec"><span class="phase-num">{{ sec.number }}</span><div><strong>{{ sec.title }}</strong><div class="sub">{{ sec.objective }}</div></div></div>
+  {% endfor %}
+</div>
+
+{% elif rules_status == 'running' %}
+<div class="card card-pad mb-3" data-rules-poll="/runs/{{ rid }}/rules/status">
+  <div class="row" style="gap:12px;">
+    <span class="spinner" aria-hidden="true"></span>
+    <div><strong data-rules-message>{{ run.rules_message or 'Starting' }}</strong>
+      <div class="sub">This page refreshes itself when the rules are ready. <span data-rules-count>{{ cards | length }}</span> of {{ catalogue_count }} cards written.</div></div>
+  </div>
+</div>
+{% endif %}
+
+{% if rules_status in ['review', 'approved', 'failed'] and cards %}
+{% include "partials/rules_gate.html" %}
+
+<div class="btn-row mt-2 mb-2">
+  <a class="btn btn-secondary btn-sm" href="/runs/{{ rid }}/rules/document">{{ icon('file-text', 13) }} Rules document</a>
+  <a class="btn btn-secondary btn-sm" href="/runs/{{ rid }}/rules/spec.json">{{ icon('download', 13) }} Spec (JSON)</a>
+  {% if rules_status != 'approved' %}
+  <form method="post" action="/runs/{{ rid }}/rules/start" onsubmit="return confirm('Rebuild every rule from the document? Your decisions on the current cards are discarded.')">
+    <button type="submit" class="btn btn-ghost btn-sm">Rebuild</button>
+  </form>
+  {% endif %}
+</div>
+
+<nav class="rules-tabs" data-rules-tabs aria-label="Rule sections">
+  {% for sec in rule_sections %}
+  <a class="rules-tab {{ 'is-active' if loop.first }}" href="#sec-{{ sec.key }}" data-tab="sec-{{ sec.key }}">
+    <span class="rules-tab-num">{{ sec.number }}</span>{{ sec.title }}
+    <span class="rules-tab-count">{{ sec.cards | length }}</span>
+  </a>
+  {% endfor %}
+</nav>
+
+{% for sec in rule_sections %}
+<section class="rules-section" id="sec-{{ sec.key }}" data-tab-panel="sec-{{ sec.key }}" {% if not loop.first %}hidden{% endif %}>
+  <div class="phase-cards-head">
+    <h3>{{ sec.number }}. {{ sec.title }}</h3>
+    <span class="meta">{{ sec.objective }}</span>
+  </div>
+  {% if sec.key == 'patient_funnel' %}
+  <p class="sub">The funnel reads top to bottom: each step keeps a smaller, better-defined population.</p>
+  {% elif sec.key == 'lot_rules' %}
+  <p class="sub">Each rule is drawn as a worked case: lanes are agents, the bottom lane is the line the rule assigns.</p>
+  {% endif %}
+  <div class="rules-grid">
+    {% for card in sec.cards %}{% include "partials/rule_card.html" %}{% else %}
+    <p class="sub">No cards in this section for this indication.</p>{% endfor %}
+  </div>
+</section>
+{% endfor %}
+{% endif %}
+{% endblock %}

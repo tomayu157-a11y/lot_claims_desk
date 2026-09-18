@@ -1,0 +1,188 @@
+# The line-of-therapy rules an analytics team writes before any claims data
+# is touched. Six sections, mirroring the business-rules document a client
+# signs, plus a sensitivity plan. Each card is a fixed slot: the model fills
+# it from the approved research document and, where the document is silent,
+# from targeted research. Parameters carry their provenance:
+#   standard  the firm's usual convention (the default below)
+#   research  derived from a source found for this indication
+#   client    set by the reviewer
+# visual: basket | funnel | timeline | flow | parameters | grid | codes
+sections:
+  - key: market_basket
+    number: 1
+    title: "Market basket"
+    objective: "Every therapy the analysis will look for, with the codes that find it in claims"
+  - key: patient_funnel
+    number: 2
+    title: "Patient funnel"
+    objective: "How a claims population becomes an analysable treated cohort"
+  - key: episodes_regimens
+    number: 3
+    title: "Episodes and regimens"
+    objective: "How claims become continuous product episodes and combination regimens"
+  - key: lot_rules
+    number: 4
+    title: "Line-of-therapy rules"
+    objective: "When a regimen change starts a new line, and when it does not"
+  - key: cleansing
+    number: 5
+    title: "Post-LOT regimen cleansing"
+    objective: "Removing or merging short regimens that would fragment lines"
+  - key: sensitivity
+    number: 6
+    title: "Sensitivity plan"
+    objective: "The parameters most likely to move results, and the alternatives to run"
+
+cards:
+  - key: market_basket
+    section: market_basket
+    number: 1
+    title: "Market basket"
+    objective: "Branded, generic and supportive agents for this indication with NDC and HCPCS codes"
+    visual: basket
+    research:
+      - "Which agents are used to treat {indication} in the United States, and which HCPCS J-codes and NDC identifiers bill them?"
+  - key: index_diagnosis
+    section: patient_funnel
+    number: 2
+    title: "Index diagnosis and confirmation"
+    objective: "The diagnosis codes that define the population and the rule that confirms a case"
+    visual: codes
+    parameters:
+      - {key: confirmation_claims, label: "Diagnosis claims required", default: 2, unit: "claims", provenance: standard}
+      - {key: confirmation_gap_days, label: "Minimum days between them", default: 30, unit: "days", provenance: standard}
+      - {key: lookback_months, label: "Pre-index lookback", default: 6, unit: "months", provenance: standard}
+  - key: funnel
+    section: patient_funnel
+    number: 3
+    title: "Cohort funnel"
+    objective: "Base population, confirmation, washout, continuous activity, treated requirement"
+    visual: funnel
+    parameters:
+      - {key: washout_months, label: "Washout (no prior disease activity)", default: 12, unit: "months", provenance: standard}
+      - {key: activity_quarters_before, label: "Active quarters required before index", default: 2, unit: "quarters", provenance: standard}
+  - key: indication_attribution
+    section: patient_funnel
+    number: 4
+    title: "Indication attribution"
+    objective: "When a drug with several approved indications counts as treatment for this disease"
+    visual: timeline
+    parameters:
+      - {key: attribution_lookback_months, label: "Pre-diagnosis window", default: 6, unit: "months", provenance: standard}
+    research:
+      - "Which agents used in {indication} are also FDA-approved for other indications, and which diagnosis codes identify those other indications?"
+  - key: days_of_supply
+    section: episodes_regimens
+    number: 5
+    title: "Days of supply and grace period"
+    objective: "Expected treatment duration per agent and the refill gap tolerated before an episode ends"
+    visual: parameters
+    parameters:
+      - {key: grace_multiplier, label: "Grace period as multiple of days of supply", default: 2, unit: "x", provenance: standard}
+      - {key: oral_dos_default, label: "Default days of supply, oral", default: 30, unit: "days", provenance: standard}
+      - {key: infusion_dos_default, label: "Default days of supply, infusion", default: 21, unit: "days", provenance: standard}
+    research:
+      - "What are the dosing schedules and cycle lengths of the principal agents and regimens used in {indication}?"
+  - key: regimen_construction
+    section: episodes_regimens
+    number: 6
+    title: "Regimen construction"
+    objective: "Overlapping product episodes become one combination regimen"
+    visual: timeline
+    parameters:
+      - {key: regimen_window_days, label: "Window after first claim to group agents", default: 28, unit: "days", provenance: standard}
+  - key: line_numbering
+    section: lot_rules
+    number: 7
+    title: "Line numbering convention"
+    objective: "Which regimen is line 1, and what counts as line 0"
+    visual: timeline
+    parameters:
+      - {key: first_line_is, label: "First line is", default: "first anti-disease regimen after index", unit: "", provenance: standard}
+      - {key: line_zero, label: "Line 0 covers", default: "supportive or pre-treatment therapy before the first regimen", unit: "", provenance: standard}
+  - key: gap_rule
+    section: lot_rules
+    number: 8
+    title: "Gap in therapy"
+    objective: "A treatment-free gap long enough to start a new line"
+    visual: timeline
+    parameters:
+      - {key: gap_days, label: "Gap that advances the line", default: 60, unit: "days", provenance: standard, alternatives: [45, 90, 120, 180]}
+    research:
+      - "What treatment-free gap thresholds have published claims-based line-of-therapy algorithms used for {indication} or for haematological malignancies?"
+  - key: product_addition
+    section: lot_rules
+    number: 9
+    title: "Product addition"
+    objective: "A new agent added to the regimen advances the line, unless it was planned"
+    visual: timeline
+  - key: planned_vs_reactive
+    section: lot_rules
+    number: 10
+    title: "Planned versus reactive addition"
+    objective: "An agent pre-specified by the protocol does not start a new line; one added to deepen response does"
+    visual: timeline
+    parameters:
+      - {key: planned_window_days, label: "Added within this many days of regimen start counts as planned", default: 28, unit: "days", provenance: standard}
+    research:
+      - "How do consensus frameworks for lines of therapy in haematological malignancies treat pre-planned consolidation versus reactive additions in {indication}?"
+  - key: product_drop
+    section: lot_rules
+    number: 11
+    title: "Product drop and continuation"
+    objective: "Dropping a component for toxicity keeps the line; how the merged line is named"
+    visual: timeline
+    parameters:
+      - {key: naming_min_days, label: "Regimen must last this long to name the line", default: 30, unit: "days", provenance: standard}
+  - key: substitution
+    section: lot_rules
+    number: 12
+    title: "Agent substitution"
+    objective: "Replacing an agent within the same class versus a different class"
+    visual: timeline
+    research:
+      - "In {indication}, when is switching between agents of the same class (for example tyrosine kinase inhibitors or BTK inhibitors) considered a new line of therapy?"
+  - key: bridging_cellular_therapy
+    section: lot_rules
+    number: 13
+    title: "Transplant and cellular therapy"
+    objective: "Bridging before transplant or CAR-T stays within the line of the definitive therapy"
+    visual: timeline
+    research:
+      - "What HCPCS or CPT codes identify allogeneic transplant and CAR-T administration in {indication}, and how do line-of-therapy frameworks treat bridging therapy?"
+  - key: maintenance
+    section: lot_rules
+    number: 14
+    title: "Maintenance and non-branded therapy"
+    objective: "Maintenance and supportive agents do not advance the line; how they are reported"
+    visual: timeline
+  - key: decision_flow
+    section: lot_rules
+    number: 15
+    title: "Line-advancement decision flow"
+    objective: "The order in which the rules above are applied to each regimen transition"
+    visual: flow
+  - key: short_regimen_rules
+    section: cleansing
+    number: 16
+    title: "Short-regimen cleansing"
+    objective: "Drop or merge regimens shorter than the threshold according to what follows them"
+    visual: grid
+    parameters:
+      - {key: short_regimen_days, label: "Regimen shorter than", default: 30, unit: "days", provenance: standard, alternatives: [21, 30, 45]}
+      - {key: cleansing_gap_days, label: "Gap that keeps them separate", default: 60, unit: "days", provenance: standard}
+  - key: sensitivity_grid
+    section: sensitivity
+    number: 17
+    title: "Sensitivity grid"
+    objective: "Parameter alternatives to run and what each is expected to change"
+    visual: grid
+
+# Cards that only apply when the indication is treated with curative intent
+# in phases (induction, consolidation, maintenance, transplant), as ALL is.
+templates:
+  curative_intent: [planned_vs_reactive, bridging_cellular_therapy, maintenance]
+  chronic_targeted: [substitution, maintenance]
+indication_templates:
+  ALL: curative_intent
+  CLL: chronic_targeted

@@ -270,6 +270,11 @@ def get_insight_cards() -> dict[str, Any]:
 
 
 @functools.lru_cache(maxsize=1)
+def get_lot_rules() -> dict[str, Any]:
+    return _load_yaml("lot_rules.yaml")
+
+
+@functools.lru_cache(maxsize=1)
 def get_thresholds() -> dict[str, Any]:
     return _load_yaml("thresholds.yaml")
 

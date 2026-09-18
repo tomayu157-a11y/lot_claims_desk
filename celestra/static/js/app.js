@@ -1424,6 +1424,35 @@
       }
     });
 
+    /* rules workspace: section tabs, and polling while the rules are built */
+    on(document, 'click', '[data-rules-tabs] [data-tab]', function (ev, tab) {
+      ev.preventDefault();
+      var key = tab.getAttribute('data-tab');
+      $$('[data-rules-tabs] [data-tab]').forEach(function (t) { t.classList.toggle('is-active', t === tab); });
+      $$('[data-tab-panel]').forEach(function (p) { p.hidden = p.getAttribute('data-tab-panel') !== key; });
+      if (window.history && window.history.replaceState) window.history.replaceState(null, '', '#' + key);
+    });
+    var wantedTab = window.location.hash ? window.location.hash.slice(1) : '';
+    if (wantedTab && $('[data-rules-tabs] [data-tab="' + wantedTab.replace(/"/g, '') + '"]')) {
+      $('[data-rules-tabs] [data-tab="' + wantedTab.replace(/"/g, '') + '"]').click();
+    }
+    var poll = $('[data-rules-poll]');
+    if (poll) {
+      var pollUrl = poll.getAttribute('data-rules-poll');
+      var tick = async function () {
+        try {
+          var res = await fetch(pollUrl, { credentials: 'same-origin' });
+          var data = await res.json();
+          announce($('[data-rules-message]'), data.message || '');
+          var count = $('[data-rules-count]');
+          if (count) count.textContent = data.cards || 0;
+          if (data.status !== 'running') { window.location.reload(); return; }
+        } catch (err) { /* keep polling */ }
+        window.setTimeout(tick, 3000);
+      };
+      window.setTimeout(tick, 3000);
+    }
+
     /* phase groups on the live page: collapsed by default, click to expand */
     on(document, 'click', '[data-phase-toggle]', function (ev, btn) {
       ev.preventDefault();

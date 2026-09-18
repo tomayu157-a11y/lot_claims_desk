@@ -71,6 +71,7 @@ python tests/test_reviewer_sections.py  # reviewer files: sections
 python tests/test_reviewer_routing.py   # reviewer files: routing per agent
 python tests/test_reviewer_context.py   # reviewer files: answering, never cited
 python tests/test_reviewer_input_http.py # reviewer files: attach, keep, remove
+python tests/test_lot_rules.py          # the rules stage: catalogue, scenarios, gate, routes
 python -m pytest tests/test_templates_render.py -q
 ```
 
@@ -113,6 +114,9 @@ middle and a sign-off at the end:
                         Information Synthesis run by dependency wave
 4  Final approval       anything still needing input is listed; approve to lock
 5  Approved document    the signed-off research document
+6  LOT rules            the line-of-therapy business rules, written from the
+                        approved document as cards you decide one by one
+7  Rules approved       the signed rules: a document and a JSON specification
 ```
 
 `/runs/{id}` always sends you to the step the run is on. The live page shows
@@ -133,6 +137,41 @@ A finding takes one of three decisions:
 
 Approval locks the run: no further edits are accepted, the QA checklist records
 the sign-off, and the document is marked Approved.
+
+### The LOT rules stage
+
+After the document is approved, **Continue to LOT rules** fills a fixed
+catalogue of rule cards for the indication (`celestra/config/lot_rules.yaml`,
+ALL and CLL; each indication picks the cards that apply to it, so ALL carries
+planned-versus-reactive addition and bridging to cellular therapy, CLL carries
+substitution and continuous-therapy maintenance). Six sections: market basket,
+patient funnel, episodes and regimens, line-of-therapy rules, post-LOT
+cleansing, sensitivity plan.
+
+Each card is written by the model, section by section, from a digest of the
+approved document (the agents it names with the HCPCS and NDC codes found
+beside them, the diagnosis codes, every answer and table, what claims can
+observe, and what the reviewer added). Where the document is silent the card's
+own research questions run through the same tiers as the research phase:
+registry sources, then domain-scoped search, then the open web (Firecrawl,
+then Azure native web search when Firecrawl fails or is blocked). The model
+decides the rule's statement, its parameters and their provenance, its
+confidence class, the worked scenarios that illustrate it, and the gaps an
+expert must settle. Without a model the cards fall back to the firm's standard
+conventions and template scenarios so the workspace still renders.
+
+Every card is shown visually, not as prose: the basket as a table of agents and
+codes, diagnosis codes as code cards, the cohort as a funnel, each line rule as
+Gantt-style timelines of regimens and the lines they produce, the decision
+flow as a ladder of checks, the cleansing rules and the sensitivity plan as
+grids. Confidence is one of four classes: **verified for this indication**,
+**verified for the class**, **borrowed** (general oncology or firm convention),
+**original** (an analytical construct). Verified rules carry forward; borrowed
+and original rules need your decision: approve as written, edit a parameter (it
+becomes a client-set value, the timelines are redrawn with it, and the change
+is your decision), or attach a note. Approving locks the rules and produces
+the business-rules document (`/runs/{id}/rules/document`) and the
+specification (`/runs/{id}/rules/spec.json`) that a data run executes.
 
 **Run a single agent.** One agent on its own, for when you only need that
 output. Dependencies outside the selection are ignored rather than forcing a

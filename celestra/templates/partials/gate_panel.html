@@ -63,7 +63,8 @@
         {% if g.mode == 'review' %}
         <a class="btn btn-secondary" href="/runs/{{ run.id }}/progress#mapping">See Mapping &amp; Synthesis {{ icon('arrow-right', 15) }}</a>
         {% else %}
-        <a class="btn btn-primary" href="/runs/{{ run.id }}/report">Open the approved document {{ icon('arrow-right', 15) }}</a>
+        <a class="btn btn-primary" href="/runs/{{ run.id }}/rules">Continue to LOT rules {{ icon('arrow-right', 15) }}</a>
+        <a class="btn btn-secondary" href="/runs/{{ run.id }}/report">Open the approved document</a>
         {% endif %}
       {% elif g.available %}
       <form method="post" action="{{ g.action_url }}" data-gate-form>
