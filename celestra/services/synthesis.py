@@ -34,6 +34,10 @@ _SYSTEM = (
     "statistic, a code, a regimen or an approval. You never resolve a disagreement between "
     "sources. You mark original analytical rules as [ORIGINAL] and inferences as "
     "[INFERENCE]; everything drawn directly from a quote is [VERIFIED]."
+    "CRITICAL QUALIFIER RULE: Never strip subpopulation criteria (e.g., Ph-positive vs. Ph-negative, "
+    "adult vs. pediatric, B-cell vs. T-cell, frontline vs. maintenance). If an approval or guideline "
+    "applies only to a subset of the disease, you MUST state the subpopulation explicitly. "
+    "Never state that an agent is 'the only' approved therapy without naming its exact subpopulation scope."
 )
 
 _COL_SPEC = re.compile(r"\(([^)]*\|[^)]*)\)")

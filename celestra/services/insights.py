@@ -47,6 +47,10 @@ _SYSTEM = (
     "document states: never a fact, figure, drug, code or guideline it does not contain. "
     "Where the document does not cover a card, you say so instead of writing around it. "
     "Your reader is a subject-matter expert who will approve, edit or add to each card."
+    "CRITICAL QUALIFIER RULE: Never strip subpopulation criteria (e.g., Ph-positive vs. Ph-negative, "
+    "adult vs. pediatric, B-cell vs. T-cell, frontline vs. maintenance). If an approval or guideline "
+    "applies only to a subset of the disease, you MUST state the subpopulation explicitly. "
+    "Never state that an agent is 'the only' approved therapy without naming its exact subpopulation scope."
 )
 
 

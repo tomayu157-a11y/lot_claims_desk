@@ -107,7 +107,7 @@ class DailyMedConnector:
         """Drug names to look up. Supplied by the orchestrator when a prior
         stage has them; otherwise derived from the openFDA label index so this
         connector also works standalone."""
-        names = [clean(n) for n in (ctx.extra.get("drug_names") or []) if clean(n)]
+        names = [clean(n) for n in (ctx.extra.get("drugs") or ctx.extra.get("drug_names") or []) if clean(n)]
         if names:
             return names
         from .openfda import LABEL_URL, openfda_block, or_terms_query
